@@ -12,9 +12,9 @@ interface ChatSummary {
 
 interface SidebarProps {
   currentChatId: string | null;
-  onSelectChat: (chatId: string) => void;
+  onSelectChat: (chatId: string | null) => void;
   onNewChat: () => void;
-  userId: string | null; // 👈 nuevo
+  userId: string | null;
 }
 
 export function Sidebar({
@@ -26,9 +26,9 @@ export function Sidebar({
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  // 🔄 Cargar chats SOLO si hay userId
   useEffect(() => {
     if (!userId) {
-      // Si por alguna razón no tenemos userId, limpiamos la lista
       setChats([]);
       return;
     }
@@ -36,10 +36,12 @@ export function Sidebar({
     async function loadChats() {
       setIsLoading(true);
       try {
-        const res = await fetch(`/api/chats?userId=${encodeURIComponent(userId)}`);
+        const encoded = encodeURIComponent(userId ?? "");
+        const res = await fetch(`/api/chats?userId=${encoded}`);
         const data = await res.json();
+
         if (res.ok) {
-          setChats(data.chats);
+          setChats(data.chats ?? []);
         } else {
           console.error(data.error);
         }
@@ -51,10 +53,11 @@ export function Sidebar({
     }
 
     loadChats();
-  }, [currentChatId, userId]);
+  }, [userId, currentChatId]);
 
   return (
     <div className="flex flex-col h-full">
+      {/* BOTÓN NUEVO CHAT */}
       <button
         onClick={onNewChat}
         className="mb-4 w-full rounded-lg bg-sky-500 hover:bg-sky-600 text-sm font-medium py-2 transition"
@@ -62,6 +65,7 @@ export function Sidebar({
         + Nuevo chat
       </button>
 
+      {/* LISTA DE CHATS */}
       <div className="flex-1 space-y-2 overflow-y-auto">
         {isLoading && (
           <div className="text-xs text-slate-400 mb-2">Cargando chats...</div>
@@ -69,17 +73,17 @@ export function Sidebar({
 
         {!isLoading && userId && chats.length === 0 && (
           <p className="text-[11px] text-slate-500">
-            Aún no hay chats guardados. Escribe un mensaje para crear el
-            primero.
+            Aún no hay chats guardados. Escribe un mensaje para crear el primero.
           </p>
         )}
 
-        {!userId && !isLoading && (
+        {!userId && (
           <p className="text-[11px] text-slate-500">
             Inicia sesión para ver tus chats.
           </p>
         )}
 
+        {/* CHATS */}
         {chats.map((chat) => (
           <button
             key={chat.id}
@@ -98,7 +102,7 @@ export function Sidebar({
       </div>
 
       <div className="pt-3 mt-3 border-t border-slate-800 text-[10px] text-slate-500">
-        
+        {/* Espacio para futuras opciones */}
       </div>
     </div>
   );

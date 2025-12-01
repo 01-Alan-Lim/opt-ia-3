@@ -1,3 +1,4 @@
+// src/app/providers/privy-provider.tsx
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
@@ -7,12 +8,7 @@ interface PrivyAuthProviderProps {
   children: ReactNode;
 }
 
-
-export function PrivyAuthProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export function PrivyAuthProvider({ children }: PrivyAuthProviderProps) {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 
   if (!appId) {
@@ -31,16 +27,19 @@ export function PrivyAuthProvider({
         // Apariencia del widget de Privy
         appearance: {
           theme: "dark",
-          accentColor: "#0ea5e9",      // azul tipo Tailwind sky-500 (ajusta si quieres)
-          logo: "/logo-opt.png",     // 👈 archivo en /public/optia-logo.png
+          accentColor: "#0ea5e9", // azul tipo Tailwind sky-500
+          logo: "/logo-opt.png",
           landingHeader: "Inicia sesión en OPT-IA",
           loginMessage:
             "Accede con tu correo, Google o GitHub para usar el asistente OPT-IA.",
         },
 
-        // Opcional: cómo maneja las wallets internas
+        // Cómo maneja las wallets internas
         embeddedWallets: {
-          createOnLogin: false,
+          ethereum: {
+            // Opciones válidas: "off" | "users-without-wallets" | "all-users"
+            createOnLogin: "off",
+          },
         },
       }}
     >

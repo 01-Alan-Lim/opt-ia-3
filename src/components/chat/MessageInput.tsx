@@ -91,13 +91,6 @@ export function MessageInput({
         >
           Enviar
         </button>
-
-        {/* Oculta scrollbar en Chrome/Edge/Safari */}
-        <style jsx>{`
-          textarea::-webkit-scrollbar {
-            display: none;
-          }
-        `}</style>
       </div>
     </form>
   );
