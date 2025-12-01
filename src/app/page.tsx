@@ -8,8 +8,7 @@ export default function Home() {
 
         <p className="text-sm text-slate-300 mb-6">
           Agente con Inteligencia Artificial para el incremento de productividad.
-          Esta es la nueva versión del sistema, optimizada para usar servicios
-          más económicos (Supabase, Google AI, Vercel, etc.).
+          Esta es la nueva versión del sistema.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-3">
