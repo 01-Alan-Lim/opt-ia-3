@@ -1,6 +1,12 @@
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
+import type { ReactNode } from "react";
+
+interface PrivyAuthProviderProps {
+  children: ReactNode;
+}
+
 
 export function PrivyAuthProvider({
   children,
