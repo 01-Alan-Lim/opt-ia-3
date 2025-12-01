@@ -1,13 +1,22 @@
-import { NextResponse } from "next/server";
+// src/app/api/chats/route.ts
+import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 
-export async function GET() {
-  const clientId = "demo-client";
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const userId = searchParams.get("userId");
+
+  if (!userId) {
+    return NextResponse.json(
+      { error: "Falta el parámetro userId" },
+      { status: 400 }
+    );
+  }
 
   const { data, error } = await supabase
     .from("chats")
     .select("id, title, created_at")
-    .eq("client_id", clientId)
+    .eq("client_id", userId)
     .order("created_at", { ascending: false });
 
   if (error) {
