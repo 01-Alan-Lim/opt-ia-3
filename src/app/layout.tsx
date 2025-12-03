@@ -19,9 +19,9 @@ export const metadata: Metadata = {
   title: "OPT-IA",
   description: "Agente con IA para productividad de MyPEs",
   icons: {
-    icon: "/logo-opt.ico",      // 👈 tu logo en /public/logo-opt.png
-    shortcut: "/logo-opt.ico",
-    apple: "/logo-opt.png",
+    icon: "/icon.ico",      // 👈 tu logo en /public/logo-opt.png
+    shortcut: "/icon.ico",
+    apple: "/icon.png",
   },
 };
 
