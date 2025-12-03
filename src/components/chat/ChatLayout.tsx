@@ -40,7 +40,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen }: ChatLayoutProps) 
               "max-h-[calc(100vh-2rem)] min-h-[420px]"
             )}
           >
-            <div className="flex flex-1 flex-col min-h-0 gap-4 overflow-hidden">
+            <div className="flex flex-1 flex-col min-h-0 gap-2 overflow-hidden">
               {children}
             </div>
           </div>

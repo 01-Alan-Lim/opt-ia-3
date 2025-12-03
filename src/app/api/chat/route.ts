@@ -42,8 +42,10 @@ function extractJsonFromText(text: string): string | null {
 // --------------------------------------
 // 📌 2) Mini-agente: decidir qué consultar en DB
 // --------------------------------------
-async function planDbQuery(userMessage: string,
-  history: string): Promise<DbPlan | null> {
+async function planDbQuery(
+  userMessage: string,
+  history: string
+): Promise<DbPlan | null> {
   const model = getGeminiModel();
 
   const schemaDescription = `
@@ -204,7 +206,7 @@ async function runDbPlan(plan: DbPlan): Promise<any[] | null> {
     console.error("Error ejecutando consulta DB:", error);
     return null;
   }
-  console.log("🔎 DB rows devueltos por runDbPlan:", data); // 👈 IMPORTANTE
+  console.log("🔎 DB rows devueltos por runDbPlan:", data);
 
   return data ?? [];
 }
@@ -261,12 +263,11 @@ function buildDbContext(table: DbTableName, rows: any[]): string {
         row.causa_principal_1,
         row.causa_principal_2,
         row.causa_principal_3,
-       ].filter((c: string | null | undefined) => !!c && c.trim().length > 0);
+      ].filter((c: string | null | undefined) => !!c && c.trim().length > 0);
 
-       const causasTexto = causasArray
+      const causasTexto = causasArray
         .map((c: string, idx: number) => `${idx + 1}. "${c.trim()}"`)
         .join(" ");
-
 
       return `(${i + 1}) ${empresa}${
         codigo ? ` [ID ${codigo}]` : ""
@@ -274,12 +275,13 @@ function buildDbContext(table: DbTableName, rows: any[]): string {
         size ? `, tamaño ${size}` : ""
       }${ubicacion ? `, ${ubicacion}` : ""}. Mejora registrada: ${
         desc || "sin descripción"
-      }${estado ? `. Estado/implementación: ${estado}` : "" 
-    }${
-      causasArray.length
-        ? `\nCausas raíz REGISTRADAS EN LA BASE DE DATOS (texto literal, no interpretar): ${causasTexto}`
-       : "" 
-    }`;
+      }${
+        estado ? `. Estado/implementación: ${estado}` : ""
+      }${
+        causasArray.length
+          ? `\nCausas raíz REGISTRADAS EN LA BASE DE DATOS (texto literal, no interpretar): ${causasTexto}`
+          : ""
+      }`;
     })
     .join("\n\n");
 }
@@ -294,6 +296,7 @@ export async function POST(request: Request) {
 
   // 🔑 usar el userId que viene del front para la tabla chats
   const clientId: string = body.userId ?? "anon";
+  const mode: string = body.mode ?? "general";
 
   if (!userMessage.trim()) {
     return NextResponse.json({ error: "Mensaje vacío" }, { status: 400 });
@@ -308,6 +311,7 @@ export async function POST(request: Request) {
       .insert({
         client_id: clientId, // guardamos el userId de Privy
         title: userMessage.slice(0, 60),
+        mode,                // 👈 NUEVO: guardamos el modo del agente
       })
       .select("id")
       .single();
@@ -322,6 +326,23 @@ export async function POST(request: Request) {
 
     chatId = data.id as string;
   }
+
+  // Obtener modo real del chat desde la BD (por si en el futuro lo cambiamos desde otro lado)
+  let chatMode = mode;
+  try {
+    const { data: chatRow } = await supabase
+      .from("chats")
+      .select("mode")
+      .eq("id", chatId)
+      .single();
+
+    if (chatRow?.mode) {
+      chatMode = chatRow.mode;
+    }
+  } catch (e) {
+    console.error("No se pudo obtener el modo del chat:", e);
+  }
+
 
   // Guardar mensaje usuario
   await supabase.from("messages").insert({
@@ -362,7 +383,8 @@ export async function POST(request: Request) {
   // --------------------------------------
   // 5) RAG documentos (embeddings)
   // --------------------------------------
-  let docsContext = "";
+
+  let docsContext = "";   // 👈 IMPORTANTE: declarado fuera del try
   try {
     const embedding = await embedText(userMessage);
 
@@ -380,7 +402,8 @@ export async function POST(request: Request) {
     console.error("Error en RAG match_document_chunks:", e);
   }
 
-  // --------------------------------------
+
+    // --------------------------------------
   // 6) Llamar al modelo LLM
   // --------------------------------------
   let replyText = "";
@@ -389,12 +412,34 @@ export async function POST(request: Request) {
 
     const parts: string[] = [];
 
-    parts.push(`
-Eres OPT-IA, un asistente especializado en apoyar a estudiantes de Ingeniería Industrial
-y a micro y pequeñas empresas (MyPEs).
+    // 👇 Prompt base según el modo del chat
+    let systemPrompt = "";
 
+    if (chatMode === "plan_mejora") {
+      systemPrompt = `
+Eres OPT-IA, un docente revisor de planes de mejora empresariales para estudiantes de Ingeniería Industrial.
+Tu foco principal es:
+- Guiar al estudiante en la formulación de su plan (diagnóstico, problema, causa raíz, objetivos, indicadores, actividades, cronograma, responsables, etc.).
+- Detectar incoherencias, vacíos y errores frecuentes (objetivos mal formulados, indicadores poco claros, actividades que no atacan la causa raíz, etc.).
+- Dar retroalimentación clara y concreta, con sugerencias de mejora y ejemplos aplicados a micro y pequeñas empresas (MyPEs).
+Siempre responde como si estuvieras revisando el borrador de un estudiante, con tono respetuoso pero crítico y orientado a la acción.
+`;
+    } else {
+      // Modo GENERAL
+      systemPrompt = `
+Eres OPT-IA, un asistente general para estudiantes de Ingeniería Industrial y micro y pequeñas empresas (MyPEs).
+Ayudas con:
+- Dudas conceptuales de ingeniería, productividad y mejora continua.
+- Ideas de mejora para MyPEs (procesos, organización, marketing básico, etc.).
+- Explicaciones claras y ejemplos prácticos.
+Responde de forma directa y útil, como un asesor que conoce tanto el contexto académico como el empresarial.
+`;
+    }
+
+    // 👇 Reglas globales sobre uso de contexto (DB + documentos)
+    systemPrompt += `
 Reglas IMPORTANTES al usar el contexto:
-- No inventes datos de base de datos ni causes raíz.
+- No inventes datos de base de datos ni causas raíz.
 - Si el contexto de base de datos incluye una línea que dice
   "Causas raíz REGISTRADAS EN LA BASE DE DATOS (texto literal, no interpretar): ...",
   entonces debes COPIAR literalmente esos textos cuando el usuario pregunte por causas
@@ -402,10 +447,6 @@ Reglas IMPORTANTES al usar el contexto:
 - Si no hay causas raíz registradas, dilo explícitamente.
 - Puedes explicar o interpretar después, pero primero menciona siempre las causas
   exactamente como están almacenadas.
-
-PUEDES usar:
-- Tu conocimiento general sobre MyPEs, productividad, ingeniería de métodos, etc.
-- El contexto de experiencias (base de datos) y documentos que se te proporciona.
 
 PERO TIENES PROHIBIDO:
 - Mencionar o describir "los documentos", "los PDFs", "los documentos que me proporcionaste",
@@ -426,10 +467,11 @@ EN SU LUGAR:
   y si no hay un caso exacto, crea un ejemplo ilustrativo y realista basado en buenas prácticas,
   dejando claro que es un ejemplo ilustrativo, pero SIN mencionar documentos ni bases de datos.
 - Puedes usar nombres de empresas que aparezcan en el contexto (por ejemplo, del listado de empresas),
-  pero no inventes datos numéricos exactos (ventas, montos, etc.) salvo que sea necesario y claramente
-  aproximado.
+  pero no inventes datos numéricos exactos (ventas, montos, etc.) salvo que sea necesario y claramente aproximado.
 - Sé claro, conciso y enfocado en ayudar al usuario a tomar decisiones o entender el concepto.
-`);
+`;
+
+    parts.push(systemPrompt);
 
     parts.push("\nHistorial:\n" + historyText);
 
@@ -457,6 +499,7 @@ EN SU LUGAR:
     console.error("Error llamando a Gemini:", e);
     replyText = "Hubo un problema al generar la respuesta.";
   }
+
 
   // Guardar respuesta del asistente
   await supabase.from("messages").insert({

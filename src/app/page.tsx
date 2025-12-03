@@ -12,7 +12,7 @@ export default function Home() {
         </p>
 
         <div className="flex flex-col sm:flex-row gap-3">
-          {/* Botón principal: abre Privy y, si ya está logueado, envía a /chat */}
+          {/* Botón principal: abre Privy y, si ya está logueado, envía a /chat o /docente */}
           <LoginButton />
         </div>
 

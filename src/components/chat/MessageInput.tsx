@@ -5,12 +5,34 @@ import { useState, useRef, useEffect } from "react";
 export function MessageInput({
   onSend,
   disabled,
+  onUploadFile, 
 }: {
   onSend: (message: string) => void;
   disabled: boolean;
+  onUploadFile?: (file: File) => void;
 }) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+    // 👇 Input de archivo (Word/PDF)
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleUploadClick() {
+    // Abre el selector de archivos
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!onUploadFile) return; // si no hay handler, no hacemos nada
+
+    onUploadFile(file);
+
+    // Permite volver a subir el mismo archivo después
+    e.target.value = "";
+  }
+
 
   // Auto-ajustar altura hasta ~5 líneas
   const autoResize = () => {
@@ -53,7 +75,7 @@ export function MessageInput({
       onSubmit={handleSubmit}
       className="w-full flex justify-center pt-2 pb-1"
     >
-      <div className="flex items-end gap-2 w-full max-w-2xl">
+            <div className="flex items-end gap-2 w-full max-w-2xl">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -78,6 +100,37 @@ export function MessageInput({
             msOverflowStyle: "none",
           }}
         />
+
+        {/* 👇 Botón para subir Word/PDF (solo si viene onUploadFile) */}
+        {onUploadFile && (
+          <>
+            <button
+              type="button"
+              onClick={handleUploadClick}
+              disabled={disabled}
+              className="
+                p-2 rounded-xl
+                bg-slate-800/70 hover:bg-slate-700
+                border border-slate-600/70
+                text-slate-100 text-sm
+                disabled:opacity-60
+                transition-all shadow-lg
+              "
+              title="Subir Word/PDF del plan"
+            >
+              📎
+            </button>
+
+            {/* Input de archivo oculto */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+          </>
+        )}
 
         <button
           type="submit"
