@@ -1,31 +1,68 @@
 @import "tailwindcss";
 
+/* =========
+   Paleta base
+   ========= */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #05060a;
+  --foreground: #ededed;
+
+  --sb-track: rgba(255, 255, 255, 0.04);
+  --sb-thumb: rgba(255, 255, 255, 0.12);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.18);
 }
 
+/* Si realmente quieres mapear tokens Tailwind v4 (opcional):
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
 }
+*/
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+
+  font-size: 16px;
+  line-height: 1.55;
 }
 
-/* Ocultar scrollbar de los textarea (Chrome/Edge/Safari) */
-textarea::-webkit-scrollbar {
-  display: none;
+
+/* =========================================================
+   Scrollbar "minimalista + difuminado"
+   ========================================================= */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+
+/* Chrome / Edge / Safari */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--sb-thumb);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sb-thumb-hover);
 }

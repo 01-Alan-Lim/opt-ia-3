@@ -1,85 +1,130 @@
 "use client";
 
-import { useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
+
+type Role = "student" | "teacher";
+
+async function getAccessToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
+}
 
 export function LoginButton() {
-  const { ready, authenticated, user, login } = usePrivy();
   const router = useRouter();
-  const [loadingRole, setLoadingRole] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
-  async function goToApp() {
-    if (!user) return;
+  useEffect(() => {
+    let active = true;
 
-    setLoadingRole(true);
+    async function load() {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setSessionEmail(data.session?.user?.email ?? null);
+    }
+
+    load();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSessionEmail(newSession?.user?.email ?? null);
+    });
+
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  const isAuthed = useMemo(() => Boolean(sessionEmail), [sessionEmail]);
+
+  async function signInWithGoogle() {
+    setLoading(true);
     try {
-      const email =
-        // @ts-ignore
-        user.email?.address ??
-        // @ts-ignore
-        user.google?.email ??
-        null;
+      // ⚠️ Importante: debe coincidir con tu route /auth/callback
+      const redirectTo = `${window.location.origin}/auth/callback`;
 
-      const res = await fetch("/api/auth/after-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: user.id,
-          email,
-        }),
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo },
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        console.error(data.error || "Error al obtener rol");
-        router.push("/chat"); // fallback
+      if (error) {
+        console.error(error);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function goToApp() {
+    setLoading(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        router.push("/");
         return;
       }
 
-      const role = data.role as "student" | "teacher" | undefined;
+      const res = await fetch("/api/auth/after-login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
 
-      if (role === "teacher") {
-        router.push("/docente");
-      } else {
-        router.push("/chat");
+       const json = await res.json().catch(() => null);
+
+      // Si el backend dice "no autorizado", volvemos al home con mensaje
+      if (res.status === 403) {
+        await supabase.auth.signOut();
+        router.push("/?reason=forbidden");
+        return;
       }
-    } catch (err) {
-      console.error("Error en goToApp:", err);
-      router.push("/chat");
+
+
+      if (res.status === 403) {
+        await supabase.auth.signOut();
+        router.push("/?reason=forbidden");
+        return;
+      }
+
+      if (!res.ok || json?.ok === false) {
+        router.push("/");
+        return;
+      }
+
+      // ✅ Respuesta estándar: { ok:true, data:{ role } }
+      const payload = (json?.data ?? json) as { role?: Role } | null;
+      const role = payload?.role ?? "student";
+
+
+      router.push(role === "teacher" ? "/docente" : "/chat");
+
     } finally {
-      setLoadingRole(false);
+      setLoading(false);
     }
   }
 
-  function handleClick() {
-    if (!ready) return;
-
-    if (!authenticated) {
-      // abre el modal de Privy
-      login();
+  async function handleClick() {
+    if (!isAuthed) {
+      await signInWithGoogle();
     } else {
-      // ya está logueado → decidir a dónde va
-      goToApp();
+      await goToApp();
     }
   }
-
-  const disabled = !ready || loadingRole;
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      disabled={disabled}
+      disabled={loading}
       className="px-4 py-2 rounded bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-sm font-medium"
     >
-      {loadingRole
-        ? "Ingresando..."
-        : !ready
-        ? "Cargando..."
-        : authenticated
-        ? "Entrar a OPT-IA"
-        : "Iniciar sesión con Privy"}
+      {loading ? "Ingresando..." : isAuthed ? "Entrar a OPT-IA" : "Iniciar sesión con Google"}
     </button>
   );
 }

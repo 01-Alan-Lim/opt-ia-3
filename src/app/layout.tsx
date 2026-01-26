@@ -1,17 +1,15 @@
+//src/app/layout.tsx
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-// 👉 Importante: agrega tu provider de Privy
-import { PrivyAuthProvider } from "./providers/privy-provider";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-sans",
   subsets: ["latin"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const mono = Geist_Mono({
+  variable: "--font-mono",
   subsets: ["latin"],
 });
 
@@ -19,7 +17,7 @@ export const metadata: Metadata = {
   title: "OPT-IA",
   description: "Agente con IA para productividad de MyPEs",
   icons: {
-    icon: "/icon.ico",      // 👈 tu logo en /public/logo-opt.png
+    icon: "/icon.ico",
     shortcut: "/icon.ico",
     apple: "/icon.png",
   },
@@ -27,18 +25,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="es">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {/* 👉 Ahora todo tu app está envuelta en el provider de Privy */}
-        <PrivyAuthProvider>
-          {children}
-        </PrivyAuthProvider>
+      <body className={`${inter.variable} ${mono.variable} antialiased`}>
+        {children}
       </body>
     </html>
   );

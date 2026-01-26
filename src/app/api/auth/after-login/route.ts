@@ -1,59 +1,49 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabaseClient";
+import { requireUser } from "@/lib/auth/supabase";
+import { supabaseServer } from "@/lib/supabaseServer";
+import { ok, fail } from "@/lib/api/response";
+
+export const runtime = "nodejs";
+
+type Role = "student" | "teacher";
 
 export async function POST(req: Request) {
   try {
-    const { userId, email } = await req.json();
+    // ✅ Autoridad única para rol/dominio/test allowlist
+    const authed = await requireUser(req);
+    const email = authed.email?.toLowerCase() ?? null;
+    const role: Role = authed.role;
 
-    if (!userId) {
-      return NextResponse.json(
-        { error: "Falta userId" },
-        { status: 400 }
-      );
-    }
-
-    // Lista de correos de docentes desde env
-    const teacherEmails =
-      process.env.NEXT_PUBLIC_TEACHER_EMAILS
-        ?.split(",")
-        .map((e) => e.trim().toLowerCase()) ?? [];
-
-    let role: "student" | "teacher" = "student";
-
-    if (email && teacherEmails.includes(email.toLowerCase())) {
-      role = "teacher";
-    }
-
-    // Upsert del perfil
-    const { data, error } = await supabase
+    // ✅ Guardar perfil (o actualizar) con el rol final
+    const { data, error } = await supabaseServer
       .from("profiles")
-      .upsert(
-        {
-          user_id: userId,
-          email,
-          role,
-        },
-        { onConflict: "user_id" }
-      )
+      .upsert({ user_id: authed.userId, email, role }, { onConflict: "user_id" })
       .select("role")
       .single();
 
     if (error) {
-      console.error("Error upserting profile:", error);
       return NextResponse.json(
-        { error: "No se pudo guardar perfil" },
+        fail("PROFILE_UPSERT_FAILED", "No se pudo guardar perfil.", error),
         { status: 500 }
       );
     }
 
-    const finalRole = (data?.role as "student" | "teacher") ?? role;
+    const finalRole = (data?.role as Role | null) ?? role;
+    return ok({ role: finalRole });
 
-    return NextResponse.json({ role: finalRole });
-  } catch (err) {
-    console.error("Error en /api/auth/after-login:", err);
-    return NextResponse.json(
-      { error: "Error interno" },
-      { status: 500 }
-    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "INTERNAL";
+
+    if (msg === "UNAUTHORIZED") {
+      return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
+    }
+    if (msg === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(
+        fail("FORBIDDEN", "Acceso restringido a correos autorizados."),
+        { status: 403 }
+      );
+    }
+
+    return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
   }
 }

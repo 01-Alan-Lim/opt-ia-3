@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@privy-io/react-auth": "^3.8.0",
     "@solana-program/memo": "^0.10.0",
     "@solana-program/system": "^0.10.0",
     "@solana-program/token": "^0.9.0",
@@ -25,7 +24,8 @@
     "pdfjs-dist": "^5.4.449",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "tsx": "^4.20.6"
+    "tsx": "^4.20.6",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -34,7 +34,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
-    "baseline-browser-mapping": "^2.8.32",
+    "baseline-browser-mapping": "^2.9.11",
     "eslint": "^9",
     "eslint-config-next": "16.0.4",
     "tailwindcss": "^4",

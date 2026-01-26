@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
         [
           `nombre_o_razon_social_de_la_empresa.ilike.%${q}%`,
           `rubro.ilike.%${q}%`,
-          `actividad_economica.ilike.%${q}%`,
+          `clasificacion_caeb.ilike.%${q}%`, // ✅ antes: actividad_economica (no existe)
           `area_de_intervencion.ilike.%${q}%`,
           `descripcion_mejora_planteada.ilike.%${q}%`,
           `enfoque_de_la_solucion.ilike.%${q}%`,

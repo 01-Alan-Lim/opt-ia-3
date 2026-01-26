@@ -20,7 +20,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     >
       <div
         className={clsx(
-          "max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm",
+          "max-w-[80%] rounded-2xl px-3 py-2 text-base leading-relaxed shadow-sm",
           {
             "bg-sky-500 text-white rounded-br-sm": isUser,
             "bg-slate-800 text-slate-100 rounded-bl-sm": isAssistant,
@@ -28,8 +28,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           }
         )}
       >
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
-        <div className="mt-1 text-[10px] text-slate-300/70 text-right">
+        <div className="whitespace-pre-wrap break-words">
+          {/* versión simple: el navegador puede autolinkear si usas <a>, así que reaprovechamos la misma lógica */}
+          {message.content}
+        </div>
+
+        <div className="mt-1 text-[11x] text-slate-300/70 text-right">
           {new Date(message.createdAt).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
