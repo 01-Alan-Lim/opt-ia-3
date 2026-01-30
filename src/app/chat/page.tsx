@@ -126,6 +126,24 @@ export default function ChatPage() {
   const messagesRef = useRef<Message[]>([]);
   const suppressNextHistoryHydrationRef = useRef(false);
 
+  // -----------------------------
+  // Cache ligero para evitar GETs repetidos en Ishikawa
+  // -----------------------------
+  type PlanContextStatus = {
+    ok: boolean;
+    status: "draft" | "confirmed";
+    exists: boolean;
+    chatId: string | null;
+    contextJson: any;
+    contextText: string | null;
+  };
+
+  type LastProductivityReport = { ok: boolean; payload: any | null };
+
+  const planContextCacheRef = useRef<{ at: number; data: PlanContextStatus } | null>(null);
+  const lastProdReportCacheRef = useRef<{ at: number; data: LastProductivityReport } | null>(null);
+
+
   useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   useEffect(() => {
@@ -257,6 +275,32 @@ export default function ChatPage() {
     rootCauses?: string[];
   };
 
+  type ParetoCriterion = { id: string; name: string; weight?: number };
+
+  type ParetoState = {
+    roots: string[];              // viene de ishikawa_final.validate
+    selectedRoots: string[];      // 10-15 (para trabajar en Excel)
+    criteria: ParetoCriterion[];  // exactamente 3
+    criticalRoots: string[];      // top 20% (el estudiante vuelve del Excel y lo pega)
+    minSelected: number;          // 10
+    maxSelected: number;          // 15
+    step:
+      | "select_roots"
+      | "define_criteria"
+      | "set_weights"
+      | "excel_work"
+      | "collect_critical"
+      | "done";
+  };
+
+  type ObjectivesState = {
+    generalObjective: string;
+    specificObjectives: string[];
+    linkedCriticalRoots: string[];
+    step: "general" | "specific" | "review";
+  };
+
+
   function isFodaComplete(st: FodaState) {
     const quadrants: Array<keyof FodaState["items"]> = ["F", "D", "O", "A"];
     const okCounts = quadrants.every((q) => Array.isArray(st.items?.[q]) && st.items[q].length >= 3);
@@ -280,6 +324,133 @@ export default function ChatPage() {
     return hasProblem && ideasCount >= min;
   }
 
+  function isObjectivesReadyForValidation(st: {
+    generalObjective: string;
+    specificObjectives: string[];
+    linkedCriticalRoots: string[];
+  }) {
+    const generalOk = (st.generalObjective ?? "").trim().length >= 15;
+
+    const specificOk =
+      Array.isArray(st.specificObjectives) &&
+      st.specificObjectives.filter((s) => (s ?? "").trim().length > 0).length >= 3;
+
+    const linkedOk =
+      Array.isArray(st.linkedCriticalRoots) &&
+      st.linkedCriticalRoots.filter((r) => (r ?? "").trim().length > 0).length >= 1;
+
+    return generalOk && specificOk && linkedOk;
+  }
+
+  function countRootCandidatesFromIshikawa(st: IshikawaState | null) {
+    if (!st) return 0;
+    const cats = Array.isArray(st.categories) ? st.categories : [];
+    let n = 0;
+    for (const c of cats) {
+      const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+      for (const m of mains) {
+        const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+        for (const s of subs) {
+          const t = (s?.text ?? "").toString().trim();
+          if (t) n += 1;
+        }
+      }
+    }
+    return n;
+  }
+
+  function isIshikawaReadyToClose(st: IshikawaState | null) {
+    if (!st) return false;
+
+    const problemText =
+      typeof st.problem === "string"
+        ? st.problem
+        : (typeof (st.problem as any)?.text === "string" ? (st.problem as any).text : "");
+
+    if (!problemText.trim()) return false;
+
+    const cats = Array.isArray(st.categories) ? st.categories : [];
+    const minCats = typeof st.minCategories === "number" ? st.minCategories : 4;
+    if (cats.length < minCats) return false;
+
+    const minMain = typeof st.minMainCausesPerCategory === "number" ? st.minMainCausesPerCategory : 2;
+    const minSub = typeof st.minSubCausesPerMain === "number" ? st.minSubCausesPerMain : 2;
+
+    for (const c of cats) {
+      const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+      if (mains.length < minMain) return false;
+      for (const m of mains) {
+        const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+        if (subs.length < minSub) return false;
+      }
+    }
+
+    // MVP: raíz candidata = subcausa text (como validate backend)
+    return countRootCandidatesFromIshikawa(st) >= 10;
+  }
+
+
+  function isProgressQuestion(text: string) {
+    const raw = (text ?? "").trim();
+    const t = normalizeText(raw);
+
+    if (!t) return false;
+
+    // 1) Señales fuertes: casi imposible que sea otra cosa
+    const strongSignals =
+      t.includes("en que etapa estoy") ||
+      t.includes("en qué etapa estoy") ||
+      t.includes("que etapa sigue") ||
+      t.includes("qué etapa sigue") ||
+      t.includes("cuantas faltan") ||
+      t.includes("cuántas faltan") ||
+      t.includes("que etapas ya hice") ||
+      t.includes("qué etapas ya hice") ||
+      t.includes("pasar a la siguiente etapa") ||
+      t.includes("pasar a la otra etapa") ||
+      t.includes("podemos pasar a la siguiente") ||
+      t.includes("puedo pasar a la siguiente") ||
+      t.includes("puedo avanzar de etapa") ||
+      t.includes("avanzar de etapa");
+
+    if (strongSignals) return true;
+
+    // 2) Señal media: "qué falta / culminar" SOLO si es claramente pregunta
+    const looksLikeQuestion =
+      raw.includes("?") ||
+      t.startsWith("que ") ||
+      t.startsWith("qué ") ||
+      t.startsWith("como ") ||
+      t.startsWith("cómo ") ||
+      t.startsWith("está bien") ||
+      t.startsWith("esta bien") ||
+      t.startsWith("podemos ") ||
+      t.startsWith("puedo ");
+
+    const mediumSignals =
+      t.includes("que falta para") ||
+      t.includes("qué falta para") ||
+      t.includes("falta para cerrar") ||
+      t.includes("culminar esta etapa") ||
+      t.includes("terminar esta etapa");
+
+    // Evitar falsos positivos típicos dentro de Ishikawa (causas)
+    const falsePositives =
+      t.includes("falta manual") ||
+      t.includes("falta de manual") ||
+      t.includes("falta de recursos") ||
+      t.includes("falta de apoyo") ||
+      t.includes("falta de capacitacion") ||
+      t.includes("falta de capacitación") ||
+      t.includes("falta de estandar") ||
+      t.includes("falta de estándar");
+
+    if (falsePositives) return false;
+
+    return looksLikeQuestion && mediumSignals;
+  }
+
+
   const [fodaState, setFodaState] = useState<FodaState | null>(null);
   const [brainstormState, setBrainstormState] = useState<BrainstormState | null>(null);
   const [brainstormClosePending, setBrainstormClosePending] = useState(false);
@@ -302,6 +473,15 @@ export default function ChatPage() {
   const [ishikawaState, setIshikawaState] = useState<IshikawaState | null>(null);
   const saveIshikawaTimerRef = useRef<number | null>(null);
 
+  const [ishikawaClosePending, setIshikawaClosePending] = useState(false);
+
+  const [paretoState, setParetoState] = useState<ParetoState | null>(null);
+  const saveParetoTimerRef = useRef<number | null>(null);
+
+  const [objectivesState, setObjectivesState] = useState<ObjectivesState | null>(null);
+  const saveObjectivesTimerRef = useRef<number | null>(null);
+
+  const [ishikawaProblemPending, setIshikawaProblemPending] = useState(false);
 
   const saveBrainstormTimerRef = useRef<number | null>(null);
   const brainstormValidatedRef = useRef(false);
@@ -557,7 +737,7 @@ export default function ChatPage() {
     let active = true;
 
     (async () => {
-      const ctx = await getPlanContextStatus();
+      const ctx = await getPlanContextStatusCached();
       if (!active) return;
       if (!ctx.ok) return;
 
@@ -573,7 +753,7 @@ export default function ChatPage() {
         // Ya no estamos fresh después de crear el chat
         setPlanFresh(clientId, false);
 
-        const lastReport = await getLastProductivityReport();
+        const lastReport = await getLastProductivityReportCached();
         if (!active) return;
 
         const lastStatus = lastReport.ok ? lastReport.payload?.status : null;
@@ -639,8 +819,8 @@ export default function ChatPage() {
 
             const msg =
               "📌 Abrí un **nuevo chat**, pero mantendremos tu avance.\n\n" +
-              "Estabas en **Etapa 4 (Ishikawa + 5 Porqués)**.\n\n" +
-              `- Problema (cabeza): ${problemText?.trim() ? `**${problemText.trim()}**` : "**(sin texto)**"}\n` +
+              "Estabas en **Etapa 4 (Ishikawa)**:\n\n" +
+              `- Problema: ${problemText?.trim() ? `**${problemText.trim()}**` : "**(sin texto)**"}\n\n` +
               `- Causas principales: **${mainCausesCount}**\n` +
               `- Subcausas: **${subCausesCount}**\n` +
               `- “Por qué” registrados: **${whysCount}**\n\n` +
@@ -972,6 +1152,35 @@ export default function ChatPage() {
     };
   }, [ready, authenticated, mode, chatId]);
 
+  // 2.x Cargar estado Objectives (Etapa 6)
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+    if (!chatId) return;
+
+    let active = true;
+
+    (async () => {
+      const res = await getObjectivesState(chatId);
+      if (!active) return;
+      if (!res.ok) return;
+
+      const row = res.payload?.row ?? null;
+      const stateJson = row?.state_json ?? null;
+
+      if (stateJson && typeof stateJson === "object") {
+        setObjectivesState(stateJson as ObjectivesState);
+      } else {
+        setObjectivesState(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, chatId]);
+
+
   const restoredWizardRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -985,7 +1194,7 @@ export default function ChatPage() {
       // Evita re-restaurar en loop para el mismo chatId
       if (restoredWizardRef.current === chatId) return;
 
-      const ctx = await getPlanContextStatus();
+      const ctx = await getPlanContextStatusCached();
       if (!active) return;
       if (!ctx.ok) return;
 
@@ -1990,6 +2199,35 @@ export default function ChatPage() {
     }
   }
 
+  async function getPlanContextStatusCached(opts?: { force?: boolean }): Promise<PlanContextStatus> {
+    const force = Boolean(opts?.force);
+    const now = Date.now();
+
+    const cache = planContextCacheRef.current;
+
+    if (!force && cache?.data?.status === "confirmed") return cache.data;
+    if (!force && cache && now - cache.at < 30_000) return cache.data;
+
+    const fresh = await getPlanContextStatus();
+    planContextCacheRef.current = { at: now, data: fresh };
+    return fresh;
+  }
+
+  async function getLastProductivityReportCached(opts?: { force?: boolean }): Promise<LastProductivityReport> {
+    const force = Boolean(opts?.force);
+    const now = Date.now();
+
+    const cache = lastProdReportCacheRef.current;
+    const cachedStatus = cache?.data?.payload?.status ?? null;
+
+    if (!force && cache?.data?.ok && cachedStatus === "validated") return cache.data;
+    if (!force && cache && now - cache.at < 30_000) return cache.data;
+
+    const fresh = await getLastProductivityReport();
+    lastProdReportCacheRef.current = { at: now, data: fresh };
+    return fresh;
+  }
+
   async function createAdvisorChatOnly(): Promise<{ ok: boolean; chatId: string | null; payload: any }> {
     const authHeaders = await getAuthHeaders();
 
@@ -2332,12 +2570,13 @@ export default function ChatPage() {
   }
 
   async function saveFodaState(state: any) {
+    // En autosave no debemos romper UX ni disparar overlay con console.error
     if (!accessToken) {
-      console.warn("[FODA] Intento de guardado sin accessToken. Se omite.");
-      return;
+      return { ok: false as const, skipped: true as const, reason: "NO_ACCESS_TOKEN" as const };
     }
 
     const authHeaders = await getAuthHeaders();
+
     const res = await fetch("/api/plans/foda/state", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
@@ -2345,11 +2584,16 @@ export default function ChatPage() {
     });
 
     const json = await res.json().catch(() => null);
+
+    // criterio correcto: ok si HTTP ok y el JSON no dice explícitamente ok:false
     const ok = res.ok && json?.ok !== false;
+
     if (!ok) {
-      console.error("[FODA] save state failed", { status: res.status, json });
+      // ⚠️ warn (no error) para que no salga el overlay rojo de Next
+      console.warn("[FODA] autosave failed (non-blocking)", { status: res.status, json });
     }
-    return { ok };
+
+    return { ok, status: res.status, json };
   }
 
   async function callFodaAssistant(input: {
@@ -2420,13 +2664,14 @@ export default function ChatPage() {
       const ok = res.ok && json?.ok !== false;
 
       if (!ok) {
-        console.error("[BRAINSTORM] save state failed", {
+        console.warn("[BRAINSTORM] save state failed", {
           status: res.status,
           contentType,
           json,
           text,
         });
       }
+
       return { ok };
   }
 
@@ -2501,19 +2746,92 @@ export default function ChatPage() {
   }
 
   async function saveIshikawaState(state: IshikawaState, chatId?: string | null) {
+    try {
+      if (!accessToken) {
+        console.warn("[ISHIKAWA] Intento de guardado sin accessToken. Se omite.");
+        return { ok: false };
+      }
+
+      const effectiveChatId = chatId ?? chatIdRef.current ?? null;
+      if (!effectiveChatId) {
+        console.warn("[ISHIKAWA] No hay chatId para guardar state. Se omite.");
+        return { ok: false };
+      }
+
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch("/api/plans/ishikawa/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ state, chatId: effectiveChatId }),
+      });
+
+      const contentType = res.headers.get("content-type") ?? "";
+      let json: any = null;
+      let text: string | null = null;
+
+      if (contentType.includes("application/json")) {
+        json = await res.json().catch(() => null);
+      } else {
+        text = await res.text().catch(() => null);
+      }
+
+      const ok = res.ok && json?.ok !== false;
+
+      // ⚠️ IMPORTANTE: NO usar console.error aquí (provoca overlay rojo en Next)
+      if (!ok) {
+        console.warn("[ISHIKAWA] save state failed", {
+          status: res.status,
+          contentType,
+          json,
+          text,
+        });
+      }
+
+      return { ok };
+    } catch (e: any) {
+      // ⚠️ IMPORTANTE: NO usar console.error aquí (provoca overlay rojo)
+      console.warn("[ISHIKAWA] save state exception", { message: e?.message ?? String(e) });
+      return { ok: false };
+    }
+  }
+
+
+  async function validateIshikawa() {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch("/api/plans/ishikawa/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: chatIdRef.current }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
+
+  async function getParetoState() {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch("/api/plans/pareto/state", { headers: { ...authHeaders } });
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function saveParetoState(state: ParetoState, chatId?: string | null) {
     if (!accessToken) {
-      console.warn("[ISHIKAWA] Intento de guardado sin accessToken. Se omite.");
+      console.warn("[PARETO] Guardado sin accessToken. Se omite.");
       return { ok: false };
     }
 
     const effectiveChatId = chatId ?? chatIdRef.current ?? null;
     if (!effectiveChatId) {
-      console.warn("[ISHIKAWA] No hay chatId para guardar state. Se omite.");
+      console.warn("[PARETO] No hay chatId para guardar state. Se omite.");
       return { ok: false };
     }
 
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/ishikawa/state", {
+    const res = await fetch("/api/plans/pareto/state", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({ state, chatId: effectiveChatId }),
@@ -2522,11 +2840,129 @@ export default function ChatPage() {
     const json = await res.json().catch(() => null);
     const ok = res.ok && json?.ok !== false;
 
-    if (!ok) {
-      console.error("[ISHIKAWA] save state failed", { status: res.status, json });
-    }
+    if (!ok) console.error("[PARETO] save state failed", { status: res.status, json });
     return { ok };
   }
+
+  async function callParetoAssistant(input: {
+    studentMessage: string;
+    paretoState: ParetoState;
+    caseContext: Record<string, unknown> | null;
+  }) {
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch("/api/plans/pareto/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        studentMessage: input.studentMessage,
+        paretoState: input.paretoState,
+        caseContext: input.caseContext ?? null,
+        recentHistory: buildRecentHistoryForAssistant(10),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function validatePareto() {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch("/api/plans/pareto/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: chatIdRef.current }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
+
+  async function getObjectivesState(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) return { ok: false as const, payload: null };
+
+    const res = await fetch(`/api/plans/objectives/state?chatId=${encodeURIComponent(cid)}`, {
+      headers: { ...authHeaders },
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function saveObjectivesState(state: ObjectivesState, effectiveChatId?: string | null) {
+    if (!accessToken) {
+      console.warn("[OBJECTIVES] Guardado sin accessToken. Se omite.");
+      return { ok: false as const };
+    }
+
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) {
+      console.warn("[OBJECTIVES] No hay chatId para guardar state. Se omite.");
+      return { ok: false as const };
+    }
+
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch("/api/plans/objectives/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid, stateJson: state }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    if (!ok) console.error("[OBJECTIVES] save state failed", { status: res.status, json });
+    return { ok: ok as boolean };
+  }
+
+  async function callObjectivesAssistant(input: {
+    studentMessage: string;
+    objectivesState: ObjectivesState;
+    caseContext: Record<string, unknown> | null;
+    effectiveChatId?: string | null;
+  }) {
+    const authHeaders = await getAuthHeaders();
+    const cid = input.effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/objectives/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        chatId: cid,
+        studentMessage: input.studentMessage,
+        objectivesState: input.objectivesState,
+        caseContext: input.caseContext ?? null,
+        recentHistory: buildRecentHistoryForAssistant(10),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function validateObjectives(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/objectives/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
+
 
   async function callIshikawaAssistant(args: {
     studentMessage: string;
@@ -2632,12 +3068,108 @@ export default function ChatPage() {
           await persistMessageDB({ chatId: effectiveChatId, role: "user", content: text });
         }
 
-        const ctx = await getPlanContextStatus();
+        const ctx = await getPlanContextStatusCached();
         const confirmedLike = ctx.status === "confirmed" || isContextComplete(ctx.contextJson);
         const intentC = detectStage0Intent(text);
-        const lastReport = await getLastProductivityReport();
+        const lastReport = await getLastProductivityReportCached();
         const lastStatus = lastReport.ok ? lastReport.payload?.status : null;
         const isStage1Validated = lastStatus === "validated";
+
+        // ================================
+        // ETAPA 6: Objetivos (en progreso)
+        // ================================
+        if (objectivesState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+          const assistant = await callObjectivesAssistant({
+            studentMessage: text,
+            objectivesState,
+            caseContext: (ctx.contextJson ?? null) as any,
+            effectiveChatId,
+          });
+
+          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            await appendAssistant("⚠️ No pude procesar tus objetivos. ¿Puedes escribir 1 propuesta de **objetivo general** en una sola oración?");
+            return;
+          }
+
+          const nextState = assistant.payload.updates.nextState as ObjectivesState;
+
+          setObjectivesState(nextState);
+          await saveObjectivesState(nextState, effectiveChatId);
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          // Si llega a review, intentamos validar y cerrar la etapa 6
+          if (nextState.step === "review" && isObjectivesReadyForValidation(nextState)) {
+            const v = await validateObjectives(effectiveChatId);
+            if (!v.ok) {
+              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 6 (Objetivos).";
+              await appendAssistant(`⚠️ ${msg}`);
+              return;
+            }
+            if (v.payload?.valid) {
+              await appendAssistant("✅ **Etapa 6 (Objetivos) finalizada**. Cuando estés listo, pasamos a la **Etapa 7 (Plan de mejora)**.");
+            }
+          }
+
+
+          return;
+        }
+
+        // ================================
+        // ETAPA 5: Pareto (en progreso)
+        // ================================
+        if (paretoState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+          const assistant = await callParetoAssistant({
+            studentMessage: text,
+            paretoState,
+            caseContext: (ctx.contextJson ?? null) as any,
+          });
+
+          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            await appendAssistant("⚠️ No pude procesar tu avance en Pareto. ¿Puedes reformular en 1–2 líneas lo que hiciste?");
+            return;
+          }
+
+          const nextState = assistant.payload.updates.nextState as ParetoState;
+
+          setParetoState(nextState);
+          await saveParetoState(nextState, effectiveChatId);
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          // Si el assistant marcó done, intentamos validar y cerrar Etapa 5
+          if (nextState.step === "done") {
+            const v = await validatePareto();
+            if (!v.ok) {
+              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado el top 20%.";
+              await appendAssistant(`⚠️ ${msg}`);
+              return;
+            }
+            await appendAssistant(
+              "✅ **Etapa 5 (Pareto) finalizada**.\n\n" +
+              "Ahora iniciamos la **Etapa 6: Objetivos del Plan de Mejora**.\n\n" +
+              "👉 Primero redactemos el **Objetivo General** (1 sola oración):\n" +
+              "¿Qué vas a lograr atacando esas causas críticas?"
+            );
+
+            // Iniciar ObjectivesState (vacío) y guardarlo
+            const initialObjectives: ObjectivesState = {
+              generalObjective: "",
+              specificObjectives: [],
+              linkedCriticalRoots: [],
+              step: "general",
+            };
+
+            setObjectivesState(initialObjectives);
+            await saveObjectivesState(initialObjectives, effectiveChatId);
+
+            // (Opcional recomendable) desactivar ParetoState para que no lo siga capturando:
+            setParetoState(null);
+
+          }
+
+          return;
+        }
 
         // ================================
         // ETAPA 4: Ishikawa (fluido con assistant)
@@ -2674,6 +3206,47 @@ export default function ChatPage() {
               : (typeof ishikawaState.problem?.text === "string" ? ishikawaState.problem.text : "");
 
           if (!problemText.trim()) {
+            const hasConversation = messagesRef.current.length > 0;
+
+            // ✅ Si ya hay conversación, NO asumas que estamos empezando Ishikawa.
+            // Probablemente llegó un ishikawaState desfasado/vacío (race).
+            if (hasConversation) {
+              const resIshFresh = await getIshikawaState({ ignoreChatId: false });
+              const freshState = resIshFresh.ok && resIshFresh.payload?.exists && resIshFresh.payload?.state
+                ? (resIshFresh.payload.state as IshikawaState)
+                : null;
+
+              if (freshState) {
+                setIshikawaState(freshState);
+                await saveIshikawaState(freshState, effectiveChatId);
+
+                // No agregamos ningún mensaje robótico.
+                // Reintentamos el flujo normal (Gemini) con el state ya sincronizado.
+                const ai = await callIshikawaAssistant({
+                  studentMessage: text,
+                  ishikawaState: freshState,
+                  caseContext: ctx?.contextJson ?? null,
+                  stage1Summary: null,
+                  brainstormState: null,
+                });
+
+                if (ai.ok) {
+                  setIshikawaState(ai.nextState);
+                  await saveIshikawaState(ai.nextState, effectiveChatId);
+                  await appendAssistant(ai.assistantMessage);
+                } else {
+                  await appendAssistant("⚠️ Estoy detectando que el Ishikawa no tiene el problema cargado. ¿Puedes volver a pegar el problema principal en 1 línea?");
+                }
+
+                return;
+              }
+
+              // Si no logramos refrescar el state, pedimos el problema sin reiniciar el chat.
+              await appendAssistant("⚠️ Parece que no tengo el **problema principal** en el Ishikawa. Pégalo en **1 línea** y seguimos con la misma categoría.");
+              return;
+            }
+
+            // ✅ Caso real de inicio (no hay conversación): aquí sí tomamos el primer mensaje como problema.
             const next: IshikawaState = {
               ...ishikawaState,
               problem: { text: text.trim().slice(0, 240) },
@@ -2681,21 +3254,21 @@ export default function ChatPage() {
             setIshikawaState(next);
             await saveIshikawaState(next, effectiveChatId);
 
+            // 🔁 En vez de un texto robótico fijo, pedimos 1ra causa de forma corta y natural:
             await appendAssistant(
-              "✅ Perfecto. Ya tengo el problema.\n\n" +
-              "Ahora empecemos con el **causa–efecto**.\n" +
-              "Dime **una causa** (como te salga, en texto normal) y yo la ubico en la categoría correcta.\n\n" +
-              "Después te voy guiando con **porqués**, para ir llegando a la causa raíz."
+              "Perfecto — ya registré el problema. 🙌\n\n" +
+              "Ahora dime **una causa concreta** (qué pasa / dónde pasa) y la ubico en Hombre/Máquina/Método/etc., y empezamos con los **¿por qué?**."
             );
             return;
           }
+
 
           // ✅ Si el usuario solo confirma (OK/Sí) al iniciar Ishikawa, NO lo mandamos al assistant.
           // Esto evita el loop de “No pude ubicar tu respuesta”.
           const tConfirm = normalizeText(text).trim();
 
           // ✅ Acepta confirmaciones aunque tengan texto extra: "ok, está bien", "sí ok", "listo entonces"
-          const isConfirmOnly = /^(ok|okey|okay|si|listo|dale|vamos)\b/.test(tConfirm);
+          const isConfirmOnly = /^(ok|okey|okay|si|sí|listo|dale|vamos)\s*[!.?,]*\s*$/.test(tConfirm);
 
           const hasAnyCauses = (ishikawaState.categories ?? []).some((c) => {
             const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
@@ -2719,6 +3292,59 @@ export default function ChatPage() {
             return;
           }
 
+          // Si ya estábamos pidiendo confirmación para pasar a Pareto
+          if (ishikawaClosePending && isIshikawaReadyToClose(ishikawaState)) {
+            if (wantsAdvanceStage(text)) {
+              const v = await validateIshikawa();
+              if (!v.ok) {
+                const msg = v.payload?.message ?? "No se pudo cerrar Etapa 4.";
+                await appendAssistant(`⚠️ ${msg}`);
+                return;
+              }
+
+              const roots = Array.isArray(v.payload?.roots) ? (v.payload.roots as string[]) : [];
+              const selected = roots.slice(0, 15);
+
+              const initialPareto: ParetoState = {
+                roots,
+                selectedRoots: selected,
+                criteria: [
+                  { id: crypto.randomUUID(), name: "Impacto" },
+                  { id: crypto.randomUUID(), name: "Frecuencia" },
+                  { id: crypto.randomUUID(), name: "Controlabilidad" },
+                ],
+                criticalRoots: [],
+                minSelected: 10,
+                maxSelected: 15,
+                step: "select_roots",
+              };
+
+              setIshikawaClosePending(false);
+              setParetoState(initialPareto);
+              await saveParetoState(initialPareto, effectiveChatId);
+
+              const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
+
+              await appendAssistant(
+                "✅ Listo, cerramos **Etapa 4 (Ishikawa)** y pasamos a **Etapa 5 (Pareto)**.\n\n" +
+                  "Primero trabajaremos con tus **causas raíz** (10–15). Aquí tienes una lista inicial:\n\n" +
+                  list +
+                  "\n\n" +
+                  "👉 Si quieres **quitar/combinar** alguna, dime cuáles. Si está bien, responde **OK** y pasamos a definir **pesos (1–10)** para los 3 criterios."
+              );
+
+              return;
+            }
+
+            if (wantsKeepAdding(text)) {
+              setIshikawaClosePending(false);
+              // seguimos normal para refinar
+            } else {
+              await appendAssistant("¿Quieres **pasar a Pareto (Etapa 5)** o **seguir refinando** Ishikawa?");
+              return;
+            }
+          }
+
           // 2) Ya hay problema: delegamos al assistant para clasificar + guiar + 5 porqués
           const assistant = await callIshikawaAssistant({
             studentMessage: text,
@@ -2733,6 +3359,15 @@ export default function ChatPage() {
           await saveIshikawaState(nextState, effectiveChatId);
 
           await appendAssistant(assistant.assistantMessage);
+
+          // ✅ Si ya cumple mínimos, pedimos confirmación natural para pasar a Pareto
+          if (isIshikawaReadyToClose(nextState)) {
+            setIshikawaClosePending(true);
+            await appendAssistant(
+              "✅ Ya tienes una estructura suficiente en Ishikawa. " +
+                "¿Quieres **pasar a la Etapa 5 (Pareto)** o **seguir refinando** causas?"
+            );
+          }
           return;
         }
 
@@ -2754,15 +3389,25 @@ export default function ChatPage() {
                 return;
               }
 
+              const problemFromBrainstorm = (brainstormState?.problem?.text ?? "").trim();
+              const problemFromFoda = (typeof (fodaState as any)?.problem === "string"
+                ? ((fodaState as any).problem as string)
+                : ((fodaState as any)?.problem?.text ?? "")
+              ).trim();
+
+              const problemFromContext = (ctx?.contextJson?.problem?.text ?? ctx?.contextJson?.problem ?? "").toString().trim();
+
+              const finalProblem = (problemFromBrainstorm || problemFromFoda || problemFromContext).trim();
+
               const initialIshikawa: IshikawaState = {
-                problem: brainstormState?.problem?.text ? { text: brainstormState.problem.text } : null,
+                problem: finalProblem ? { text: finalProblem } : null,
                 categories: [
-                  { id: crypto.randomUUID(), name: "Hombre (Mano de obra)", mainCauses: [] },
-                  { id: crypto.randomUUID(), name: "Máquina", mainCauses: [] },
-                  { id: crypto.randomUUID(), name: "Método", mainCauses: [] },
-                  { id: crypto.randomUUID(), name: "Material", mainCauses: [] },
-                  { id: crypto.randomUUID(), name: "Medición", mainCauses: [] },
-                  { id: crypto.randomUUID(), name: "Entorno (Medio ambiente)", mainCauses: [] },
+                    { id: "cat_hombre", name: "Hombre", mainCauses: [] },
+                    { id: "cat_maquina", name: "Máquina", mainCauses: [] },
+                    { id: "cat_metodo", name: "Método", mainCauses: [] },
+                    { id: "cat_material", name: "Material", mainCauses: [] },
+                    { id: "cat_medida", name: "Medición", mainCauses: [] },
+                    { id: "cat_entorno", name: "Entorno (Medio ambiente)", mainCauses: [] },
                 ],
                 minCategories: 4,
                 minMainCausesPerCategory: 3,
@@ -4127,12 +4772,12 @@ export default function ChatPage() {
         window.sessionStorage.removeItem(`optia-messages-${clientId}-plan_mejora`);
       } catch {}
 
-      // ✅ 1) Flush inmediato del estado antes de cambiar de chat (evita perder el último avance por debounce)
+      // FODA aún no tiene persistencia backend.
+      // Se guarda solo en memoria hasta cierre de etapa.
       try {
         if (saveFodaTimerRef.current) window.clearTimeout(saveFodaTimerRef.current);
-        if (fodaState) await saveFodaState(fodaState);
       } catch {
-        // no rompemos UX
+        // noop
       }
 
       try {

@@ -207,15 +207,15 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
   }, [menuOpenFor]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       <button
         onClick={onNewChat}
-        className="mb-4 w-full rounded-lg bg-sky-500 hover:bg-sky-600 text-sm font-medium py-2 transition"
+        className="sticky top-0 z-20 mb-4 w-full rounded-lg bg-sky-500 hover:bg-sky-600 text-sm font-medium py-2 transition"
       >
         + Nuevo chat
       </button>
 
-      <div className="flex-1 space-y-2 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
         {isLoading && <div className="text-xs text-slate-400 mb-2">Cargando chats...</div>}
 
         {!isLoading && chats.length === 0 && (
@@ -264,9 +264,6 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                   )}
                 </div>
 
-                <div className="text-[10px] text-slate-500">
-                  {new Date(chat.createdAt).toLocaleString()}
-                </div>
               </button>
 
               {/* 3 puntos: solo hover o activo */}
@@ -278,9 +275,10 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                     setMenuOpenFor((prev) => (prev === chat.id ? null : chat.id));
                   }}
                   className={clsx(
-                    "absolute right-2 top-2 rounded-md px-2 py-1",
+                    "absolute right-1 top-1/2 -translate-y-1/2 rounded-md",
+                    "h-5 w-8 flex items-center justify-center",
                     "text-slate-100 hover:bg-white/15",
-                    "text-base",
+                    "text-base leading-none",
                     isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                   )}
                   title="Opciones"

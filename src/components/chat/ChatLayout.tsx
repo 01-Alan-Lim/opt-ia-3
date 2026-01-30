@@ -27,7 +27,9 @@ export function ChatLayout({ sidebar, children, sidebarOpen }: ChatLayoutProps) 
         >
           <div className="h-full rounded-2xl border border-white/10 bg-white/5 backdrop-blur-2xl shadow-xl overflow-hidden">
             {/* 👇 aquí el sidebar puede scrollear internamente */}
-            <div className="h-full overflow-y-auto">{sidebarOpen && sidebar}</div>
+            <div className="h-full pl-3 pr-1 py-3">
+              {sidebarOpen && sidebar}
+            </div>
           </div>
         </aside>
 
@@ -36,7 +38,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen }: ChatLayoutProps) 
           <div
             className={clsx(
               "flex-1 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-2xl shadow-2xl",
-              "flex flex-col px-6 py-4 overflow-hidden"
+              "flex flex-col pl-6 pr-2 py-4 overflow-hidden"
             )}
           >
             {/* Contenedor interno con min-h-0 para que MessageList scrollee bien */}

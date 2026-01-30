@@ -61,6 +61,162 @@ function extractJsonSafe(raw: string) {
   return null;
 }
 
+function normalizeWhyText(input: string) {
+  let t = (input ?? "").trim();
+
+  t = t.replace(/^(si|sí|pues|bueno|ok|mmm)\s*,?\s*/i, "");
+  t = t.replace(/^(creo que|pienso que|diría que)\s+/i, "");
+  t = t.replace(/^(porque|por que)\s+/i, "");
+
+  if (t.length) t = t[0].toUpperCase() + t.slice(1);
+
+  return t;
+}
+
+function isVagueWhyAnswer(input: string) {
+  const t = (input ?? "").trim().toLowerCase();
+  if (!t) return true;
+
+  // Muy corto = probablemente poco útil
+  if (t.length < 10) return true;
+
+  // Respuestas típicas vagas
+  if (
+    /^(no se|no sé|ni idea|nose|quiz(a|á)|tal vez|creo|pienso|supongo|puede ser|por ahi|por ahí)/.test(t)
+  ) {
+    return true;
+  }
+
+  // Frases tipo "por mirar / a ojo" sin causa concreta
+  if (/(por mirar|a ojo|solo mirando|me parece|como que)/.test(t)) return true;
+
+  return false;
+}
+
+function isNonCausalMessage(input: string) {
+  const t = (input ?? "").toLowerCase().trim();
+  if (!t) return true;
+
+  // Intenciones de navegación / control
+  if (
+    t.includes("continuemos") ||
+    t.includes("sigamos") ||
+    t.includes("ahora trabajemos") ||
+    t.includes("ahora quiero trabajar") ||
+    t.includes("pasemos a") ||
+    t.includes("siguiente categoria") ||
+    t.includes("otra categoria") ||
+    t.includes("material") ||
+    t.includes("metodo") ||
+    t.includes("maquina") ||
+    t.includes("mano de obra")
+  ) {
+    return true;
+  }
+
+  // Preguntas meta
+  if (
+    t.startsWith("que temas") ||
+    t.startsWith("qué temas") ||
+    t.startsWith("en que estamos") ||
+    t.startsWith("qué estamos viendo") ||
+    t.includes("que causa estamos")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildClarifyWhyMessage(studentMessage: string) {
+  const raw = (studentMessage ?? "").trim();
+  const t = raw.toLowerCase();
+
+  // Tomamos el texto normalizado pero lo "profesionalizamos" (sin jejeje/jaja/xd)
+  const hint0 = normalizeWhyText(raw);
+  const hint = hint0
+    .replace(/\b(jeje+|jaja+|haha+|xd+|xD+)\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  // Detectar tema para que las opciones SÍ tengan sentido
+  const topic =
+    /(pago|salari|sueldo|bono|incentiv|remuner|comisi)/.test(t) ? "comp" :
+    /(inter[eé]s|desmotiv|motiv|clima|cultura|actitud)/.test(t) ? "mot" :
+    /(supervis|jefe|encargad|lider|control|seguim|disciplina)/.test(t) ? "lead" :
+    /(manual|sop|proced|est[aá]ndar|instruct|checklist)/.test(t) ? "std" :
+    /(capacit|inducci|entren|formaci)/.test(t) ? "trn" :
+    /(manten|inspecci|lubric|desgaste|calibr|falla|aver[ií]a)/.test(t) ? "mnt" :
+    /(recurso|presup|dinero|tiempo|personal|apoyo)/.test(t) ? "res" :
+    "gen";
+
+  const optionsByTopic: Record<string, string[]> = {
+    comp: [
+      "Pago/bono no está ligado al desempeño (no hay incentivo por orden, disciplina o productividad)",
+      "Pagos atrasados o variabilidad en pagos (afecta asistencia/compromiso)",
+      "Percepción de inequidad salarial (desmotiva y baja el seguimiento)",
+      "No existen metas/KPIs claros para el rol del supervisor (no se prioriza control/orden)",
+    ],
+    mot: [
+      "Cultura sin disciplina operativa (no hay hábitos de orden/5S sostenidos)",
+      "Falta de reglas claras y consecuencias (se tolera el desorden)",
+      "Alta rotación o baja cohesión (nadie “se hace cargo” del estándar)",
+      "El equipo no ve impacto/beneficio de mantener orden (no hay retroalimentación)",
+    ],
+    lead: [
+      "No hay rutina de supervisión (rondas, checklist, reuniones cortas de seguimiento)",
+      "Roles y responsables poco claros (nadie es dueño del orden del área)",
+      "Supervisor sin herramientas/metodología (no sabe cómo controlar/estandarizar)",
+      "No existen indicadores visibles (tiempos, paros menores, 5S, auditorías)",
+    ],
+    std: [
+      "No existe SOP/checklist (cada operador trabaja a su manera)",
+      "Existe SOP, pero no se cumple (falta control/auditoría)",
+      "El procedimiento no es claro o no está disponible en el puesto",
+      "Cambios de turno/formatos sin estándar de set-up/limpieza",
+    ],
+    trn: [
+      "No hay inducción formal (aprenden 'por mirar')",
+      "No hay matriz de habilidades/certificación por puesto",
+      "Capacitación es ocasional y sin material (SOP/guía/checklist)",
+      "Supervisor no tiene tiempo/estructura para capacitar (no hay rutina)",
+    ],
+    mnt: [
+      "Mantenimiento preventivo insuficiente (solo correctivo)",
+      "Fallas recurrentes sin análisis de causa (se repiten paros)",
+      "Falta inspección/ajustes antes de operar (condición del equipo)",
+      "No hay repuestos/planificación para fallas típicas",
+    ],
+    res: [
+      "Falta de personal/tiempo para sostener orden y seguimiento",
+      "Demanda alta/urgencias desplazan tareas de control (5S, capacitación, inspección)",
+      "No hay herramientas/espacio definido (orden difícil de mantener)",
+      "El supervisor está saturado (no puede ejecutar rutina de control)",
+    ],
+    gen: [
+      "Falta de estándar (no hay un 'modo único' de hacerlo)",
+      "Falta de control/seguimiento (no se verifica cumplimiento)",
+      "Falta de capacitación/inducción (no dominan el método)",
+      "Falta de recursos/tiempo (se deja de hacer lo necesario)",
+    ],
+  };
+
+  const opts = optionsByTopic[topic] ?? optionsByTopic.gen;
+
+  const numbered =
+    opts.slice(0, 4).map((o, i) => `${i + 1}) ${o}`).join("\n");
+
+  return (
+    `Entiendo tu punto${hint ? ` (**${hint}**)` : ""}, pero aún está **muy general**.\n` +
+    `Para volverlo una causa raíz accionable, necesito que lo concretes como: **mecanismo + evidencia**.\n\n` +
+    `Elige UNA opción (o escribe una propia más precisa):\n` +
+    `${numbered}\n\n` +
+    `👉 ¿Cuál aplica más en tu caso y qué evidencia concreta tienes? (ej.: “no hay checklist”, “no hay rutina de supervisión”, “pagos atrasados 2 semanas”, “no hay KPI del supervisor”).`
+  );
+}
+
+
+
 async function llmText(prompt: string) {
   const model = getGeminiModel();
   const result = await model.generateContent(prompt);
@@ -132,6 +288,17 @@ function hasAnyMainCause(state: IshikawaState) {
   return Array.isArray(state.categories) && state.categories.some((c) => Array.isArray(c.mainCauses) && c.mainCauses.length > 0);
 }
 
+function hasAnyIshikawaWork(state: IshikawaState) {
+  if (state.cursor?.categoryId) return true;
+
+  return Array.isArray(state.categories) && state.categories.some((c) =>
+    (c.mainCauses ?? []).some((mc) =>
+      (mc.subCauses ?? []).some((sc) => (sc.whys?.length ?? 0) > 0 || (sc.name ?? sc.text))
+    )
+  );
+}
+
+
 function guessCategoryIdFromText(state: IshikawaState, text: string): string | null {
   const t = (text ?? "").toLowerCase();
 
@@ -185,39 +352,34 @@ function buildIshikawaMap(state: IshikawaState) {
     const count = c.mainCauses?.length ?? 0;
     lines.push(`- ${c.name}: ${count}/${state.minMainCausesPerCategory} causas principales`);
   }
-
     lines.push("");
-    lines.push("🧩 Mapa (con niveles):");
 
-    const IND0 = "";
-    const IND1 = "  ├─ ";
-    const IND2 = "  │   ├─ ";
-    const IND3 = "  │   │   ├─ ";
+    lines.push("🧩 Mapa:");
 
     for (const c of state.categories ?? []) {
-    // solo mostrar categoría si tiene algo (o muéstralas todas si quieres)
-    const has = (c.mainCauses?.length ?? 0) > 0;
-
-    lines.push(`${IND0}• ${c.name}`);
+    lines.push(`▶ ${c.name}`);
 
     for (const mc of c.mainCauses ?? []) {
         const mcName = mc.name ?? mc.text ?? "(sin nombre)";
-        lines.push(`${IND1}${mcName}`);
+        lines.push(`    ◆ ${mcName}`);
 
         for (const sc of mc.subCauses ?? []) {
-        const scName = sc.name ?? sc.text ?? "(sin nombre)";
-        lines.push(`${IND2}${scName}`);
+          const scName = sc.name ?? sc.text ?? "(sin nombre)";
+          lines.push(`      - ${scName}`);
 
-        const whys = (sc.whys ?? [])
-            .map(w => typeof w === "string" ? w : (w.text ?? ""))
-            .filter(Boolean);
+          const whys = (sc.whys ?? [])
+              .map(w => (typeof w === "string" ? w : (w.text ?? "")))
+              .filter(Boolean);
 
-        for (let i = 0; i < whys.length; i++) {
-            lines.push(`${IND3}${i + 1}) ${whys[i]}`);
-        }
+          for (let i = 0; i < whys.length; i++) {
+              lines.push(`          ${i + 1}) ${whys[i]}`);
+          }
         }
     }
-    }
+
+      // espacio entre categorías
+       lines.push("");
+  }
 
 
   // Rama activa
@@ -232,6 +394,314 @@ function buildIshikawaMap(state: IshikawaState) {
 
   return lines.join("\n");
 }
+
+function normalizeText(x: unknown) {
+  return (typeof x === "string" ? x : "").trim();
+}
+
+function mergeIshikawaState(prev: IshikawaState, incoming: IshikawaState): IshikawaState {
+  // 1) Problema: no dejar que se borre
+  const prevProblem =
+    typeof prev.problem === "string" ? prev.problem : prev.problem?.text ?? "";
+  const incProblem =
+    typeof incoming.problem === "string" ? incoming.problem : incoming.problem?.text ?? "";
+
+  const problemText = normalizeText(incProblem) || normalizeText(prevProblem);
+
+  // 2) Categorías por ID: preservar prev y aplicar incoming por id
+  const prevCats = prev.categories ?? [];
+  const incCats = incoming.categories ?? [];
+
+  const prevById = new Map(prevCats.map(c => [c.id, c]));
+  const outCats: IshikawaCategory[] = [];
+
+  // primero, recorremos incoming (aplica cambios)
+  for (const ic of incCats) {
+    const pc = prevById.get(ic.id);
+
+    if (!pc) {
+      // categoría nueva
+      outCats.push(ic);
+      continue;
+    }
+
+    // merge mainCauses por id
+    const prevMainById = new Map((pc.mainCauses ?? []).map(m => [m.id, m]));
+    const mergedMain: IshikawaCategory["mainCauses"] = [];
+
+    for (const im of ic.mainCauses ?? []) {
+      const pm = prevMainById.get(im.id);
+      if (!pm) {
+        mergedMain.push(im);
+        continue;
+      }
+
+      // merge subCauses por id
+      const prevSubById = new Map((pm.subCauses ?? []).map(s => [s.id, s]));
+      const mergedSub: typeof pm.subCauses = [];
+
+      for (const is of im.subCauses ?? []) {
+        const ps = prevSubById.get(is.id);
+        if (!ps) {
+          mergedSub.push(is);
+          continue;
+        }
+
+        // whys: si incoming trae whys vacío, conservar prev
+        const incWhys = Array.isArray(is.whys) ? is.whys : [];
+        const prevWhys = Array.isArray(ps.whys) ? ps.whys : [];
+        const whys = incWhys.length ? incWhys : prevWhys;
+
+        mergedSub.push({
+          ...ps,
+          ...is,
+          whys,
+        });
+
+        prevSubById.delete(is.id);
+      }
+
+      // agregar subcauses que existían antes y no vinieron en incoming (no borrar)
+      for (const leftover of prevSubById.values()) mergedSub.push(leftover);
+
+      mergedMain.push({
+        ...pm,
+        ...im,
+        subCauses: mergedSub,
+      });
+
+      prevMainById.delete(im.id);
+    }
+
+    // agregar maincauses prev que no vinieron (no borrar)
+    for (const leftover of prevMainById.values()) mergedMain.push(leftover);
+
+    outCats.push({
+      ...pc,
+      ...ic,
+      mainCauses: mergedMain,
+    });
+
+    prevById.delete(ic.id);
+  }
+
+  // luego, agregamos categorías prev que no vinieron (no borrar)
+  for (const leftover of prevById.values()) outCats.push(leftover);
+
+  return {
+    ...prev,
+    ...incoming,
+    problem: problemText ? { text: problemText } : prev.problem,
+    categories: outCats,
+  };
+}
+
+
+function isShortFastPathCandidate(text: string) {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+
+  const lower = t.toLowerCase();
+
+  // No fast-path si está pidiendo explicación o resumen
+  if (
+    lower.includes("explica") ||
+    lower.includes("no entiendo") ||
+    lower.includes("ayuda") ||
+    lower.includes("resumen") ||
+    lower.includes("mapa") ||
+    lower.includes("situacion actual") ||
+    lower.includes("situación actual")
+  ) {
+    return false;
+  }
+
+  // Si es pregunta o muy largo, mejor LLM
+  if (t.includes("?")) return false;
+  if (t.length > 100) return false;
+
+  return true;
+}
+
+function isCloseBranchConfirm(text: string) {
+  const t = (text ?? "").toLowerCase();
+  return /(cerrar|cerremos|cerramos|cerrar ahi|cerrar ahí|de acuerdo cerrar|ok cerrar|si.*cerr)/.test(t);
+}
+
+function findActiveNodes(state: IshikawaState) {
+  const catId = state.cursor?.categoryId;
+  const mcId = state.cursor?.mainCauseId;
+  const scId = state.cursor?.subCauseId;
+
+  if (!catId || !mcId) return null;
+
+  const cat = state.categories.find((c) => c.id === catId);
+  if (!cat) return null;
+
+  const mc = cat.mainCauses.find((m) => m.id === mcId);
+  if (!mc) return null;
+
+  const sc = scId ? mc.subCauses.find((s) => s.id === scId) : null;
+
+  return { cat, mc, sc };
+}
+
+function safeClone<T>(obj: T): T {
+  return JSON.parse(JSON.stringify(obj)) as T;
+}
+
+
+function pick<T>(arr: T[], seed: string): T {
+  // pseudo-random estable por mensaje (evita repetir siempre el primero)
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return arr[h % arr.length];
+}
+
+function buildVariedFollowUp(studentMessage: string) {
+  const raw = (studentMessage ?? "").trim();
+  const t = raw.toLowerCase();
+
+  const key = normalizeWhyText(raw);
+  const keyShort = key.length > 70 ? key.slice(0, 70).trim() + "…" : key;
+
+  const topic =
+    /(pago|salari|sueldo|bono|incentiv|remuner)/.test(t) ? "comp" :
+    /(inter[eé]s|desmotiv|motiv|clima|cultura|actitud)/.test(t) ? "mot" :
+    /(supervis|jefe|encargad|lider|control|seguim)/.test(t) ? "lead" :
+    /(manual|sop|proced|est[aá]ndar|instruct|checklist)/.test(t) ? "std" :
+    /(manten|inspecci|lubric|desgaste|calibr|falla|aver[ií]a)/.test(t) ? "mnt" :
+    /(recurso|presup|dinero|tiempo|personal|apoyo)/.test(t) ? "res" :
+    /(capacit|inducci|entren|formaci)/.test(t) ? "trn" :
+    "gen";
+
+  const openersBase = [
+    "Bien, eso apunta a una causa plausible.",
+    "Perfecto, esa pista es relevante.",
+    "Ok, vamos bien: esto puede explicar parte del problema.",
+    "Entendido. Esto nos ayuda a aterrizar la causa.",
+    "De acuerdo; ahora lo volvemos más accionable.",
+  ];
+
+  const analysisByTopic: Record<string, string[]> = {
+    comp: [
+      `Esto sugiere un tema de **incentivos/remuneración** que puede afectar compromiso y disciplina operativa.`,
+      `Esto parece conectado con **remuneración o incentivos**: cuando no hay reconocimiento, suele caer el control y el orden.`,
+      `Esto apunta a **motivación extrínseca** (pago/bonos) y puede traducirse en menos seguimiento y más variabilidad.`,
+      `Esto puede ser una causa sistémica: si la retribución no está alineada, se deteriora el desempeño sostenido.`,
+    ],
+    mot: [
+      `Esto apunta a **motivación/cultura**: cuando el equipo no está alineado, suben desorden y retrabajos.`,
+      `Esto sugiere un tema de **clima/cultura** que termina afectando disciplina y tiempos de búsqueda.`,
+      `Esto parece un problema de **comportamiento organizacional**: la disciplina cae si no hay reglas claras y seguimiento.`,
+      `Esto podría ser más “gestión” que “técnico”: falta de hábitos y control operativo.`,
+    ],
+    lead: [
+      `Esto sugiere un punto de **liderazgo y control operativo** (seguimiento, roles, consecuencias).`,
+      `Esto apunta a un problema de **gestión del supervisor**: sin seguimiento, el estándar se diluye.`,
+      `Esto puede ser una causa raíz típica: **roles/KPIs** poco claros y control inconsistente.`,
+      `Esto indica una brecha de **supervisión** que se convierte en desorden y variabilidad.`,
+    ],
+    std: [
+      `Esto sugiere falta de **estandarización (SOP/checklist)**, lo que genera variabilidad y paros.`,
+      `Esto apunta a ausencia de **procedimiento definido**, por eso el resultado depende de “quién lo hace”.`,
+      `Esto es típico de falta de estándar: sin SOP, aparecen errores y tiempos perdidos por improvisación.`,
+      `Esto conecta con estandarización: sin reglas claras, el proceso se vuelve variable y sube el tiempo muerto.`,
+    ],
+    mnt: [
+      `Esto sugiere un tema de **condición del equipo / mantenimiento**, que impacta directamente en paradas.`,
+      `Esto apunta a **fallas por mantenimiento/ajustes**, y suele evidenciarse en arranques inestables.`,
+      `Esto puede indicar falta de **inspección preventiva** o calibración; se traduce en paros repetitivos.`,
+      `Esto parece técnico: si el equipo está fuera de condición, la línea pierde disponibilidad.`,
+    ],
+    res: [
+      `Esto apunta a una restricción de **recursos/tiempo/personal** que termina afectando el control y la ejecución.`,
+      `Esto sugiere saturación: sin recursos, se sacrifica orden, capacitación o mantenimiento.`,
+      `Esto suele ser causa raíz: falta de capacidad para sostener disciplina operativa.`,
+      `Esto conecta con la gestión diaria: cuando falta tiempo/personal, el estándar se deja de cumplir.`,
+    ],
+    trn: [
+      `Esto sugiere una brecha de **capacitación/inducción**, que genera variabilidad en cómo se trabaja.`,
+      `Esto apunta a falta de **formación operativa**, por eso hay diferencias entre operadores.`,
+      `Esto suele generar errores y tiempos muertos: sin entrenamiento, el proceso no se ejecuta igual.`,
+      `Esto conecta con estandarización + entrenamiento: si no se enseña el método, cada uno improvisa.`,
+    ],
+    gen: [
+      `Esto ayuda a explicar parte del tiempo muerto y la baja de eficiencia.`,
+      `Esto encaja como una causa plausible dentro del Ishikawa.`,
+      `Esto puede estar contribuyendo al problema, pero necesitamos concretarlo.`,
+      `Esto es una buena hipótesis; ahora hay que bajarla a un mecanismo concreto.`,
+    ],
+  };
+
+  const questionsByTopic: Record<string, string[]> = {
+    comp: [
+      "¿Qué pasa en la práctica por el tema de pago: rotación, ausentismo, baja disciplina, menor seguimiento?",
+      "¿Es un tema de salario base, bonos por rendimiento, o pagos atrasados? ¿Cuál ocurre aquí?",
+      "¿Cómo se refleja esto en el proceso (más retrabajo, menos orden, más tiempos de búsqueda)?",
+      "¿Qué evidencia tienes (quejas, rotación, faltas, baja productividad) y desde cuándo ocurre?",
+      "Si se corrigiera el incentivo/pago, ¿qué comportamiento esperas que cambie primero?",
+    ],
+    mot: [
+      "¿Qué comportamiento observas exactamente (incumplimiento, desorden, retrabajo, falta de cuidado)?",
+      "¿Hay reglas claras y consecuencias, o cada turno trabaja distinto?",
+      "¿Qué indicador te muestra el impacto (tiempos de búsqueda, paros menores, retrabajo)?",
+      "¿Esto ocurre en todos los turnos o solo en uno? ¿Qué cambia entre turnos?",
+      "¿Qué acción concreta falta (5S, auditoría, líder de turno, rutina de control)?",
+    ],
+    lead: [
+      "¿Qué parte del control falla: asignación de roles, seguimiento, retroalimentación, disciplina?",
+      "¿Qué debería controlar el supervisor (checklist, rondas, KPI) y hoy no se controla?",
+      "¿Por qué no se hace seguimiento: falta de tiempo, falta de método, falta de autoridad, falta de KPI?",
+      "¿Qué evidencia lo muestra (no hay reuniones de 5 min, no hay checklist, no hay registro)?",
+      "¿Quién es el dueño del área y qué rutina de control debería existir?",
+    ],
+    std: [
+      "¿Qué parte del procedimiento no está definido (orden, limpieza, set-up, arranque, control de calidad)?",
+      "¿Existe SOP y no se cumple, o directamente no existe? ¿Cuál es tu caso?",
+      "¿Qué paso se hace distinto entre operadores/turnos?",
+      "¿Qué evidencia hay (no hay instructivo visible, nadie sabe el estándar, no hay checklist)?",
+      "Si tuvieras que escribir el checklist, ¿cuáles serían 3 puntos críticos?",
+    ],
+    mnt: [
+      "¿Qué falla exactamente (sensor, motor, guías, ajuste, lubricación) y con qué frecuencia?",
+      "¿Qué ocurre en el arranque vs. en operación continua? (solo al encender / durante el turno)",
+      "¿Hay mantenimiento preventivo planificado o es solo correctivo?",
+      "¿Qué evidencia tienes (paros repetidos, historial de fallas, piezas desgastadas)?",
+      "¿Qué condición del equipo se deja de revisar antes de iniciar turno?",
+    ],
+    res: [
+      "¿Qué recurso falta exactamente (tiempo, personal, herramientas, presupuesto) y en qué actividad impacta?",
+      "¿Qué se está dejando de hacer por falta de tiempo (orden, capacitación, inspección, control)?",
+      "¿Qué tarea se queda sin dueño cuando hay urgencias?",
+      "¿Esto es constante o por picos de demanda? ¿Cuándo empeora?",
+      "Si tuvieras 1 recurso adicional, ¿qué priorizarías para bajar el tiempo muerto?",
+    ],
+    trn: [
+      "¿Qué parte de la capacitación falta (operación, arranque, ajustes, calidad, seguridad)?",
+      "¿Hay inducción formal o es aprendizaje ‘por mirar’?",
+      "¿Quién debería capacitar y qué material falta (SOP, guía, checklist, entrenamiento práctico)?",
+      "¿En qué operación se ve más el efecto (set-up, limpieza, arranque, cambio de formato)?",
+      "¿Esto afecta a nuevos ingresos o también a personal antiguo?",
+    ],
+    gen: [
+      "¿Cuál es la razón más concreta por la que eso ocurre en tu caso?",
+      "¿Qué pasa justo antes de que ocurra ese problema?",
+      "¿Qué evidencia lo muestra (tiempos, registros, observación directa)?",
+      "¿Ocurre siempre o en ciertos turnos/condiciones?",
+      "Si tuvieras que resumirlo en una causa accionable, ¿cómo lo dirías?",
+    ],
+  };
+
+  const opener = pick(openersBase, raw + "|op");
+  const analysis = pick(analysisByTopic[topic] ?? analysisByTopic.gen, raw + "|a|" + topic);
+  const q = pick(questionsByTopic[topic] ?? questionsByTopic.gen, raw + "|q|" + topic);
+
+  // Respuesta corta, docente, variada, sin eco literal del mensaje
+  return `${opener} ${analysis}\n${q}`;
+}
+
+
 
 
 export async function POST(req: Request) {
@@ -255,6 +725,24 @@ export async function POST(req: Request) {
 
     const msgLower = studentMessage.trim().toLowerCase();
 
+    // ✅ 1) Asegurar que el problema SIEMPRE esté en ishikawaState (si viene vacío)
+    const currentProblem =
+      typeof ishikawaState.problem === "string"
+        ? ishikawaState.problem
+        : ishikawaState.problem?.text ?? "";
+
+    const ctxProblem =
+      (typeof caseContext?.problem === "string" ? caseContext.problem : "") ||
+      (typeof caseContext?.problemText === "string" ? caseContext.problemText : "") ||
+      (typeof caseContext?.problema === "string" ? caseContext.problema : "") ||
+      (typeof stage1Summary?.problem === "string" ? stage1Summary.problem : "") ||
+      (typeof stage1Summary?.problemText === "string" ? stage1Summary.problemText : "") ||
+      (typeof stage1Summary?.problema === "string" ? stage1Summary.problema : "");
+
+    if (!currentProblem.trim() && ctxProblem.trim()) {
+      ishikawaState.problem = { text: ctxProblem.trim() };
+    }
+
     const wantsMap =
     msgLower.includes("situacion actual") ||
     msgLower.includes("situación actual") ||
@@ -275,7 +763,7 @@ export async function POST(req: Request) {
     }
 
     // 0) Si el estudiante está confirmando avanzar a Etapa 4, damos introducción y arrancamos
-    if (isAdvanceToStage4Message(studentMessage) && !hasAnyMainCause(ishikawaState)) {
+    if (isAdvanceToStage4Message(studentMessage) && !hasAnyIshikawaWork(ishikawaState)) {
       const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
 
       const problemText =
@@ -303,7 +791,94 @@ export async function POST(req: Request) {
     // ...después de validar studentMessage e ishikawaState
 
     const msg = studentMessage.trim().toLowerCase();
-    const alreadyInIshikawa = hasAnyMainCause(ishikawaState);
+    const alreadyInIshikawa = hasAnyIshikawaWork(ishikawaState);
+
+
+    // ✅ FAST-PATH: si ya estamos en Ishikawa y el mensaje es corto, evitamos Gemini
+    if (alreadyInIshikawa && isShortFastPathCandidate(studentMessage)) {
+      const nextState = ensureDefaultCategoriesIfEmpty(safeClone(ishikawaState));
+
+      // Caso 1: confirmación de cerrar rama (rápido) -> liberamos cursor a nivel categoría
+      if (isCloseBranchConfirm(studentMessage) && nextState.cursor?.categoryId) {
+        const cat = nextState.categories.find((c) => c.id === nextState.cursor?.categoryId);
+        const catName = cat?.name ?? "la categoría actual";
+
+        // Dejamos cursor solo en categoría (sin mainCauseId/subCauseId)
+        nextState.cursor = { categoryId: nextState.cursor.categoryId };
+
+        return ok({
+          assistantMessage:
+            `✅ Perfecto, cerramos esa rama como **causa raíz candidata**.\n` +
+            `Para completar **${catName}**, dime otra **causa principal** (otra rama) dentro de la misma categoría.`,
+          updates: { nextState },
+        });
+      }
+
+      // Caso 2: respuesta corta a un "¿por qué?" si hay subcausa activa
+      const active = findActiveNodes(nextState);
+      if (active?.sc) {
+        const sc = active.sc;
+        const whysArr = (sc.whys ?? []).map((w) => (typeof w === "string" ? w : (w.text ?? ""))).filter(Boolean);
+
+        const answerRaw = studentMessage.trim();
+
+        // 🚫 No es causa (navegación / meta / control)
+        if (isNonCausalMessage(answerRaw)) {
+          return ok({
+            assistantMessage:
+              "Perfecto 👍 Antes de cambiar de categoría, terminemos de **cerrar esta causa**. " +
+              "Dime **por qué ocurre** este problema en la práctica (una razón concreta que genere el desorden).",
+            updates: { nextState },
+          });
+        }
+
+        // 🚫 Es demasiado vaga
+        if (isVagueWhyAnswer(answerRaw)) {
+          return ok({
+            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            updates: { nextState },
+          });
+        }
+
+        // ✅ Recién aquí es una causa válida
+        const answer = normalizeWhyText(answerRaw);
+        const alreadyExists = whysArr.some(
+          (w) => w.toLowerCase() === answer.toLowerCase()
+        );
+
+        if (!alreadyExists) {
+          whysArr.push(answer);
+        }
+
+        // Guardar de vuelta respetando tipo IshikawaWhy
+        sc.whys = whysArr;
+
+        const depth = whysArr.length;
+        const max = nextState.maxWhyDepth ?? 3;
+
+        // Si ya llegamos a profundidad, proponemos cerrar
+        if (depth >= max) {
+          // liberamos subCauseId para permitir otra subcausa en la misma causa principal
+          nextState.cursor = { categoryId: active.cat.id, mainCauseId: active.mc.id };
+
+          return ok({
+            assistantMessage:
+              `Tiene sentido: esto explica la causa a un nivel ya **accionable** (impacta en paros/tiempo muerto y OEE).\n` +
+              `✅ Ya llegamos a profundidad suficiente (${depth}). ¿Te parece si **cerramos esta subcausa** como causa raíz candidata y agregamos otra subcausa dentro de **"${active.mc.name ?? active.mc.text ?? "esta causa"}"**?`,
+            updates: { nextState },
+          });
+        }
+
+        // Si aún no llegamos, seguimos preguntando “por qué”
+        return ok({
+          assistantMessage: buildVariedFollowUp(studentMessage),
+          updates: { nextState },
+        });
+      }
+
+      // Si no hay subcausa activa, NO hacemos fast-path (evitamos “inventar” flujo)
+      // Caemos al Gemini normal.
+    }
 
     // 1) TRANSICIÓN: SOLO si todavía NO empezamos Ishikawa
     const isTransitionToStage4 =
@@ -361,6 +936,18 @@ export async function POST(req: Request) {
     });
     }
 
+    const problemText =
+      typeof ishikawaState.problem === "string"
+        ? ishikawaState.problem
+        : ishikawaState.problem?.text ?? "";
+
+    const minimalContext = {
+      product: caseContext?.product ?? caseContext?.producto ?? null,
+      sector: caseContext?.sector ?? caseContext?.rubro ?? null,
+      areas: caseContext?.areas ?? caseContext?.area ?? null,
+      problem: problemText || null,
+      cursor: ishikawaState.cursor ?? null,
+    };
 
     const system = `
     Eres OPT-IA (asesor académico) guiando la ETAPA 4: DIAGRAMA ISHIKAWA + 5 POR QUÉS.
@@ -434,7 +1021,6 @@ export async function POST(req: Request) {
         3) Pide la siguiente acción al estudiante:
             - “¿Agregamos otra causa principal dentro de <categoría> para llegar a 3 (y quizá 4)?”
 
-
     IDs:
     - Cuando crees categorías/causas/subcausas, genera ids únicos (string) y no repitas ids.
 
@@ -480,17 +1066,29 @@ export async function POST(req: Request) {
     "updates": { "nextState": { ...ishikawaState completo actualizado... } }
     }
 
-    Contexto del caso (puede venir incompleto):
-    ${JSON.stringify(caseContext)}
+    Contexto mínimo:
+    ${JSON.stringify(minimalContext)}
 
-    Resumen etapa 1 (si existe):
-    ${JSON.stringify(stage1Summary)}
-
-    Brainstorm (Etapa 3) (si existe):
-    ${JSON.stringify(brainstormState)}
-
-    Estado actual Ishikawa:
-    ${JSON.stringify(ishikawaState)}
+    Estado Ishikawa (solo lo necesario):
+    ${JSON.stringify({
+      minMainCausesPerCategory: ishikawaState.minMainCausesPerCategory,
+      minSubCausesPerMain: ishikawaState.minSubCausesPerMain,
+      maxWhyDepth: ishikawaState.maxWhyDepth,
+      cursor: ishikawaState.cursor ?? null,
+      categories: (ishikawaState.categories ?? []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        mainCauses: (c.mainCauses ?? []).map((mc) => ({
+          id: mc.id,
+          name: mc.name ?? mc.text ?? "",
+          subCauses: (mc.subCauses ?? []).map((sc) => ({
+            id: sc.id,
+            name: sc.name ?? sc.text ?? "",
+            whysCount: (sc.whys ?? []).length,
+          })),
+        })),
+      })),
+    })}
     `;
 
     const prompt = `
@@ -551,46 +1149,40 @@ Responde SOLO con JSON válido (sin markdown).
         : fallback;
     }
 
-    // 2) Enforce mínimo: que sea natural, con 1 idea + 1 pregunta (sin etiquetas robóticas)
+    // 2) Enforce mínimo: 1 frase conectada al mensaje del estudiante + 1 pregunta variada
     if (typeof parsed.assistantMessage === "string") {
-        let m = parsed.assistantMessage.trim();
+      let m = parsed.assistantMessage.trim();
 
-        // si el modelo aún escupe etiquetas viejas, las limpiamos
-        m = m.replace(/^Análisis:\s*/i, "");
-        m = m.replace(/\n?Siguiente pregunta:\s*/i, "\n");
+      // limpia etiquetas viejas si aparecen
+      m = m.replace(/^Análisis:\s*/i, "");
+      m = m.replace(/\n?Siguiente pregunta:\s*/i, "\n");
 
-        // asegurar que termine con una pregunta (fluida, no repetida)
-        const endsWithQuestion = /\?\s*$/.test(m);
+      // Si está vacío/muy corto, o suena a plantilla repetida, lo regeneramos variado
+      const looksTemplate =
+        /ok,\s*eso encaja/i.test(m) ||
+        /p[ée]rdida de eficiencia/i.test(m) && /¿por qu[ée]/i.test(m);
 
-        const fallbackOpeners = [
-            "Tiene sentido, porque",
-            "Buena pista: eso suele causar",
-            "Ok, eso explicaría",
-            "Perfecto, esto puede estar relacionado con",
-        ];
+      const tooShort = m.length < 30;
 
-        const followUpQuestions = [
-            "¿Qué es lo que dispara ese problema en la práctica?",
-            "¿Cuándo se nota más (inicio de turno, cambios de formato, fin de lote)?",
-            "¿Qué parte exacta de la máquina/proceso se desajusta primero?",
-            "¿Quién realiza la calibración y con qué frecuencia?",
-            "¿Qué señal o síntoma aparece justo antes del atasco?",
-        ];
+      const hasQuestion = /\?\s*$/.test(m);
 
-        // si está vacío o muy corto, le damos una frase guía + pregunta
-        if (!m || m.length < 8) {
-            const opener = fallbackOpeners[Math.floor(Math.random() * fallbackOpeners.length)];
-            const q = followUpQuestions[Math.floor(Math.random() * followUpQuestions.length)];
-            parsed.assistantMessage = `${opener} una causa que impacta en el tiempo muerto.\n${q}`;
-        } else if (!endsWithQuestion) {
-            const q = followUpQuestions[Math.floor(Math.random() * followUpQuestions.length)];
-            parsed.assistantMessage = `${m}\n${q}`;
-        } else {
-            parsed.assistantMessage = m;
-        }
+      if (tooShort || looksTemplate) {
+        parsed.assistantMessage = buildVariedFollowUp(studentMessage);
+      } else if (!hasQuestion) {
+        // si no termina en pregunta, le añadimos una pregunta variada conectada
+        parsed.assistantMessage = `${m}\n${buildVariedFollowUp(studentMessage).split("\n").slice(1).join("\n")}`;
+      } else {
+        parsed.assistantMessage = m;
+      }
     }
 
-    return ok(parsed);
+    const merged = mergeIshikawaState(ishikawaState, parsed.updates.nextState as IshikawaState);
+
+    return ok({
+      assistantMessage: parsed.assistantMessage,
+      updates: { nextState: merged },
+    });
+
   } catch (e: any) {
     return failResponse("INTERNAL", e?.message ?? "Error", 500);
   }

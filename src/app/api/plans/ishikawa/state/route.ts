@@ -10,7 +10,7 @@ const DraftType = "ishikawa_wizard_state";
 const PERIOD_KEY = new Date().toISOString().slice(0, 7);
 
 const BodySchema = z.object({
-  chatId: z.string().uuid(),
+  chatId: z.string().uuid().nullable().optional(),
   state: z.any(),
 });
 
@@ -93,6 +93,79 @@ export async function GET(req: NextRequest) {
   }
 }
 
+function mergeById<T extends { id: string }>(base: T[] = [], incoming: T[] = []): T[] {
+  const map = new Map<string, T>();
+  for (const b of base) map.set(b.id, b);
+
+  for (const inc of incoming) {
+    const prev = map.get(inc.id);
+    map.set(inc.id, prev ? ({ ...prev, ...inc } as T) : inc);
+  }
+
+  return Array.from(map.values());
+}
+
+function mergeIshikawaState(base: any, incoming: any) {
+  if (!base) return incoming;
+  if (!incoming) return base;
+
+  const out: any = { ...base, ...incoming };
+
+  // 1) NO permitir que el problema se pierda si incoming no lo trae
+  const incomingProblemMissing =
+    incoming.problem == null ||
+    incoming.problem === "" ||
+    (typeof incoming.problem === "object" && !incoming.problem?.text);
+
+  if (incomingProblemMissing) out.problem = base.problem;
+
+  // 2) merge categories -> mainCauses -> subCauses y preservar whys
+  out.categories = mergeById(base.categories ?? [], incoming.categories ?? []).map((cat: any) => {
+    const baseCat = (base.categories ?? []).find((c: any) => c.id === cat.id) ?? {};
+    const incCat = (incoming.categories ?? []).find((c: any) => c.id === cat.id) ?? cat;
+
+    const mergedCat: any = { ...baseCat, ...incCat };
+
+    mergedCat.mainCauses = mergeById(baseCat.mainCauses ?? [], incCat.mainCauses ?? []).map((mc: any) => {
+      const baseMc = (baseCat.mainCauses ?? []).find((m: any) => m.id === mc.id) ?? {};
+      const incMc = (incCat.mainCauses ?? []).find((m: any) => m.id === mc.id) ?? mc;
+
+      const mergedMc: any = { ...baseMc, ...incMc };
+
+      mergedMc.subCauses = mergeById(baseMc.subCauses ?? [], incMc.subCauses ?? []).map((sc: any) => {
+        const baseSc = (baseMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? {};
+        const incSc = (incMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? sc;
+
+        const mergedSc: any = { ...baseSc, ...incSc };
+
+        const baseWhys = Array.isArray(baseSc.whys) ? baseSc.whys : [];
+        const incWhys = Array.isArray(mergedSc.whys) ? mergedSc.whys : [];
+
+        const mergedWhys = [...baseWhys];
+        for (const w of incWhys) {
+          if (!mergedWhys.includes(w)) mergedWhys.push(w);
+        }
+        mergedSc.whys = mergedWhys;
+
+        return mergedSc;
+      });
+
+      return mergedMc;
+    });
+
+    return mergedCat;
+  });
+
+  // ✅ Normalizar problema a { text } si viene como string
+  if (typeof out.problem === "string") {
+    const t = out.problem.trim();
+    out.problem = t ? { text: t } : out.problem;
+  }
+
+  return out;
+}
+
+
 
 export async function POST(req: NextRequest) {
   try {
@@ -103,8 +176,20 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json(fail("BAD_REQUEST", "Payload inválido"), { status: 400 });
     }
-
     const { chatId, state } = parsed.data;
+
+    const existing = await supabaseServer
+      .from("plan_stage_artifacts")
+      .select("payload")
+      .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
+      .eq("stage", STAGE)
+      .eq("artifact_type", DraftType)
+      .eq("period_key", PERIOD_KEY)
+      .maybeSingle();
+
+    const mergedState = mergeIshikawaState(existing.data?.payload ?? null, state);
+
 
     const { error } = await supabaseServer
       .from("plan_stage_artifacts")
@@ -116,7 +201,7 @@ export async function POST(req: NextRequest) {
           artifact_type: DraftType,
           period_key: PERIOD_KEY,
           status: "draft",
-          payload: state,
+          payload: mergedState,
           // Nota: no forzamos updated_at aquí; Supabase/DB puede manejarlo.
           // Si tu tabla no tiene trigger, igual el upsert funciona; el updated_at del select no es crítico.
         },

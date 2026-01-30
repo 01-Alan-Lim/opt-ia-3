@@ -88,15 +88,9 @@ export function MessageList({ messages }: { messages: Message[] }) {
   }, [messages]);
 
   return (
-    <>
-      {/* Contenedor con scrollbar oculto */}
-      <div
-        className="message-scroll scrollbar-optia flex-1 min-h-0 overflow-y-auto space-y-5 pr-2 pl-1 sm:pl-2"
-        style={{
-          scrollbarWidth: "none", // Firefox
-          msOverflowStyle: "none", // IE / Edge
-        }}
-      >
+    <div className="flex-1 min-h-0 relative">
+      {/* CONTENEDOR QUE SCROLLEA */}
+      <div className="absolute inset-0 overflow-y-auto scrollbar-optia space-y-5 pl-1 sm:pl-0 pr-1">
         {messages.map((msg) => {
           const isUser = msg.role === "user";
 
@@ -106,22 +100,26 @@ export function MessageList({ messages }: { messages: Message[] }) {
               className={clsx("flex w-full", isUser ? "justify-end" : "justify-start")}
             >
               <div
-                className={clsx(
-                  "max-w-[80%] rounded-2xl text-sm leading-relaxed shadow-xl backdrop-blur-xl",
-                  "px-5 py-3",
-                  isUser
-                    ? "bg-sky-500/60 text-white shadow-sky-900/25"
-                    : "bg-white/10 text-slate-100 border border-white/12"
-                )}
-              >
+                  className={clsx(
+                    "max-w-[80%] rounded-2xl text-sm leading-relaxed shadow-xl backdrop-blur-xl",
+                    "px-5 py-2",
+                    // ✅ clave: preservar saltos y espacios (incluida sangría)
+                    "whitespace-pre-wrap",
+                    isUser
+                      ? "bg-sky-500/60 text-white shadow-sky-900/25"
+                      : "bg-white/10 text-slate-100 border border-white/12"
+                  )}
+                >
                 {renderTextWithLinks(msg.content)}
               </div>
+
             </div>
           );
         })}
 
         <div ref={bottomRef} />
       </div>
-    </>
+    </div>
   );
+
 }

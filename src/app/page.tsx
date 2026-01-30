@@ -1,11 +1,15 @@
+//src/app/page.tsx
 import { Suspense } from "react";
 import { LoginButton } from "@/components/LoginButton";
 import { AuthNotice } from "@/components/auth/AuthNotice";
+import { Spotlight } from "@/components/Spotlight";
 
 export default function Home() {
   return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
-      <div className="max-w-xl w-full px-6">
+    <main className="min-h-screen flex items-center justify-center midnightStars text-slate-100">
+      <Spotlight />
+      <div className="starsBright" />
+      <div className="relative z-10 max-w-xl w-full px-6">
         <Suspense fallback={null}>
           <AuthNotice />
         </Suspense>
@@ -14,7 +18,6 @@ export default function Home() {
 
         <p className="text-sm text-slate-300 mb-6">
           Agente con Inteligencia Artificial para el incremento de productividad.
-          Esta es la nueva versión del sistema.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-3">

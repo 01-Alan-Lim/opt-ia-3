@@ -1,3 +1,4 @@
+/* globals.css */
 @import "tailwindcss";
 
 /* =========
@@ -66,3 +67,125 @@ body {
 *::-webkit-scrollbar-thumb:hover {
   background-color: var(--sb-thumb-hover);
 }
+
+
+/* Scrollbar "OPT-IA": mismo estilo que el global, pero aplicado solo donde pongas .scrollbar-optia */
+.scrollbar-optia {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+
+.scrollbar-optia::-webkit-scrollbar {
+  width: 10px; /* igual al global */
+}
+
+.scrollbar-optia::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-optia::-webkit-scrollbar-thumb {
+  background-color: var(--sb-thumb);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.scrollbar-optia::-webkit-scrollbar-thumb:hover {
+  background-color: var(--sb-thumb-hover);
+}
+
+
+/* =========================================================
+   Fondo "midnight + estrellas subiendo" (landing)
+   ========================================================= */
+.midnightStars {
+  position: relative;
+  overflow: hidden;
+
+  /* Base midnight + glow suave */
+  background:
+    radial-gradient(
+      900px 700px at var(--spotlight-x, 50%) var(--spotlight-y, 50%),
+      rgba(30, 68, 128, 0.38),
+      transparent 50%
+    ),
+    #040611;
+}
+
+.midnightStars::before,
+.midnightStars::after {
+  content: "";
+  position: absolute;
+  inset: -200px 0; /* margen para que la animación no “corte” */
+  pointer-events: none;
+  z-index: 0;
+  background-repeat: repeat;
+  animation: starsUp 30s linear infinite;
+}
+
+/* Capa 1: estrellas medianas (más visibles) */
+.midnightStars::before {
+  opacity: 0.75;
+  background-size: 700px 700px;
+  background-image:
+    radial-gradient(2px 2px at 10% 20%, rgba(255,255,255,0.9) 50%, transparent 52%),
+    radial-gradient(1.5px 1.5px at 30% 70%, rgba(255,255,255,0.7) 50%, transparent 52%),
+    radial-gradient(2px 2px at 60% 40%, rgba(255,255,255,0.8) 50%, transparent 52%),
+    radial-gradient(1.5px 1.5px at 85% 25%, rgba(255,255,255,0.6) 50%, transparent 52%),
+    radial-gradient(2px 2px at 75% 85%, rgba(255,255,255,0.85) 50%, transparent 52%),
+    radial-gradient(3px 3px at 18% 62%, rgba(255,255,255,0.95) 50%, transparent 52%),
+    radial-gradient(3px 3px at 52% 28%, rgba(255, 255, 255, 0.986) 50%, transparent 22%),
+    radial-gradient(5px 5px at 88% 58%, rgb(255, 255, 255) 40%, transparent 22%);
+}
+
+/* Capa 2: estrellas pequeñas (más densas y lentas) */
+.midnightStars::after {
+  opacity: 0.55;
+  background-size: 500px 500px;
+  animation-duration: 90s;
+  background-image:
+    radial-gradient(1px 1px at 15% 35%, rgba(255,255,255,0.8) 50%, transparent 52%),
+    radial-gradient(1px 1px at 45% 15%, rgba(255,255,255,0.6) 50%, transparent 52%),
+    radial-gradient(1px 1px at 55% 65%, rgba(255,255,255,0.7) 50%, transparent 52%),
+    radial-gradient(1px 1px at 80% 55%, rgba(255,255,255,0.5) 50%, transparent 52%),
+    radial-gradient(3px 3px at 25% 85%, rgba(255,255,255,0.65) 50%, transparent 52%);
+}
+
+.midnightStars .starsBright {
+  position: absolute;
+  inset: -200px 0;
+  z-index: 0;
+  pointer-events: none;
+
+  background-size: 900px 900px;
+  background-repeat: repeat;
+  background-image:
+    radial-gradient(4px 4px at 12% 18%, rgba(255,255,255,0.95) 50%, transparent 52%),
+    radial-gradient(3px 3px at 28% 62%, rgba(255,255,255,0.9) 50%, transparent 52%),
+    radial-gradient(4px 4px at 46% 32%, rgba(255,255,255,0.85) 50%, transparent 52%),
+    radial-gradient(3px 3px at 68% 72%, rgba(255,255,255,0.9) 50%, transparent 52%),
+    radial-gradient(5px 5px at 82% 22%, rgba(255,255,255,0.95) 50%, transparent 52%);
+
+  animation: starsUp 45s linear infinite;
+}
+
+/* Overlay para "linterna" que sigue el cursor */
+.midnightStars .spotlightOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+
+  /* Suaviza el glow para que parezca linterna */
+  mix-blend-mode: screen;
+  opacity: 0.9;
+  filter: blur(0px);
+}
+
+
+@keyframes starsUp {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-600px); }
+}
+
+

@@ -542,19 +542,22 @@ export function CohortsPanel() {
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
         {/* LISTA */}
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-          <div className="mb-2 text-xs text-slate-400">Lista</div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 flex flex-col min-h-[640px]">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-xs text-slate-400">Lista</div>
+            <div className="text-[11px] text-slate-500">{cohorts.length}</div>
+          </div>
 
           {loading ? (
             <div className="text-sm text-slate-300">Cargando...</div>
           ) : cohorts.length === 0 ? (
             <div className="text-sm text-slate-300">No hay cohortes.</div>
           ) : (
-            <ul className="space-y-2">
+            <ul className="space-y-2 overflow-auto pr-1 flex-1">
               {cohorts.map((c) => (
-                <li key={c.id} className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                <li key={c.id} className="rounded-xl border border-slate-800/80 bg-slate-950/40 px-3 py-2">
                   <div className="flex items-start justify-between gap-3">
                     <button
                       type="button"
@@ -564,7 +567,6 @@ export function CohortsPanel() {
                         setError(null);
                         fillFormFromCohort(c);
 
-                        // ✅ cargar fechas desde cohort_events
                         (async () => {
                           setEventsLoading(true);
                           try {
@@ -573,7 +575,6 @@ export function CohortsPanel() {
                             const json = await res.json().catch(() => null);
 
                             if (!res.ok || json?.ok === false) {
-                              // si no existe nada todavía, dejamos vacío
                               fillEventsFromRows([]);
                               return;
                             }
@@ -587,30 +588,30 @@ export function CohortsPanel() {
                           }
                         })();
                       }}
-
-                      className="text-left"
+                      className="w-full text-left"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-100">{c.name}</span>
+                        <span className="text-sm font-semibold text-slate-100 truncate">{c.name}</span>
+
                         {c.is_active ? (
-                          <span className="rounded-full bg-emerald-600/20 px-2 py-0.5 text-[11px] text-emerald-200">
+                          <span className="rounded-full bg-emerald-600/15 px-2 py-0.5 text-[11px] text-emerald-200 border border-emerald-400/15">
                             Activa
                           </span>
                         ) : (
-                          <span className="rounded-full bg-slate-700/40 px-2 py-0.5 text-[11px] text-slate-200">
+                          <span className="rounded-full bg-slate-700/30 px-2 py-0.5 text-[11px] text-slate-200 border border-slate-600/20">
                             Inactiva
                           </span>
                         )}
                       </div>
 
-                      <div className="mt-1 text-xs text-slate-400">
+                      <div className="mt-1 text-[11px] text-slate-400 leading-snug">
                         Acceso:{" "}
                         <span className="text-slate-300">
-                          {c.access_starts_at ? new Date(c.access_starts_at).toLocaleString() : "—"}
+                          {c.access_starts_at ? new Date(c.access_starts_at).toLocaleDateString() : "—"}
                         </span>{" "}
                         →{" "}
                         <span className="text-slate-300">
-                          {c.access_ends_at ? new Date(c.access_ends_at).toLocaleString() : "—"}
+                          {c.access_ends_at ? new Date(c.access_ends_at).toLocaleDateString() : "—"}
                         </span>
                       </div>
                     </button>
