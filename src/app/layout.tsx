@@ -15,7 +15,7 @@ const mono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "OPT-IA",
-  description: "Agente con IA para productividad de MyPEs",
+  description: "Agente con IA para el incremento de productividad",
   icons: {
     icon: "/icon.ico",
     shortcut: "/icon.ico",
