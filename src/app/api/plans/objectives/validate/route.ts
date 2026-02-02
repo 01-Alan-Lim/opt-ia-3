@@ -1,9 +1,12 @@
 // src/app/api/plans/objectives/validate/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
+import { getGeminiModel } from "@/lib/geminiClient";
 
 export const runtime = "nodejs";
 
@@ -21,6 +24,24 @@ function fail(status: number, code: string, message: string, detail?: unknown) {
 
 function nonEmptyTrimmed(s: unknown): string {
   return String(s ?? "").trim();
+}
+
+function asStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+}
+
+function extractJsonSafe(text: string) {
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -43,7 +64,6 @@ export async function POST(req: NextRequest) {
       .from("plan_stage_artifacts")
       .select("payload, updated_at")
       .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
       .eq("stage", 5)
       .eq("artifact_type", "pareto_final")
       .eq("period_key", PERIOD_KEY)
@@ -54,15 +74,13 @@ export async function POST(req: NextRequest) {
 
     if (paretoErr) return fail(500, "DB_ERROR", "No se pudo leer Pareto final (Etapa 5).", paretoErr);
 
-    const criticalRootsOfficial: string[] = Array.isArray(paretoFinal?.payload?.criticalRoots)
-      ? paretoFinal!.payload.criticalRoots.map((x: any) => String(x).trim()).filter(Boolean)
-      : [];
-
+    const criticalRootsOfficial = asStringArray((paretoFinal as any)?.payload?.criticalRoots);
     if (criticalRootsOfficial.length === 0) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Para validar Objetivos (Etapa 6) primero debes tener Pareto final validado con causas críticas (top 20%).",
+        message:
+          "Para validar Objetivos (Etapa 6) primero debes tener Pareto final validado con causas críticas (top 20%).",
       });
     }
 
@@ -71,8 +89,9 @@ export async function POST(req: NextRequest) {
       .from("plan_stage_states")
       .select("state_json, updated_at")
       .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
       .eq("stage", STAGE)
+      .order("updated_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (stErr) return fail(500, "DB_ERROR", "No se pudo leer el estado de la Etapa 6.", stErr);
@@ -86,7 +105,7 @@ export async function POST(req: NextRequest) {
 
     const s: any = stRow.state_json;
 
-    // 3) Validaciones MVP
+    // 3) Gate mínimo (habilita avance, independiente del score)
     const generalObjective = nonEmptyTrimmed(s?.generalObjective);
     if (generalObjective.length < 15) {
       return NextResponse.json({
@@ -96,10 +115,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const specificObjectives: string[] = Array.isArray(s?.specificObjectives)
-      ? s.specificObjectives.map((x: any) => String(x).trim()).filter(Boolean)
-      : [];
-
+    const specificObjectives = asStringArray(s?.specificObjectives);
     if (specificObjectives.length < 3) {
       return NextResponse.json({
         ok: true,
@@ -108,10 +124,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const linkedCriticalRoots: string[] = Array.isArray(s?.linkedCriticalRoots)
-      ? s.linkedCriticalRoots.map((x: any) => String(x).trim()).filter(Boolean)
-      : [];
-
+    const linkedCriticalRoots = asStringArray(s?.linkedCriticalRoots);
     if (linkedCriticalRoots.length < 1) {
       return NextResponse.json({
         ok: true,
@@ -131,7 +144,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 4) Guardar objectives_final (Etapa 6)
+    // 4) Payload final (se guarda siempre que pase el mínimo)
     const finalPayload = {
       generalObjective,
       specificObjectives,
@@ -139,48 +152,144 @@ export async function POST(req: NextRequest) {
       validatedAt: new Date().toISOString(),
       fromPareto: {
         criticalRootsCount: criticalRootsOfficial.length,
-        paretoUpdatedAt: paretoFinal?.updated_at ?? null,
+        paretoUpdatedAt: (paretoFinal as any)?.updated_at ?? null,
       },
     };
 
-    // MVP: si pasa el gate, score = 100
-    const score = 100;
+    // 5) Evaluación pedagógica (rúbrica con ponderaciones) - NO bloquea avance si falla
+    const rubric = {
+      coherencia_trazabilidad: 40,
+      claridad_redaccion: 30,
+      especificidad_medibilidad: 30,
+    };
 
-    const { data: existingFinal, error: exErr } = await supabaseServer
+    const model = getGeminiModel();
+    const prompt = `
+Evalúa académicamente la Etapa 6 (Objetivos). Debes ser estricto: si hay ambigüedad, poca precisión o falta de coherencia, baja la puntuación.
+
+RÚBRICA (0-100):
+1) Coherencia y trazabilidad con causas críticas (40%):
+   - Los objetivos responden a causas críticas (Pareto top 20%) y no se contradicen.
+   - La vinculación causa→objetivo es razonable y defendible.
+2) Claridad y calidad de redacción (30%):
+   - Objetivo general claro (qué se mejora, dónde y con qué intención).
+   - Objetivos específicos entendibles, sin vaguedades (“mejorar mucho”, “optimizar”).
+3) Especificidad/medibilidad (30%):
+   - Los objetivos específicos se formulan de manera verificable (cuánto/qué evidencia), aunque no haya KPI numérico exacto.
+   - Evita objetivos que sean actividades (“hacer capacitación”) en vez de resultados.
+
+Escala fija: Deficiente / Regular / Adecuado / Bien
+
+Devuelve SOLO JSON:
+{
+  "total_score": number (0-100),
+  "total_label": "Deficiente" | "Regular" | "Adecuado" | "Bien",
+  "detail": {
+    "coherencia_trazabilidad": number,
+    "claridad_redaccion": number,
+    "especificidad_medibilidad": number
+  },
+  "feedback": "string",
+  "mejoras": ["string", "string", "string"]
+}
+
+CAUSAS CRÍTICAS OFICIALES (Pareto top 20%):
+${JSON.stringify(criticalRootsOfficial, null, 2)}
+
+ENTREGA DEL ESTUDIANTE (Objetivos):
+${JSON.stringify(
+  {
+    generalObjective,
+    specificObjectives,
+    linkedCriticalRoots,
+  },
+  null,
+  2
+)}
+`;
+
+    let evaluation: any = null;
+    let evalWarning: { warning: string; raw?: string } | null = null;
+
+    try {
+      const llmRes = await model.generateContent(prompt);
+      const llmText = llmRes.response.text();
+      evaluation = extractJsonSafe(llmText);
+      if (!evaluation || typeof evaluation.total_score !== "number") {
+        evalWarning = { warning: "Etapa 6 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+        evaluation = null;
+      }
+    } catch {
+      evalWarning = { warning: "Etapa 6 validada, pero falló la evaluación IA." };
+      evaluation = null;
+    }
+
+    // Si no hay evaluación IA válida, mantenemos score neutral (no bloquea)
+    const score = evaluation?.total_score ?? 80;
+
+    // 6) Guardar objectives_final (Etapa 6) - upsert seguro
+    const { data: finalRow, error: upErr } = await supabaseServer
       .from("plan_stage_artifacts")
-      .select("id")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", FinalType)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
-
-    if (exErr) return fail(500, "DB_ERROR", "No se pudo verificar Objectives final.", exErr);
-
-    if (!existingFinal) {
-      const { error: insErr } = await supabaseServer.from("plan_stage_artifacts").insert({
-        user_id: user.userId,
-        chat_id: chatId,
-        stage: STAGE,
-        artifact_type: FinalType,
-        period_key: PERIOD_KEY,
-        status: "validated",
-        payload: finalPayload,
-        score,
-      });
-      if (insErr) return fail(500, "DB_ERROR", "No se pudo guardar Objectives final.", insErr);
-    } else {
-      const { error: updErr } = await supabaseServer
-        .from("plan_stage_artifacts")
-        .update({
+      .upsert(
+        {
+          user_id: user.userId,
+          chat_id: chatId,
+          stage: STAGE,
+          artifact_type: FinalType,
+          period_key: PERIOD_KEY,
           status: "validated",
           payload: finalPayload,
           score,
           updated_at: new Date().toISOString(),
-        })
-        .eq("id", existingFinal.id);
-      if (updErr) return fail(500, "DB_ERROR", "No se pudo actualizar Objectives final.", updErr);
+        },
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
+      )
+      .select("id")
+      .single();
+
+    if (upErr || !finalRow) return fail(500, "DB_ERROR", "No se pudo guardar Objectives final.", upErr);
+    const finalArtifactId = finalRow.id as string;
+
+    // 7) Guardar evaluación (plan_stage_evaluations) si la IA respondió
+    if (evaluation && typeof evaluation.total_score === "number") {
+      const { data: existingEval, error: existingEvalErr } = await supabaseServer
+        .from("plan_stage_evaluations")
+        .select("id")
+        .eq("user_id", user.userId)
+        .eq("stage", STAGE)
+        .eq("artifact_type", FinalType)
+        .eq("period_key", PERIOD_KEY)
+        .eq("artifact_id", finalArtifactId)
+        .maybeSingle();
+
+      if (!existingEvalErr && !existingEval) {
+        const payloadEval = {
+          status: "validated",
+          specificObjectivesCount: specificObjectives.length,
+          linkedCriticalRootsCount: linkedCriticalRoots.length,
+        };
+
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
+          user_id: user.userId,
+          chat_id: chatId,
+          stage: STAGE,
+          artifact_type: FinalType,
+          artifact_id: finalArtifactId,
+          period_key: PERIOD_KEY,
+
+          status: "validated",
+          payload_json: payloadEval,
+
+          rubric_json: rubric,
+          result_json: evaluation,
+          total_score: evaluation.total_score,
+          total_label: evaluation.total_label,
+        });
+
+        if (evalInsErr) {
+          evalWarning = { warning: "Etapa 6 validada, pero no se pudo insertar la evaluación IA." };
+        }
+      }
     }
 
     return NextResponse.json(
@@ -190,6 +299,8 @@ export async function POST(req: NextRequest) {
         message: "Etapa 6 (Objetivos) finalizada. Puedes continuar con la Etapa 7 (Plan de Mejora).",
         final: finalPayload,
         score,
+        evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
+        ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
       },
       { status: 200 }
     );

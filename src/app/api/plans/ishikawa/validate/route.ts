@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { z } from "zod";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -96,7 +97,6 @@ export async function POST(req: Request) {
       .from("plan_stage_artifacts")
       .select("id, payload, chat_id, updated_at")
       .eq("user_id", userId)
-      .eq("chat_id", chatId)
       .eq("stage", STAGE)
       .eq("artifact_type", DraftType)
       .eq("period_key", PERIOD_KEY)
@@ -192,62 +192,31 @@ export async function POST(req: Request) {
     };
     const score = buildScore(s, roots);
 
-    // 4) upsert final artifact
-    const { data: existingFinal, error: exFinalErr } = await supabaseServer
+    // 4) upsert final artifact (NO depende de chat_id para evitar duplicate key al abrir nuevo chat)
+    const { data: finalRow, error: upErr } = await supabaseServer
       .from("plan_stage_artifacts")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("chat_id", chatId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", FinalType)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
-
-    if (exFinalErr) {
-      return NextResponse.json(fail("BAD_REQUEST", exFinalErr.message), { status: 400 });
-    }
-
-    let finalArtifactId: string;
-
-    if (!existingFinal) {
-      const { data: created, error: insErr } = await supabaseServer
-        .from("plan_stage_artifacts")
-        .insert({
+      .upsert(
+        {
           user_id: userId,
-          chat_id: chatId,
+          chat_id: chatId, // se guarda como referencia del chat actual (pero no define unicidad)
           stage: STAGE,
           artifact_type: FinalType,
           period_key: PERIOD_KEY,
           status: "validated",
           payload: finalPayload,
           score,
-        })
-        .select("id")
-        .single();
-
-      if (insErr || !created) {
-        return NextResponse.json(fail("BAD_REQUEST", insErr?.message ?? "No se pudo crear final"), { status: 400 });
-      }
-
-      finalArtifactId = created.id as string;
-    } else {
-      finalArtifactId = existingFinal.id as string;
-
-      const { error: updErr } = await supabaseServer
-        .from("plan_stage_artifacts")
-        .update({
-          chat_id: chatId,
-          status: "validated",
-          payload: finalPayload,
-          score,
           updated_at: new Date().toISOString(),
-        })
-        .eq("id", finalArtifactId);
+        },
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
+      )
+      .select("id")
+      .single();
 
-      if (updErr) {
-        return NextResponse.json(fail("BAD_REQUEST", updErr.message), { status: 400 });
-      }
+    if (upErr || !finalRow) {
+      return NextResponse.json(fail("BAD_REQUEST", upErr?.message ?? "No se pudo guardar final"), { status: 400 });
     }
+
+    const finalArtifactId = finalRow.id as string;
 
     // 5) Evaluación pedagógica IA (estilo E2/E3)
     const model = getGeminiModel();

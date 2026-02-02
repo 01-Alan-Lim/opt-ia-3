@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -71,19 +72,32 @@ export async function POST(req: NextRequest) {
 
     const { chatId, state } = parsed.data;
 
+    // ✅ Guard: no guardar si aún no existe chatId (evita registros con chat_id null)
+    if (!chatId) {
+      return NextResponse.json(
+        {
+          ok: true,
+          saved: false,
+          skipped: true,
+          message: "Brainstorm state skip: chatId aún no inicializado.",
+        },
+        { status: 200 }
+      );
+    }
+
     const { error } = await supabaseServer
       .from("plan_stage_artifacts")
       .upsert(
         {
           user_id: user.userId,
-          chat_id: chatId ?? null,
+          chat_id: chatId,
           stage: STAGE,
           artifact_type: ARTIFACT_TYPE,
           period_key: PERIOD_KEY,
           status: "draft",
           payload: state,
         },
-        { onConflict: "user_id,stage,artifact_type,period_key" }
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
       );
 
     if (error) return fail(500, "DB_ERROR", "No se pudo guardar el estado de Etapa 3.", error);

@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -93,7 +94,7 @@ export async function POST(req: NextRequest) {
           status: "validated",
           payload: finalPayload,
         },
-        { onConflict: "user_id,stage,artifact_type,period_key" }
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
       )
       .select("id")
       .single();

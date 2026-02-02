@@ -107,7 +107,7 @@ export function MessageList({ messages }: { messages: Message[] }) {
                     "whitespace-pre-wrap",
                     isUser
                       ? "bg-sky-500/60 text-white shadow-sky-900/25"
-                      : "bg-white/10 text-slate-100 border border-white/12"
+                      : "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)]"
                   )}
                 >
                 {renderTextWithLinks(msg.content)}

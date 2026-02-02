@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -175,6 +176,10 @@ export async function POST(req: Request) {
 
     const { state } = parsed.data;
 
+    // ✅ No guardamos estados si aún no existe chatId (evita errores al crear "Nuevo chat")
+    // (clear=true sí puede ejecutarse sin chatId)
+    if (!parsed.data.chatId) return ok({ skipped: true });
+
     const { data, error } = await supabaseServer
       .from(TABLE)
       .upsert(
@@ -187,7 +192,7 @@ export async function POST(req: Request) {
           status: "draft",
           payload: state,
         },
-        { onConflict: "user_id,stage,artifact_type,period_key" }
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
       )
       .select("id,chat_id,payload,updated_at")
       .single();

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { requireUser } from "@/lib/auth/supabase";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
@@ -178,6 +179,19 @@ export async function POST(req: NextRequest) {
     }
     const { chatId, state } = parsed.data;
 
+    // ✅ Guard: no guardar si aún no existe chatId (evita registros con chat_id null)
+    if (!chatId) {
+      return NextResponse.json(
+        {
+          ok: true,
+          saved: false,
+          skipped: true,
+          message: "Ishikawa state skip: chatId aún no inicializado.",
+        },
+        { status: 200 }
+      );
+    }
+
     const existing = await supabaseServer
       .from("plan_stage_artifacts")
       .select("payload")
@@ -190,7 +204,6 @@ export async function POST(req: NextRequest) {
 
     const mergedState = mergeIshikawaState(existing.data?.payload ?? null, state);
 
-
     const { error } = await supabaseServer
       .from("plan_stage_artifacts")
       .upsert(
@@ -202,20 +215,16 @@ export async function POST(req: NextRequest) {
           period_key: PERIOD_KEY,
           status: "draft",
           payload: mergedState,
-          // Nota: no forzamos updated_at aquí; Supabase/DB puede manejarlo.
-          // Si tu tabla no tiene trigger, igual el upsert funciona; el updated_at del select no es crítico.
         },
-        { onConflict: "user_id,stage,artifact_type,period_key" }
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
       );
-
     if (error) {
       return NextResponse.json(fail("BAD_REQUEST", error.message), { status: 400 });
     }
 
     return ok({ saved: true });
 
-
-} catch (e: any) {
-    return NextResponse.json(fail("INTERNAL", e?.message ?? "Error"), { status: 500 });
-  }
+  } catch (e: any) {
+      return NextResponse.json(fail("INTERNAL", e?.message ?? "Error"), { status: 500 });
+    }
 }

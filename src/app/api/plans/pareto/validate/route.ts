@@ -4,6 +4,8 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { getGeminiModel } from "@/lib/geminiClient";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -22,6 +24,20 @@ function fail(status: number, code: string, message: string, detail?: unknown) {
 
 function ceil20Percent(n: number) {
   return Math.max(1, Math.ceil(n * 0.2));
+}
+
+function extractJsonSafe(text: string) {
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -44,7 +60,6 @@ export async function POST(req: NextRequest) {
       .from("plan_stage_artifacts")
       .select("id, payload, chat_id, updated_at")
       .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
       .eq("stage", STAGE)
       .eq("artifact_type", DraftType)
       .eq("period_key", PERIOD_KEY)
@@ -168,46 +183,148 @@ export async function POST(req: NextRequest) {
       fromStage4: { rootsCount: rootsOfficial.length, ishikawaUpdatedAt: ishFinal?.updated_at ?? null },
     };
 
-    // Rúbrica simple Pareto (MVP): 40% criterios+pesos, 60% priorización final.
-    // Como este endpoint solo llega aquí si todo está OK, el score queda en 100.
-    const score = 100;
+    // 5) Evaluación pedagógica IA (rúbrica con ponderaciones) - NO bloquea avance si falla
+    const rubric = {
+      criterios_ponderaciones: 40,
+      priorizacion_final: 60,
+    };
 
-    // upsert final
-    const { data: existingFinal, error: exErr } = await supabaseServer
+    const model = getGeminiModel();
+    // reutilizamos minCritical ya calculado arriba en las validaciones
+
+    const prompt = `
+    Evalúa académicamente la Etapa 5 (Pareto). Debes ser estricto: si los criterios son vagos,
+    los pesos no tienen sentido o la priorización no parece defendible, baja la nota.
+
+    RÚBRICA (0-100):
+    1) Criterios y ponderaciones (40%):
+      - Define exactamente 3 criterios con nombres claros y válidos (no genéricos).
+      - Pesos 1-10 razonables (no todos iguales sin necesidad).
+      - Los criterios ayudan a priorizar causas raíz en este contexto.
+    2) Priorización final (60%):
+      - Las causas críticas (top 20%) son coherentes con la lista seleccionada y no parecen arbitrarias.
+      - Evita causas críticas vagas/duplicadas.
+      - Debe sentirse defendible que esas son “las más importantes”.
+
+    Escala fija: Deficiente / Regular / Adecuado / Bien
+
+    Devuelve SOLO JSON:
+    {
+      "total_score": number (0-100),
+      "total_label": "Deficiente" | "Regular" | "Adecuado" | "Bien",
+      "detail": {
+        "criterios_ponderaciones": number,
+        "priorizacion_final": number
+      },
+      "feedback": "string",
+      "mejoras": ["string", "string", "string"]
+    }
+
+    RAÍCES OFICIALES (Ishikawa validado):
+    ${JSON.stringify(rootsOfficial, null, 2)}
+
+    ENTREGA DEL ESTUDIANTE (Pareto):
+    ${JSON.stringify(
+      {
+        selectedRoots,
+        criteria,
+        criticalRoots,
+        minCritical,
+        note: "El cálculo 80/20 se realizó en Excel (herramienta de la materia).",
+      },
+      null,
+      2
+    )}
+    `;
+
+    let evaluation: any = null;
+    let evalWarning: { warning: string; raw?: string } | null = null;
+
+    try {
+      const llmRes = await model.generateContent(prompt);
+      const llmText = llmRes.response.text();
+      evaluation = extractJsonSafe(llmText);
+
+      if (!evaluation || typeof evaluation.total_score !== "number") {
+        evalWarning = { warning: "Etapa 5 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+        evaluation = null;
+      }
+    } catch {
+      evalWarning = { warning: "Etapa 5 validada, pero falló la evaluación IA." };
+      evaluation = null;
+    }
+
+    // Si no hay evaluación IA válida, mantenemos score neutral (no bloquea)
+    const score = evaluation?.total_score ?? 80;
+
+
+    // 4) Guardar final artifact (Etapa 5) - upsert seguro (no depende de chat_id)
+    const { data: finalRow, error: upErr } = await supabaseServer
       .from("plan_stage_artifacts")
-      .select("id")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", FinalType)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
-
-    if (exErr) return fail(500, "DB_ERROR", "No se pudo verificar Pareto final.", exErr);
-
-    if (!existingFinal) {
-      const { error: insErr } = await supabaseServer.from("plan_stage_artifacts").insert({
-        user_id: user.userId,
-        chat_id: chatId,
-        stage: STAGE,
-        artifact_type: FinalType,
-        period_key: PERIOD_KEY,
-        status: "validated",
-        payload: finalPayload,
-        score,
-      });
-      if (insErr) return fail(500, "DB_ERROR", "No se pudo guardar Pareto final.", insErr);
-    } else {
-      const { error: updErr } = await supabaseServer
-        .from("plan_stage_artifacts")
-        .update({
+      .upsert(
+        {
+          user_id: user.userId,
+          chat_id: chatId,
+          stage: STAGE,
+          artifact_type: FinalType,
+          period_key: PERIOD_KEY,
           status: "validated",
           payload: finalPayload,
           score,
           updated_at: new Date().toISOString(),
-        })
-        .eq("id", existingFinal.id);
-      if (updErr) return fail(500, "DB_ERROR", "No se pudo actualizar Pareto final.", updErr);
+        },
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
+      )
+      .select("id")
+      .single();
+
+    if (upErr || !finalRow) return fail(500, "DB_ERROR", "No se pudo guardar Pareto final.", upErr);
+
+    const finalArtifactId = finalRow.id as string;
+
+    // 7) Guardar evaluación en plan_stage_evaluations (si IA respondió)
+    if (evaluation && typeof evaluation.total_score === "number") {
+      const { data: existingEval, error: existingEvalErr } = await supabaseServer
+        .from("plan_stage_evaluations")
+        .select("id")
+        .eq("user_id", user.userId)
+        .eq("stage", STAGE)
+        .eq("artifact_type", FinalType)
+        .eq("period_key", PERIOD_KEY)
+        .eq("artifact_id", finalArtifactId)
+        .maybeSingle();
+
+      if (existingEvalErr) {
+        evalWarning = { warning: "Etapa 5 validada, pero no se pudo verificar evaluación existente." };
+      } else if (!existingEval) {
+        const payloadEval = {
+          status: "validated",
+          selectedRootsCount: selectedRoots.length,
+          criticalRootsCount: criticalRoots.length,
+          minCritical,
+        };
+
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
+          user_id: user.userId,
+          chat_id: chatId,
+          stage: STAGE,
+          artifact_type: FinalType,
+          artifact_id: finalArtifactId,
+          period_key: PERIOD_KEY,
+
+          status: "validated",
+          payload_json: payloadEval,
+
+          rubric_json: rubric,
+          result_json: evaluation,
+          total_score: evaluation.total_score,
+          total_label: evaluation.total_label,
+        });
+
+        if (evalInsErr) {
+          evalWarning = { warning: "Etapa 5 validada, pero no se pudo insertar la evaluación IA." };
+        }
+      }
     }
 
     return NextResponse.json(
@@ -217,6 +334,8 @@ export async function POST(req: NextRequest) {
         message: "Etapa 5 (Pareto) finalizada. Ya puedes continuar al Avance 2.",
         final: finalPayload,
         score,
+        evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
+        ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
       },
       { status: 200 }
     );

@@ -53,6 +53,20 @@ export default function ChatPage() {
   const [sessionFullName, setSessionFullName] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
+  //------------------------------------------
+  useEffect(() => {
+    // En desktop abrimos sidebar por defecto; en móvil queda cerrado
+    if (typeof window === "undefined") return;
+
+    const mq = window.matchMedia("(min-width: 768px)");
+    const apply = () => setSidebarOpen(mq.matches);
+
+    apply();
+    mq.addEventListener?.("change", apply);
+
+    return () => mq.removeEventListener?.("change", apply);
+  }, []);
+
   // Mantiene el estado de sesión actualizado
   useEffect(() => {
     let active = true;
@@ -116,6 +130,32 @@ export default function ChatPage() {
   const [isSending, setIsSending] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // -----------------------------
+  // Theme (dark/light) — persistente
+  // -----------------------------
+  type ThemeMode = "dark" | "light";
+  const [theme, setTheme] = useState<ThemeMode>("dark");
+
+  useEffect(() => {
+    // Lee tema guardado (si existe)
+    try {
+      const saved = localStorage.getItem("optia-theme");
+      const t = saved === "light" || saved === "dark" ? saved : "dark";
+      setTheme(t);
+      document.documentElement.dataset.theme = t;
+    } catch {}
+  }, []);
+
+  function toggleTheme() {
+    const next: ThemeMode = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    try {
+      localStorage.setItem("optia-theme", next);
+    } catch {}
+    document.documentElement.dataset.theme = next;
+  }
+
 
   // ✅ IMPORTANTE: mode debe existir ANTES de usarlo abajo
   const [mode, setMode] = useState<ChatMode>("general");
@@ -300,6 +340,50 @@ export default function ChatPage() {
     step: "general" | "specific" | "review";
   };
 
+  type ImprovementInitiative = {
+    id: string;
+    title: string;
+    description: string;
+    linkedRoot: string | null;       // causa crítica (Pareto) o raíz (Ishikawa)
+    linkedObjective: string | null;  // objetivo específico (Etapa 6)
+    measurement: {
+      indicator: string | null;      // puede ser cualitativo
+      kpi: string | null;            // opcional
+      target: string | null;         // opcional
+    };
+    feasibility: {
+      estimatedWeeks: number | null;
+      notes: string | null;
+    };
+  };
+
+  type ImprovementState = {
+    stageIntroDone: boolean;
+    step: "discover" | "build" | "refine" | "review";
+    focus: {
+      chosenRoot: string | null;
+      chosenObjective: string | null;
+    };
+    initiatives: ImprovementInitiative[];
+    lastSummary: string | null;
+  };
+
+  function isImprovementReadyForValidation(st: ImprovementState) {
+    const initiatives = Array.isArray(st.initiatives) ? st.initiatives : [];
+    if (initiatives.length < 2) return false;
+
+    const allHaveObjective = initiatives.every((i) => Boolean((i.linkedObjective ?? "").trim()));
+    if (!allHaveObjective) return false;
+
+    const allHaveMeasurement = initiatives.every((i) => {
+      const indicator = (i.measurement?.indicator ?? "").trim();
+      const kpi = (i.measurement?.kpi ?? "").trim();
+      return Boolean(indicator || kpi);
+    });
+    if (!allHaveMeasurement) return false;
+
+    return true;
+  }
 
   function isFodaComplete(st: FodaState) {
     const quadrants: Array<keyof FodaState["items"]> = ["F", "D", "O", "A"];
@@ -480,6 +564,10 @@ export default function ChatPage() {
 
   const [objectivesState, setObjectivesState] = useState<ObjectivesState | null>(null);
   const saveObjectivesTimerRef = useRef<number | null>(null);
+
+  const [improvementState, setImprovementState] = useState<ImprovementState | null>(null);
+  const saveImprovementTimerRef = useRef<number | null>(null);
+
 
   const [ishikawaProblemPending, setIshikawaProblemPending] = useState(false);
 
@@ -1180,6 +1268,39 @@ export default function ChatPage() {
     };
   }, [ready, authenticated, mode, chatId]);
 
+  // 2.x Cargar estado Improvement (Etapa 7)
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+    if (!chatId) return;
+
+    let active = true;
+
+    (async () => {
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(`/api/plans/improvement/state?chatId=${encodeURIComponent(chatId)}`, {
+        headers: { ...authHeaders },
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      if (!active) return;
+      if (!ok) return;
+
+      const row = json?.data?.row ?? json?.row ?? null;
+      const stateJson = row?.state_json ?? null;
+
+      if (stateJson && typeof stateJson === "object") {
+        setImprovementState(stateJson as ImprovementState);
+      } else {
+        setImprovementState(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, chatId]);
 
   const restoredWizardRef = useRef<string | null>(null);
 
@@ -1325,7 +1446,7 @@ export default function ChatPage() {
   // -----------------------------
   if (!ready) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
         <p className="text-sm text-slate-300">Cargando autenticación...</p>
       </main>
     );
@@ -1337,7 +1458,7 @@ export default function ChatPage() {
 
   if (!gateChecked) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
         <p className="text-sm text-slate-300">Verificando acceso...</p>
       </main>
     );
@@ -1345,7 +1466,7 @@ export default function ChatPage() {
 
   if (accessDenied) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
+      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
         <div className="max-w-md w-full mx-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
           <h1 className="text-lg font-semibold mb-2">Acceso restringido</h1>
           <p className="text-sm text-slate-300 mb-4">
@@ -2963,6 +3084,87 @@ export default function ChatPage() {
     return { ok, payload: json };
   }
 
+  async function getImprovementState(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) return { ok: false as const, payload: null };
+
+    const res = await fetch(`/api/plans/improvement/state?chatId=${encodeURIComponent(cid)}`, {
+      headers: { ...authHeaders },
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function saveImprovementState(state: ImprovementState, effectiveChatId?: string | null) {
+    if (!accessToken) {
+      console.warn("[IMPROVEMENT] Guardado sin accessToken. Se omite.");
+      return { ok: false as const };
+    }
+
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) {
+      console.warn("[IMPROVEMENT] No hay chatId para guardar state. Se omite.");
+      return { ok: false as const };
+    }
+
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch("/api/plans/improvement/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid, stateJson: state }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    if (!ok) console.error("[IMPROVEMENT] save state failed", { status: res.status, json });
+    return { ok: ok as boolean };
+  }
+
+  async function callImprovementAssistant(input: {
+    studentMessage: string;
+    improvementState: ImprovementState;
+    caseContext: Record<string, unknown> | null;
+    effectiveChatId?: string | null;
+  }) {
+    const authHeaders = await getAuthHeaders();
+    const cid = input.effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/improvement/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        chatId: cid,
+        studentMessage: input.studentMessage,
+        improvementState: input.improvementState,
+        caseContext: input.caseContext ?? null,
+        recentHistory: buildRecentHistoryForAssistant(10),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function validateImprovement(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/improvement/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
 
   async function callIshikawaAssistant(args: {
     studentMessage: string;
@@ -3076,6 +3278,53 @@ export default function ChatPage() {
         const isStage1Validated = lastStatus === "validated";
 
         // ================================
+        // ETAPA 7: Plan de mejora (fluido con assistant)
+        // ================================
+        if (improvementState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+          const assistant = await callImprovementAssistant({
+            studentMessage: text,
+            improvementState,
+            caseContext: (ctx.contextJson ?? null) as any,
+            effectiveChatId,
+          });
+
+          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            await appendAssistant("⚠️ No pude procesar tu Plan de Mejora. ¿Me resumes en 1–2 líneas qué mejora quieres implementar o qué duda tienes?");
+            return;
+          }
+
+          const nextState = assistant.payload.updates.nextState as ImprovementState;
+
+          setImprovementState(nextState);
+          await saveImprovementState(nextState, effectiveChatId);
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          // Cierre: si llega a review y está listo, validamos Etapa 7
+          if (nextState.step === "review" && isImprovementReadyForValidation(nextState)) {
+            const v = await validateImprovement(effectiveChatId);
+
+            if (!v.ok) {
+              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 7 (Plan de Mejora).";
+              await appendAssistant(`⚠️ ${msg}`);
+              return;
+            }
+
+            if (v.payload?.valid) {
+              await appendAssistant(
+                "✅ **Etapa 7 (Plan de Mejora) finalizada**.\n\n" +
+                "Ahora pasamos a la **Etapa 8 (Planificación)** para definir tiempos, secuencia y un cronograma realista."
+              );
+
+              // Importante: dejamos de capturar Etapa 7
+              setImprovementState(null);
+            }
+          }
+
+          return;
+        }
+
+        // ================================
         // ETAPA 6: Objetivos (en progreso)
         // ================================
         if (objectivesState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
@@ -3106,12 +3355,30 @@ export default function ChatPage() {
               await appendAssistant(`⚠️ ${msg}`);
               return;
             }
+
             if (v.payload?.valid) {
-              await appendAssistant("✅ **Etapa 6 (Objetivos) finalizada**. Cuando estés listo, pasamos a la **Etapa 7 (Plan de mejora)**.");
+              await appendAssistant(
+                "✅ **Etapa 6 (Objetivos) finalizada**.\n\n" +
+                "Ahora entramos a la **Etapa 7: Plan de Mejora**.\n" +
+                "Cuéntame lo primero que se te viene a la mente como mejora (aunque no estés seguro). Si no tienes nada aún, lo construimos juntos."
+              );
+
+              // Iniciar ImprovementState y guardarlo
+              const initialImprovement: ImprovementState = {
+                stageIntroDone: true,
+                step: "discover",
+                focus: { chosenRoot: null, chosenObjective: null },
+                initiatives: [],
+                lastSummary: null,
+              };
+
+              setImprovementState(initialImprovement);
+              await saveImprovementState(initialImprovement, effectiveChatId);
+
+              // (Recomendado) desactivar ObjectivesState para que no lo siga capturando
+              setObjectivesState(null);
             }
           }
-
-
           return;
         }
 
@@ -4969,15 +5236,17 @@ export default function ChatPage() {
         />
       }
       sidebarOpen={sidebarOpen}
+      onCloseSidebar={() => setSidebarOpen(false)}
     >
       {/* Barra superior interna del chat */}
-      <div className="flex items-center justify-between mb-3 text-[11px] text-slate-400">
+      <div className="flex items-center justify-between mb-3 text-[11px] text-[color:var(--muted)]">
         {/* Bloque: 3 rayas + logo + título */}
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="mr-1 rounded-full p-2 hover:bg-white/10 transition-colors text-slate-200 text-base"
+            className="mr-1 rounded-full p-2 text-base transition-colors
+            text-[color:var(--foreground)] hover:bg-[color:var(--surface)]"
           >
             ☰
           </button>
@@ -4985,26 +5254,64 @@ export default function ChatPage() {
           <Image src="/logo-opt.png" alt="Logo OPT-IA" width={28} height={28} className="rounded-full" />
 
           <div className="flex flex-col">
-            <span className="text-xs font-semibold text-slate-100">OPT-IA</span>
-            <span className="text-[11px] text-slate-350">Asistente para estudiantes</span>
+            <span className="text-xs font-semibold text-[color:var(--foreground)]">OPT-IA</span>
+            <span className="text-[11px] text-[color:var(--muted)]">Asistente para estudiantes</span>
           </div>
         </div>
 
-        {/* Usuario + logout */}
+        {/* Usuario + logout + theme */}
         <div className="flex items-center gap-2">
-          <span className="hidden sm:inline text-[14px] text-slate-350">{displayName}</span>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="rounded-full p-2 hover:bg-[color:var(--surface)] transition-colors"
+            title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+            aria-label="Cambiar tema"
+          >
+            {theme === "dark" ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+                <path
+                  d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5Z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
+
+          <span className="hidden sm:inline text-[14px] text-[color:var(--muted)]">{displayName}</span>
+
           <button
             onClick={handleLogout}
-            className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700 text-[14px]"
+            className="rounded px-2 py-1 text-[14px]
+            text-[color:var(--foreground)]
+            border border-[color:var(--border)]
+            hover:bg-[color:var(--surface)]"
           >
             Cerrar sesión
           </button>
         </div>
+
       </div>
 
       {/* Selector de modo */}
       <div className="mb-0 flex flex-wrap gap-2 text-[11px]">
-        <span className="text-slate-500 mt-1 mr-2">Modo del asistente:</span>
+        <span className="mt-1 mr-2 text-[color:var(--muted)]">Modo del asistente:</span>
 
         <button
           type="button"
@@ -5016,8 +5323,8 @@ export default function ChatPage() {
           }}
           className={`px-3 py-1 rounded-full border text-xs transition ${
             mode === "general"
-              ? "bg-sky-600 border-sky-500 text-white"
-              : "bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800"
+              ? "bg-[color:var(--primary)] border-[color:var(--primary)] text-[color:var(--primary-foreground)]"
+              : "bg-transparent border-[color:var(--border)] text-[color:var(--muted)] hover:bg-[color:var(--surface)]"
           }`}
         >
           Asistente general
@@ -5033,8 +5340,8 @@ export default function ChatPage() {
           }}
           className={`px-3 py-1 rounded-full border text-xs transition ${
             mode === "plan_mejora"
-              ? "bg-sky-600 border-sky-500 text-white"
-              : "bg-transparent border-slate-700 text-slate-300 hover:bg-slate-800"
+              ? "bg-[color:var(--primary)] border-[color:var(--primary)] text-[color:var(--primary-foreground)]"
+              : "bg-transparent border-[color:var(--border)] text-[color:var(--muted)] hover:bg-[color:var(--surface)]"
           }`}
         >
           Asesor de Plan de Mejora

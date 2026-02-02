@@ -5,12 +5,56 @@
    Paleta base
    ========= */
 :root {
+  /* Theme base (dark por defecto) */
   --background: #05060a;
   --foreground: #ededed;
 
+  /* App gradient (chat layout) */
+  --app-bg-from: #05060a;
+  --app-bg-via: #090b11;
+  --app-bg-to: #05060a;
+
+  /* Surfaces / borders */
+  --surface: rgba(255, 255, 255, 0.05);
+  --border: rgba(255, 255, 255, 0.10);
+
+  /* Text helpers */
+  --muted: rgba(148, 163, 184, 0.9); /* similar a slate-400 */
+
+  /* Scrollbar */
   --sb-track: rgba(255, 255, 255, 0.04);
   --sb-thumb: rgba(255, 255, 255, 0.12);
   --sb-thumb-hover: rgba(255, 255, 255, 0.18);
+
+  --primary: #0284c7;           /* sky-600 aprox */
+  --primary-hover: #0369a1;     /* sky-700 aprox */
+  --primary-foreground: #ffffff;
+
+}
+
+/* Light theme */
+:root[data-theme="light"] {
+  --background: #f6f7fb;
+  --foreground: #0b1220;
+
+  --app-bg-from: #ffffff;
+  --app-bg-via: #f3f6ff;
+  --app-bg-to: #ffffff;
+
+  --surface: rgba(0, 0, 0, 0.04);
+  --border: rgba(0, 0, 0, 0.10);
+
+  --muted: rgba(51, 65, 85, 0.85); /* similar a slate-600 */
+
+  --sb-track: rgba(0, 0, 0, 0.05);
+  --sb-thumb: rgba(0, 0, 0, 0.20);
+  --sb-thumb-hover: rgba(0, 0, 0, 0.28);
+
+  --primary: #3b82f6;        /* blue-500 (menos pesado) */
+  --primary-hover: #2563eb;  /* blue-600 */
+  --primary-foreground: #ffffff;
+
+  --primary-soft: rgba(59, 130, 246, 0.12); /* opcional para botones suaves */
 }
 
 /* Si realmente quieres mapear tokens Tailwind v4 (opcional):

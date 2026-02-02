@@ -24,6 +24,43 @@ type Cohort = {
 
 type DocenteTab = "config" | "approvals" | "dashboard" | "chat";
 
+const DOCENTE_TAB_TITLES: Record<DocenteTab, string> = {
+  config: "Configuración",
+  approvals: "Aprobaciones",
+  dashboard: "Dashboard",
+  chat: "Chat",
+};
+
+function LogoutIcon({ active }: { active: boolean }) {
+  const cls =
+    "h-5 w-5 block align-middle " +
+    (active ? "text-slate-100" : "text-slate-300 group-hover:text-slate-100");
+
+  return (
+    <svg className={cls} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M10 7V6a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3h-6a3 3 0 0 1-3-3v-1"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 12h9"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M7 9l-3 3 3 3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function Icon({
   name,
   active,
@@ -181,6 +218,13 @@ export default function DocenteHome() {
   const [token, setToken] = useState<string | null>(null);
   const [tab, setTab] = useState<DocenteTab>("config");
 
+  const TAB_META: Record<DocenteTab, { title: string; subtitle: string }> = {
+    config: { title: "Configuración", subtitle: "Cohortes, fechas, formularios" },
+    approvals: { title: "Aprobaciones", subtitle: "Revisar registros" },
+    dashboard: { title: "Dashboard", subtitle: "Indicadores y reportes" },
+    chat: { title: "Chat", subtitle: "Consulta rendimiento" },
+  };
+
   const authHeaders = useMemo<HeadersInit>(() => {
     const h: HeadersInit = {};
     if (token) h["Authorization"] = `Bearer ${token}`;
@@ -330,15 +374,17 @@ export default function DocenteHome() {
     }
   }
 
+  async function handleSignOut() {
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      window.location.href = "/";
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 py-10 px-6 md:pl-[92px]">
       <div className="w-full max-w-none">
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold">Panel de Docente – OPT-IA</h1>
-          <p className="mt-1 text-sm text-slate-300">
-            MVP: aprobar registros de estudiantes. (Luego conectamos métricas, rendimiento y exportables).
-          </p>
-        </div>
 
         {!token && (
           <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-200">
@@ -370,7 +416,7 @@ export default function DocenteHome() {
                     <div className="h-10 flex items-center">
                       {/* COLAPSADO: solo OPT (sin círculo) */}
                       <div className="w-full flex items-center justify-center group-hover/sidebar:hidden">
-                        <span className="text-xs font-semibold tracking-[0.25em] text-slate-200">
+                        <span className="text-xs font-semibold tracking-[0.25em] text-slate-100">
                           OPT
                         </span>
                       </div>
@@ -427,12 +473,42 @@ export default function DocenteHome() {
 
                   {/* Spacer */}
                   <div className="flex-1" />
+                  {/* Salir */}
+                  <div className="w-full pt-3">
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      title="Salir"
+                      className={[
+                        "group/nav w-full rounded-2xl transition relative overflow-hidden",
+                        "bg-transparent hover:bg-slate-900/20",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-center justify-center py-2 px-0 group-hover/sidebar:justify-start group-hover/sidebar:px-3 gap-3">
+                        <div className="h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center transition border border-slate-800/80 bg-slate-950/35">
+                          <LogoutIcon active={false} />
+                        </div>
+
+                        <div className="hidden group-hover/sidebar:block min-w-0 text-left">
+                          <div className="text-sm font-medium text-slate-100 truncate">Salir</div>
+                          <div className="text-[11px] text-slate-400 truncate">Cerrar sesión</div>
+                        </div>
+                      </div>
+                    </button>
+                  </div>
                 </div>
               </div>
             </aside>
 
             {/* Contenido */}
             <section className="flex-1 min-w-0">
+
+              <div className="mb-6">
+                <h1 className="text-2xl font-semibold text-slate-100">
+                  {TAB_META[tab].title}
+                </h1>
+              </div>
+
               {tab === "config" && <CohortsPanel />}
 
               {tab === "approvals" && (

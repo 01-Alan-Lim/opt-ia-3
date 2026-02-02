@@ -109,7 +109,8 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
               max={200}
               value={hours}
               onChange={(e) => setHours(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg bg-black/20 border border-white/10 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500/60"
+              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)]
+ outline-none focus:border-sky-500/60"
             />
           </label>
 
@@ -119,7 +120,7 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
               rows={2}
               value={activity}
               onChange={(e) => setActivity(e.target.value)}
-              className="mt-1 w-full rounded-lg bg-black/20 border border-white/10 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500/60"
+              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)] outline-none focus:border-sky-500/60"
             />
           </label>
 

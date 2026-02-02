@@ -224,6 +224,7 @@ export async function POST(req: Request) {
           context_text: contextText ?? current?.context_text ?? null,
         },
         { onConflict: "user_id" }
+
       )
       .select("status,version,chat_id,context_json,context_text")
       .single();

@@ -23,8 +23,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           "max-w-[80%] rounded-2xl px-3 py-2 text-base leading-relaxed shadow-sm",
           {
             "bg-sky-500 text-white rounded-br-sm": isUser,
-            "bg-slate-800 text-slate-100 rounded-bl-sm": isAssistant,
-            "bg-slate-700 text-slate-200": message.role === "system",
+            "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)] rounded-bl-sm":
+              isAssistant,
+            "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)]":
+              message.role === "system",
           }
         )}
       >
@@ -33,7 +35,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           {message.content}
         </div>
 
-        <div className="mt-1 text-[11x] text-slate-300/70 text-right">
+        <div className="mt-1 text-[11px] text-[color:var(--muted)] text-right">
           {new Date(message.createdAt).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",

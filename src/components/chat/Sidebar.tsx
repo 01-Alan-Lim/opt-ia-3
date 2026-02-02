@@ -210,7 +210,15 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
     <div className="flex flex-col h-full min-h-0">
       <button
         onClick={onNewChat}
-        className="sticky top-0 z-20 mb-4 w-full rounded-lg bg-sky-500 hover:bg-sky-600 text-sm font-medium py-2 transition"
+        className="sticky top-0 z-20 mb-4 w-full rounded-lg py-2 text-sm font-medium transition
+        flex items-center justify-center text-center
+        bg-[color:var(--primary)] hover:bg-[color:var(--primary-hover)]
+        text-[color:var(--primary-foreground)]
+        [html[data-theme='light']_&]:bg-[color:var(--primary-soft)]
+        [html[data-theme='light']_&]:text-[color:var(--primary)]
+        [html[data-theme='light']_&]:border
+        [html[data-theme='light']_&]:border-[color:var(--border)]
+        [html[data-theme='light']_&]:shadow-none"
       >
         + Nuevo chat
       </button>
@@ -234,8 +242,8 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                 if (menuOpenFor === chat.id) openItemRef.current = el;
               }}
               className={clsx(
-                "group relative w-full rounded-lg border border-slate-800 transition",
-                isActive ? "bg-slate-800 border-sky-500" : "hover:bg-slate-800"
+                "group relative w-full rounded-lg border border-[color:var(--border)] transition",
+                isActive ? "bg-[color:var(--surface)] border-sky-500" : "hover:bg-[color:var(--surface)]"
               )}
             >
               <button
@@ -257,10 +265,11 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                         if (e.key === "Escape") setEditingId(null);
                       }}
                       onBlur={() => commitRename(chat.id)}
-                      className="w-full bg-slate-900/40 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 outline-none"
+                      className="w-full bg-[color:var(--surface)] border border-[color:var(--border)] rounded px-2 py-1 text-xs text-[color:var(--foreground)] outline-none"
                     />
                   ) : (
-                    <div className="font-medium truncate text-xs text-slate-100">{chat.title}</div>
+                    <div className="font-medium truncate text-xs text-[color:var(--foreground)]">{chat.title}</div>
+
                   )}
                 </div>
 
@@ -277,7 +286,7 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                   className={clsx(
                     "absolute right-1 top-1/2 -translate-y-1/2 rounded-md",
                     "h-5 w-8 flex items-center justify-center",
-                    "text-slate-100 hover:bg-white/15",
+                    "text-[color:var(--foreground)] hover:bg-[color:var(--surface)]",
                     "text-base leading-none",
                     isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                   )}
@@ -290,7 +299,7 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
               {menuOpenFor === chat.id && (
                 <div
                   onClick={(e) => e.stopPropagation()}
-                  className="absolute right-2 top-9 z-[999] w-48 rounded-xl border border-slate-700 bg-slate-900 shadow-lg p-1"
+                  className="absolute right-2 top-9 z-[999] w-48 rounded-xl border border-[color:var(--border)] bg-[color:var(--background)] shadow-lg p-1"
                 >
                   {/* Renombrar */}
                   <button

@@ -229,7 +229,7 @@ export function CohortsPanel() {
       form_monthly_url: normalizeUrlOrNull(form.form_monthly_url),
       form_final_url: normalizeUrlOrNull(form.form_final_url),
       reminder_hour: Number.isFinite(hour) ? hour : 11,
-      reminder_minute: 0,
+      reminder_minute: Number.isFinite(minute) ? minute : 0,
 
     };
   }
@@ -542,11 +542,11 @@ export function CohortsPanel() {
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[320px_1fr]">
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[270px_1fr]">
         {/* LISTA */}
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 flex flex-col min-h-[640px]">
+        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 xl:sticky xl:top-6 self-start">
           <div className="mb-3 flex items-center justify-between">
-            <div className="text-xs text-slate-400">Lista</div>
+            <div className="text-xs text-slate-400">Lista de cohortes</div>
             <div className="text-[11px] text-slate-500">{cohorts.length}</div>
           </div>
 
@@ -555,10 +555,10 @@ export function CohortsPanel() {
           ) : cohorts.length === 0 ? (
             <div className="text-sm text-slate-300">No hay cohortes.</div>
           ) : (
-            <ul className="space-y-2 overflow-auto pr-1 flex-1">
+            <ul className="space-y-2 overflow-auto pr-1 max-h-[calc(100vh-260px)]">
               {cohorts.map((c) => (
                 <li key={c.id} className="rounded-xl border border-slate-800/80 bg-slate-950/40 px-3 py-2">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
                     <button
                       type="button"
                       onClick={() => {
@@ -588,7 +588,7 @@ export function CohortsPanel() {
                           }
                         })();
                       }}
-                      className="w-full text-left"
+                      className="flex-1 min-w-0 text-left"
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-slate-100 truncate">{c.name}</span>
@@ -617,14 +617,16 @@ export function CohortsPanel() {
                     </button>
 
                     {!c.is_active && (
-                      <button
-                        type="button"
-                        onClick={() => handleActivate(c)}
-                        className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-900 disabled:opacity-60"
-                        disabled={saving}
-                      >
-                        Activar
-                      </button>
+                      <div className="shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleActivate(c)}
+                          className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 hover:bg-slate-900 disabled:opacity-60"
+                          disabled={saving}
+                        >
+                          Activar
+                        </button>
+                      </div>
                     )}
                   </div>
                 </li>
@@ -712,12 +714,13 @@ export function CohortsPanel() {
               </div>
             </div>
 
-            {/* ✅ Seguimiento */}
-            <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-              <div className="text-xs font-semibold text-slate-200">Seguimiento (Horas + formularios)</div>
-              <div className="mt-2 grid grid-cols-1 gap-3">
-          
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {/* Bloques (layout más compacto en pantallas grandes) */}
+            <div className="mt-2 grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {/* ✅ Seguimiento + Avances (izquierda) */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="text-xs font-semibold text-slate-200">Seguimiento de horas</div>
+
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className="block">
                     <span className="mb-1 block text-xs text-slate-400">Sábado inicial</span>
                     <input
@@ -745,112 +748,18 @@ export function CohortsPanel() {
                     />
                   </label>
                 </div>
-              </div>
-            </div>
 
-            {/* ✅ Formularios: URL + Fecha (2 columnas x 3 filas) */}
-            <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-              <div className="text-xs font-semibold text-slate-200">Formularios</div>
-              {eventsLoading ? (
-                <div className="mt-2 text-sm text-slate-300">Cargando fechas...</div>
-              ) : (
-                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  {/* Fila 1: Inicial */}
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Formulario inicial (URL)</span>
-                    <input
-                          value={form.form_initial_url}
-                          onChange={(e) => setForm((p) => ({ ...p, form_initial_url: e.target.value }))}
-                          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-                          placeholder="https://forms.gle/..."
-                    />
-                  </label>
+                {/* ✅ Fechas de avances (debajo, mismo bloque) */}
+                <div className="mt-4">
+                  <div className="text-xs font-semibold text-slate-200">Fechas de avances</div>
 
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Fecha form inicial</span>
-                    <input
-                          type="date"
-                          value={eventsForm.form_initial_date}
-                          onChange={(e) => setEventsForm((p) => ({ ...p, form_initial_date: e.target.value }))}
-                          className="
-                            w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
-                            pr-1 cursor-pointer
-                            [&::-webkit-calendar-picker-indicator]:opacity-80
-                            [&::-webkit-calendar-picker-indicator]:invert
-                            [&::-webkit-calendar-picker-indicator]:cursor-pointer
-                          "
-                    />
-                  </label>
-
-                  {/* Fila 2: Mensual */}
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Formulario de productividad (URL)</span>
-                    <input
-                          value={form.form_monthly_url}
-                          onChange={(e) => setForm((p) => ({ ...p, form_monthly_url: e.target.value }))}
-                          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-                          placeholder="https://forms.gle/..."
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Fecha form mensual (base)</span>
-                    <input
-                          type="date"
-                          value={eventsForm.form_monthly_base}
-                          onChange={(e) => setEventsForm((p) => ({ ...p, form_monthly_base: e.target.value }))}
-                          className="
-                            w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
-                            pr-1 cursor-pointer
-                            [&::-webkit-calendar-picker-indicator]:opacity-80
-                            [&::-webkit-calendar-picker-indicator]:invert
-                            [&::-webkit-calendar-picker-indicator]:cursor-pointer
-                          "
-                    />
-
-                  </label>
-
-                  {/* Fila 3: Final */}
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Formulario de sistematización (URL)</span>
-                    <input
-                          value={form.form_final_url}
-                          onChange={(e) => setForm((p) => ({ ...p, form_final_url: e.target.value }))}
-                          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-                          placeholder="https://forms.gle/..."
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Fecha form final</span>
-                    <input
-                          type="date"
-                          value={eventsForm.form_final_date}
-                          onChange={(e) => setEventsForm((p) => ({ ...p, form_final_date: e.target.value }))}
-                          className="
-                            w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
-                            pr-1 cursor-pointer
-                            [&::-webkit-calendar-picker-indicator]:opacity-80
-                            [&::-webkit-calendar-picker-indicator]:invert
-                            [&::-webkit-calendar-picker-indicator]:cursor-pointer
-                          "
-                    />
-                   </label>
-                </div>
-              )}
-            </div>
-
-            {/* ✅ Avances */}
-            <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-              <div className="text-xs font-semibold text-slate-200">Fechas de avances</div>
-
-              {eventsLoading ? (
-                <div className="mt-2 text-sm text-slate-300">Cargando fechas...</div>
-              ) : (
-                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Avance 1</span>
-                    <input
+                  {eventsLoading ? (
+                    <div className="mt-2 text-sm text-slate-300">Cargando fechas...</div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-slate-400">Avance 1</span>
+                        <input
                           type="date"
                           value={eventsForm.advance_1}
                           onChange={(e) => setEventsForm((p) => ({ ...p, advance_1: e.target.value }))}
@@ -861,12 +770,12 @@ export function CohortsPanel() {
                             [&::-webkit-calendar-picker-indicator]:invert
                             [&::-webkit-calendar-picker-indicator]:cursor-pointer
                           "
-                    />
-                  </label>
+                        />
+                      </label>
 
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Avance 2</span>
-                    <input
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-slate-400">Avance 2</span>
+                        <input
                           type="date"
                           value={eventsForm.advance_2}
                           onChange={(e) => setEventsForm((p) => ({ ...p, advance_2: e.target.value }))}
@@ -877,12 +786,12 @@ export function CohortsPanel() {
                             [&::-webkit-calendar-picker-indicator]:invert
                             [&::-webkit-calendar-picker-indicator]:cursor-pointer
                           "
-                    />
-                  </label>
+                        />
+                      </label>
 
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Avance 3</span>
-                    <input
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-slate-400">Avance 3</span>
+                        <input
                           type="date"
                           value={eventsForm.advance_3}
                           onChange={(e) => setEventsForm((p) => ({ ...p, advance_3: e.target.value }))}
@@ -893,10 +802,104 @@ export function CohortsPanel() {
                             [&::-webkit-calendar-picker-indicator]:invert
                             [&::-webkit-calendar-picker-indicator]:cursor-pointer
                           "
-                    />
-                  </label>
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+
+              {/* ✅ Formularios (derecha) */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="text-xs font-semibold text-slate-200">Formularios</div>
+
+                {eventsLoading ? (
+                  <div className="mt-2 text-sm text-slate-300">Cargando fechas...</div>
+                ) : (
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {/* Fila 1: Inicial */}
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Formulario inicial (URL)</span>
+                      <input
+                        value={form.form_initial_url}
+                        onChange={(e) => setForm((p) => ({ ...p, form_initial_url: e.target.value }))}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                        placeholder="https://forms.gle/..."
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Fecha form inicial</span>
+                      <input
+                        type="date"
+                        value={eventsForm.form_initial_date}
+                        onChange={(e) => setEventsForm((p) => ({ ...p, form_initial_date: e.target.value }))}
+                        className="
+                          w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
+                          pr-1 cursor-pointer
+                          [&::-webkit-calendar-picker-indicator]:opacity-80
+                          [&::-webkit-calendar-picker-indicator]:invert
+                          [&::-webkit-calendar-picker-indicator]:cursor-pointer
+                        "
+                      />
+                    </label>
+
+                    {/* Fila 2: Mensual */}
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Formulario de productividad (URL)</span>
+                      <input
+                        value={form.form_monthly_url}
+                        onChange={(e) => setForm((p) => ({ ...p, form_monthly_url: e.target.value }))}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                        placeholder="https://forms.gle/..."
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Fecha form mensual (base)</span>
+                      <input
+                        type="date"
+                        value={eventsForm.form_monthly_base}
+                        onChange={(e) => setEventsForm((p) => ({ ...p, form_monthly_base: e.target.value }))}
+                        className="
+                          w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
+                          pr-1 cursor-pointer
+                          [&::-webkit-calendar-picker-indicator]:opacity-80
+                          [&::-webkit-calendar-picker-indicator]:invert
+                          [&::-webkit-calendar-picker-indicator]:cursor-pointer
+                        "
+                      />
+                    </label>
+
+                    {/* Fila 3: Final */}
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Formulario de sistematización (URL)</span>
+                      <input
+                        value={form.form_final_url}
+                        onChange={(e) => setForm((p) => ({ ...p, form_final_url: e.target.value }))}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                        placeholder="https://forms.gle/..."
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-slate-400">Fecha form final</span>
+                      <input
+                        type="date"
+                        value={eventsForm.form_final_date}
+                        onChange={(e) => setEventsForm((p) => ({ ...p, form_final_date: e.target.value }))}
+                        className="
+                          w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
+                          pr-1 cursor-pointer
+                          [&::-webkit-calendar-picker-indicator]:opacity-80
+                          [&::-webkit-calendar-picker-indicator]:invert
+                          [&::-webkit-calendar-picker-indicator]:cursor-pointer
+                        "
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Botonera */}

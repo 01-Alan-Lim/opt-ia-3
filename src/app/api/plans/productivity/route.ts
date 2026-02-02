@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
 export const runtime = "nodejs";
 
@@ -145,7 +146,7 @@ export async function POST(req: Request) {
         status: "draft",
         payload: mergedPayload,
       },
-      { onConflict: "user_id,stage,artifact_type,period_key" }
+      { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
     )
     .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
     .single();
