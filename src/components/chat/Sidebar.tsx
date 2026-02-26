@@ -26,9 +26,13 @@ interface SidebarProps {
   currentChatId: string | null;
   onSelectChat: (chatId: string | null, mode?: ChatMode) => void;
   onNewChat: () => void;
+
+  // ✅ NUEVO: para mover logout al final del historial
+  onLogout?: () => void;
+  displayName?: string | null;
 }
 
-export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps) {
+export function Sidebar({ currentChatId, onSelectChat, onNewChat, onLogout, displayName }: SidebarProps) {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -303,7 +307,7 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
                 >
                   {/* Renombrar */}
                   <button
-                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10"
+                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-[color:var(--surface)]"
                     onClick={() => startRename(chat)}
                   >
                     Cambiar nombre
@@ -311,7 +315,7 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
 
                   {/* Pin */}
                   <button
-                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-white/10"
+                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-[color:var(--surface)]"
                     onClick={() => togglePinned(chat)}
                   >
                     {chat.pinned ? "No fijar" : "Fijar"}
@@ -319,7 +323,7 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
 
                   {/* Eliminar */}
                   <button
-                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-red-500/15 text-red-300"
+                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-red-500/10 text-red-600 dark:text-red-300"
                     onClick={() => setConfirmDeleteId(chat.id)}
                   >
                     Eliminar
@@ -327,17 +331,19 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
 
                   {/* Confirmación pequeña */}
                   {confirmDeleteId === chat.id && (
-                    <div className="mt-1 rounded-lg border border-slate-700 bg-slate-950 p-2">
-                      <div className="text-[11px] text-slate-200 mb-2">
+                    <div className="mt-1 rounded-lg border border-[color:var(--border)] bg-[color:var(--background)] p-2">
+                      <div className="text-[11px] text-[color:var(--foreground)]/80 mb-2">
                         ¿Eliminar este chat de la lista?
                       </div>
+
                       <div className="flex gap-2">
                         <button
-                          className="flex-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] py-1"
+                          className="flex-1 rounded bg-[color:var(--surface)] hover:brightness-95 text-[11px] py-1 text-[color:var(--foreground)]"
                           onClick={() => setConfirmDeleteId(null)}
                         >
                           Cancelar
                         </button>
+
                         <button
                           className="flex-1 rounded bg-red-600 hover:bg-red-500 text-[11px] py-1 text-white"
                           onClick={() => confirmDelete(chat.id)}
@@ -354,7 +360,19 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat }: SidebarProps
         })}
       </div>
 
-      <div className="pt-3 mt-3 border-t border-slate-800 text-[10px] text-slate-500" />
+      {/* ✅ Footer del sidebar: borde suave + logout */}
+      <div className="mt-3 pt-3 border-t border-[color:var(--border)]">
+        <button
+          type="button"
+          onClick={onLogout}
+          disabled={!onLogout}
+          className="w-full rounded-lg border border-[color:var(--border)] px-3 py-2 text-sm
+            text-[color:var(--foreground)] hover:bg-[color:var(--surface)] transition
+            disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Cerrar sesión
+        </button>
+      </div>
     </div>
   );
 }

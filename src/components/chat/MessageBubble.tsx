@@ -20,13 +20,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     >
       <div
         className={clsx(
-          "max-w-[80%] rounded-2xl px-3 py-2 text-base leading-relaxed shadow-sm",
+          "max-w-[80%] rounded-2xl px-3 py-2 text-base leading-relaxed chat-bubble-shadow",
           {
             "bg-sky-500 text-white rounded-br-sm": isUser,
-            "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)] rounded-bl-sm":
-              isAssistant,
+
             "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)]":
-              message.role === "system",
+              isAssistant || message.role === "system",
           }
         )}
       >

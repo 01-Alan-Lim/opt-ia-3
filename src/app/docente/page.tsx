@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
+import { TeacherChat } from "@/components/teacher/TeacherChat";
+import { TeacherDashboard } from "@/components/teacher/TeacherDashboard";
 
 type Student = {
   user_id: string;
@@ -26,7 +28,7 @@ type DocenteTab = "config" | "approvals" | "dashboard" | "chat";
 
 const DOCENTE_TAB_TITLES: Record<DocenteTab, string> = {
   config: "Configuración",
-  approvals: "Aprobaciones",
+  approvals: "Accesos",
   dashboard: "Dashboard",
   chat: "Chat",
 };
@@ -177,16 +179,18 @@ function NavItem({
       title={title} // tooltip nativo en colapsado
       className={[
         "group/nav w-full rounded-2xl transition relative overflow-hidden",
-        active ? "bg-slate-900/25" : "bg-transparent hover:bg-slate-900/20",
+        active
+          ? ["bg-slate-900/45", "ring-1 ring-sky-500/20"].join(" ")
+          : "bg-transparent hover:bg-slate-900/25",
       ].join(" ")}
+
     >
       <div className="flex items-center justify-center py-2 px-0 group-hover/sidebar:justify-start group-hover/sidebar:px-3 gap-3">
         {/* Icon pill: centrado siempre */}
         <div
           className={[
             "h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center transition",
-            "border border-slate-800/80",
-            active ? "bg-slate-900/30" : "bg-slate-950/35",
+            // ✅ sin border ni bg para que NO se vea como un círculo/pastilla
           ].join(" ")}
         >
           <Icon name={icon} active={active} />
@@ -220,7 +224,7 @@ export default function DocenteHome() {
 
   const TAB_META: Record<DocenteTab, { title: string; subtitle: string }> = {
     config: { title: "Configuración", subtitle: "Cohortes, fechas, formularios" },
-    approvals: { title: "Aprobaciones", subtitle: "Revisar registros" },
+    approvals: { title: "Accesos", subtitle: "Revisar registros" },
     dashboard: { title: "Dashboard", subtitle: "Indicadores y reportes" },
     chat: { title: "Chat", subtitle: "Consulta rendimiento" },
   };
@@ -365,7 +369,12 @@ export default function DocenteHome() {
         return;
       }
 
-      setInfoMsg(next === "approved" ? "Estudiante aprobado." : "Estudiante rechazado.");
+      const msg =
+        next === "approved"
+          ? (status === "rejected" ? "Estudiante habilitado." : "Estudiante aprobado.")
+          : (status === "approved" ? "Estudiante deshabilitado." : "Estudiante rechazado.");
+
+      setInfoMsg(msg);
       await loadStudents();
     } catch {
       setErrorMsg("Error de red al actualizar estado.");
@@ -452,7 +461,7 @@ export default function DocenteHome() {
                       active={tab === "approvals"}
                       onClick={() => setTab("approvals")}
                       icon="approvals"
-                      title="Aprobaciones"
+                      title="Accesos"
                       subtitle="Revisar registros"
                     />
                     <NavItem
@@ -485,7 +494,7 @@ export default function DocenteHome() {
                       ].join(" ")}
                     >
                       <div className="flex items-center justify-center py-2 px-0 group-hover/sidebar:justify-start group-hover/sidebar:px-3 gap-3">
-                        <div className="h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center transition border border-slate-800/80 bg-slate-950/35">
+                        <div className="h-11 w-11 shrink-0 rounded-2xl flex items-center justify-center transition text-slate-200 group-hover/nav:text-slate-100">
                           <LogoutIcon active={false} />
                         </div>
 
@@ -523,7 +532,7 @@ export default function DocenteHome() {
                           className="mt-1 w-full rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2 text-sm"
                         >
                           <option value="pending">Pendientes</option>
-                          <option value="approved">Aprobados</option>
+                          <option value="approved">Habilitados</option>
                           <option value="rejected">Rechazados</option>
                         </select>
                       </div>
@@ -554,11 +563,11 @@ export default function DocenteHome() {
                             value={q}
                             onChange={(e) => setQ(e.target.value)}
                             className="w-full rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2 text-sm"
-                            placeholder="Ej: 20201234 o Alan"
+                            placeholder="Ej: 20201234 o Juan Pérez"
                           />
                           <button
                             onClick={loadStudents}
-                            className="rounded-lg bg-slate-800 hover:bg-slate-700 px-4 py-2 text-sm"
+                            className="rounded-lg bg-slate-800 hover:bg-slate-700 px-7 py-2 text-sm"
                           >
                             Buscar
                           </button>
@@ -585,7 +594,7 @@ export default function DocenteHome() {
                       </p>
                       <button
                         onClick={loadStudents}
-                        className="rounded bg-slate-800 hover:bg-slate-700 px-3 py-1 text-sm"
+                        className="rounded bg-slate-800 hover:bg-slate-700 px-5 py-1 text-sm"
                       >
                         Refrescar
                       </button>
@@ -620,21 +629,49 @@ export default function DocenteHome() {
                             </div>
 
                             <div className="flex gap-2">
-                              <button
-                                disabled={actingId === s.user_id}
-                                onClick={() => act(s.user_id, "approved")}
-                                className="rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-60 px-3 py-2 text-sm"
-                              >
-                                Aprobar
-                              </button>
-                              <button
-                                disabled={actingId === s.user_id}
-                                onClick={() => act(s.user_id, "rejected")}
-                                className="rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-60 px-3 py-2 text-sm"
-                              >
-                                Rechazar
-                              </button>
+                              {/* PENDIENTE: aprobar / rechazar */}
+                              {s.registration_status === "pending" && (
+                                <>
+                                  <button
+                                    disabled={actingId === s.user_id}
+                                    onClick={() => act(s.user_id, "approved")}
+                                    className="rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-60 px-3 py-2 text-sm"
+                                  >
+                                    Aprobar
+                                  </button>
+                                  <button
+                                    disabled={actingId === s.user_id}
+                                    onClick={() => act(s.user_id, "rejected")}
+                                    className="rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-60 px-3 py-2 text-sm"
+                                  >
+                                    Rechazar
+                                  </button>
+                                </>
+                              )}
+
+                              {/* APROBADO: deshabilitar */}
+                              {s.registration_status === "approved" && (
+                                <button
+                                  disabled={actingId === s.user_id}
+                                  onClick={() => act(s.user_id, "rejected")}
+                                  className="rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-60 px-3 py-2 text-sm"
+                                >
+                                  Deshabilitar
+                                </button>
+                              )}
+
+                              {/* RECHAZADO: habilitar */}
+                              {s.registration_status === "rejected" && (
+                                <button
+                                  disabled={actingId === s.user_id}
+                                  onClick={() => act(s.user_id, "approved")}
+                                  className="rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-60 px-3 py-2 text-sm"
+                                >
+                                  Habilitar
+                                </button>
+                              )}
                             </div>
+
                           </div>
                         );
                       })}
@@ -649,18 +686,12 @@ export default function DocenteHome() {
                 </>
               )}
 
-              {tab === "dashboard" && (
-                <NotImplemented
-                  title="Dashboard"
-                  hint="Aquí irá el panel de indicadores, reportes por estudiante y exportables."
-                />
-              )}
+              {tab === "dashboard" && <TeacherDashboard />}
 
               {tab === "chat" && (
-                <NotImplemented
-                  title="Chat Docente"
-                  hint="Aquí irá un chat para consultar rendimiento/resumen del estudiante sin leer chats largos."
-                />
+                <div className="mx-auto w-full max-w-7xl">
+                  <TeacherChat />
+                </div>
               )}
             </section>
           </div>

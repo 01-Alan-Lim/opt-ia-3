@@ -1,7 +1,7 @@
 // src/app/chat/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import { HoursInlinePanel } from "@/components/chat/HoursInlinePanel";
@@ -165,6 +165,29 @@ export default function ChatPage() {
   const modeRef = useRef<ChatMode>("general");
   const messagesRef = useRef<Message[]>([]);
   const suppressNextHistoryHydrationRef = useRef(false);
+
+  const chatAreaRef = useRef<HTMLDivElement | null>(null);
+  const composerMeasureRef = useRef<HTMLDivElement | null>(null);
+
+
+  useLayoutEffect(() => {
+    const measureEl = composerMeasureRef.current;
+    const areaEl = chatAreaRef.current;
+    if (!measureEl || !areaEl) return;
+
+    const setVar = () => {
+      const h = measureEl.getBoundingClientRect().height;
+      areaEl.style.setProperty("--composer-h", `${h}px`);
+    };
+
+    setVar();
+
+    const ro = new ResizeObserver(() => setVar());
+    ro.observe(measureEl);
+
+    return () => ro.disconnect();
+  }, []);
+
 
   // -----------------------------
   // Cache ligero para evitar GETs repetidos en Ishikawa
@@ -385,6 +408,132 @@ export default function ChatPage() {
     return true;
   }
 
+  // ================================
+  // ETAPA 8: Planificación (types + gate helper)
+  // ================================
+  type PlanningMilestone = {
+    id: string;
+    title: string;
+    week: number | null; // 1..N
+    deliverable: string | null;
+  };
+
+  type PlanningWeekItem = {
+    week: number;
+    focus: string;
+    tasks: string[];
+    evidence: string | null;
+    measurement: string | null;
+  };
+
+  type PlanningState = {
+    stageIntroDone: boolean;
+    step: "time_window" | "breakdown" | "schedule" | "review";
+    time: {
+      studentWeeks: number | null;
+      courseCutoffDate: string | null; // opcional si el contexto lo trae
+      effectiveWeeks: number | null;   // opcional
+      notes: string | null;
+    };
+    plan: {
+      weekly: PlanningWeekItem[];
+      milestones: PlanningMilestone[];
+      risks: string[];
+    };
+    lastSummary: string | null;
+  };
+
+  function isPlanningReadyForValidation(st: PlanningState) {
+    const studentWeeksOk =
+      typeof st?.time?.studentWeeks === "number" && Number.isFinite(st.time.studentWeeks) && st.time.studentWeeks > 0;
+
+    const cutoffOk = typeof st?.time?.courseCutoffDate === "string" && st.time.courseCutoffDate.trim().length > 0;
+
+    // Basta con semanas o con fecha de corte (si el estudiante no sabe semanas)
+    if (!studentWeeksOk && !cutoffOk) return false;
+
+    const weekly = Array.isArray(st?.plan?.weekly) ? st.plan.weekly : [];
+    const milestones = Array.isArray(st?.plan?.milestones) ? st.plan.milestones : [];
+
+    if (weekly.length < 1) return false;
+    if (milestones.length < 2) return false;
+
+    const hasMeasurement = weekly.some((w) => Boolean((w?.measurement ?? "").toString().trim()));
+    if (!hasMeasurement) return false;
+
+    return true;
+  }
+
+  // ================================
+  // ETAPA 9: Reporte de avances
+  // ================================
+  type ProgressState = {
+    step: "intro" | "report" | "clarify" | "review";
+    reportText: string | null;
+    progressPercent: number | null; // 0–100
+    measurementNote: string | null; // solo textual
+    summary: string | null;
+    updatedAtLocal: string | null;
+  };
+
+  function isProgressReadyForValidation(st: ProgressState) {
+    if (!st) return false;
+
+    const textOk =
+      typeof st.reportText === "string" &&
+      st.reportText.trim().length >= 20;
+
+    const pctOk =
+      typeof st.progressPercent === "number" &&
+      Number.isFinite(st.progressPercent) &&
+      st.progressPercent >= 0 &&
+      st.progressPercent <= 100;
+
+    return textOk && pctOk;
+  }
+
+  // ================================
+  // ETAPA 10: Documento final (Word/PDF) - 2 versiones máximo
+  // ================================
+  type FinalDocState = {
+    // Nota: "review" coincide con lo que devuelve /api/plans/final_doc/assistant
+    step: "await_upload" | "review" | "needs_v2" | "finalized";
+    versionNumber: 1 | 2;
+    lastFeedback: string | null;
+
+    upload: {
+      fileName: string | null;
+      storagePath: string | null;
+      extractedText: string | null;
+      uploadedAt: string | null;
+    };
+
+    // Campo esperado por /api/plans/final_doc/validate (no es obligatorio en UI, pero se guarda)
+    extractedSections?: {
+      resumen_ejecutivo?: string | null;
+      diagnostico?: string | null;
+      objetivos?: string | null;
+      propuesta_mejora?: string | null;
+      plan_implementacion?: string | null;
+      conclusiones?: string | null;
+    } | null;
+
+    // Campo esperado por /api/plans/final_doc/validate (sale desde la IA)
+    evaluation?: {
+      total_score?: number;
+      total_label?: "Deficiente" | "Regular" | "Adecuado" | "Bien";
+      detail?: Record<string, unknown>;
+      signals?: Record<string, unknown>;
+      mejoras?: string[];
+      needs_resubmission?: boolean;
+    } | null;
+  };
+
+  function isFinalDocReadyForUpload(st: FinalDocState | null) {
+    if (!st) return false;
+    return st.step === "await_upload" || st.step === "needs_v2";
+  }
+
   function isFodaComplete(st: FodaState) {
     const quadrants: Array<keyof FodaState["items"]> = ["F", "D", "O", "A"];
     const okCounts = quadrants.every((q) => Array.isArray(st.items?.[q]) && st.items[q].length >= 3);
@@ -567,6 +716,14 @@ export default function ChatPage() {
 
   const [improvementState, setImprovementState] = useState<ImprovementState | null>(null);
   const saveImprovementTimerRef = useRef<number | null>(null);
+
+  const [planningState, setPlanningState] = useState<PlanningState | null>(null);
+  const savePlanningTimerRef = useRef<number | null>(null);
+
+  const [progressState, setProgressState] = useState<ProgressState | null>(null);
+  const [finalDocState, setFinalDocState] = useState<FinalDocState | null>(null);
+
+  const saveProgressTimerRef = useRef<number | null>(null);
 
 
   const [ishikawaProblemPending, setIshikawaProblemPending] = useState(false);
@@ -1294,6 +1451,72 @@ export default function ChatPage() {
         setImprovementState(stateJson as ImprovementState);
       } else {
         setImprovementState(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, chatId]);
+
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+    if (!chatId) return;
+
+    let active = true;
+
+    (async () => {
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(`/api/plans/planning/state?chatId=${encodeURIComponent(chatId)}`, {
+        headers: { ...authHeaders },
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      if (!active) return;
+      if (!ok) return;
+
+      const row = json?.data?.row ?? json?.row ?? null;
+      const stateJson = row?.state_json ?? null;
+
+      if (stateJson && typeof stateJson === "object") {
+        setPlanningState(stateJson as PlanningState);
+      } else {
+        setPlanningState(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, chatId]);
+
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+    if (!chatId) return;
+
+    let active = true;
+
+    (async () => {
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(
+        `/api/plans/progress/state?chatId=${encodeURIComponent(chatId)}`,
+        { headers: { ...authHeaders } }
+      );
+
+      const json = await res.json().catch(() => null);
+      if (!active) return;
+      if (!res.ok || json?.ok === false) return;
+
+      const row = json?.data?.row ?? null;
+      const stateJson = row?.state_json ?? null;
+
+      if (stateJson && typeof stateJson === "object") {
+        setProgressState(stateJson as ProgressState);
+      } else {
+        setProgressState(null);
       }
     })();
 
@@ -2609,9 +2832,37 @@ export default function ChatPage() {
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-maxTurns);
 
-    return msgs
+    const base = msgs
       .map((m) => `${m.role === "user" ? "STUDENT" : "ASSISTANT"}: ${m.content}`)
       .join("\n");
+
+    // ---------------------------------------------
+    // Etapa 10: si hay feedback previo (v1), lo incluimos como contexto
+    // para que el agente responda preguntas con coherencia.
+    // NOTA: Solo aplica mientras NO esté finalizado.
+    // ---------------------------------------------
+    const shouldInjectStage10 =
+      modeRef.current === "plan_mejora" &&
+      !!finalDocState &&
+      finalDocState.step !== "finalized" &&
+      typeof finalDocState.lastFeedback === "string" &&
+      finalDocState.lastFeedback.trim().length > 0;
+
+    if (!shouldInjectStage10) return base;
+
+    // Limitar tamaño para no inflar contexto
+    const feedback = finalDocState!.lastFeedback!.trim().slice(0, 1600);
+
+    const injected =
+      "SYSTEM: Contexto interno Etapa 10 (Documento final)\n" +
+      `- Estado: ${finalDocState!.step}\n` +
+      `- Versión actual: ${finalDocState!.versionNumber}\n` +
+      "- Feedback anterior entregado al estudiante (resumen):\n" +
+      feedback +
+      "\n\n" +
+      "SYSTEM: Instrucción: Responde conversacionalmente usando este feedback como referencia. No inventes información.\n\n";
+
+    return injected + base;
   }
 
   function mergeCosts(existing: any, add: ProdAssistantCost[], requiredCosts: number) {
@@ -3166,6 +3417,190 @@ export default function ChatPage() {
     return { ok, payload: json };
   }
 
+  async function getPlanningState(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) return { ok: false as const, payload: null };
+
+    const res = await fetch(`/api/plans/planning/state?chatId=${encodeURIComponent(cid)}`, {
+      headers: { ...authHeaders },
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function savePlanningState(state: PlanningState, effectiveChatId?: string | null) {
+    if (!accessToken) {
+      console.warn("[PLANNING] Guardado sin accessToken. Se omite.");
+      return { ok: false as const };
+    }
+
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/planning/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid, stateJson: state }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
+
+  async function callPlanningAssistant(args: {
+    studentMessage: string;
+    planningState: PlanningState;
+    caseContext: any;
+    effectiveChatId?: string | null;
+  }) {
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch("/api/plans/planning/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        chatId: args.effectiveChatId ?? chatIdRef.current,
+        studentMessage: args.studentMessage,
+        planningState: args.planningState as any,
+        caseContext: args.caseContext ?? null,
+        recentHistory: buildRecentHistoryForAssistant(10),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+    return { ok, payload };
+  }
+
+  async function validatePlanning(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/planning/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid }),
+    });
+
+    const json = await res.json().catch(() => null);
+    const ok = res.ok && json?.ok !== false;
+    return { ok, payload: json };
+  }
+
+  async function saveProgressState(state: ProgressState, effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/progress/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid, stateJson: state }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json };
+  }
+
+  async function callProgressAssistant(args: {
+    studentMessage: string;
+    progressState: ProgressState;
+    effectiveChatId?: string | null;
+  }) {
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch("/api/plans/progress/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        chatId: args.effectiveChatId ?? chatIdRef.current,
+        studentMessage: args.studentMessage,
+        progressState: args.progressState as any,
+        recentHistory: buildRecentHistoryForAssistant(10),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json };
+  }
+
+  async function validateProgress(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/progress/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json };
+  }
+
+  // ================================
+  // ETAPA 10: helpers API
+  // ================================
+  async function saveFinalDocState(state: FinalDocState, effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/final_doc/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid, stateJson: state }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json };
+  }
+
+  async function callFinalDocAssistant(args: {
+    effectiveChatId?: string | null;
+    fileName: string;
+    storagePath: string;
+    extractedText: string;
+    versionNumber: 1 | 2;
+  }) {
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch("/api/plans/final_doc/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        chatId: args.effectiveChatId ?? chatIdRef.current,
+        fileName: args.fileName,
+        storagePath: args.storagePath,
+        extractedText: args.extractedText,
+        versionNumber: args.versionNumber,
+        recentHistory: buildRecentHistoryForAssistant(12),
+      }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json?.data ?? json };
+  }
+
+  async function validateFinalDoc(effectiveChatId?: string | null) {
+    const authHeaders = await getAuthHeaders();
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    const res = await fetch("/api/plans/final_doc/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ chatId: cid }),
+    });
+
+    const json = await res.json().catch(() => null);
+    return { ok: res.ok && json?.ok !== false, payload: json };
+  }
+
+
   async function callIshikawaAssistant(args: {
     studentMessage: string;
     ishikawaState: IshikawaState;
@@ -3211,17 +3646,36 @@ export default function ChatPage() {
     if (!text.trim()) return;
     if (!canInteract) return;
 
-    // ✅ Router por modo (evita duplicación)
-    if (modeRef.current === "general") {
-      await handleSendGeneral(text);
+    // ================================
+    // ETAPA 10 (Documento final): conversación fluida permitida hasta finalizar.
+    // Solo bloqueamos cuando ya se cerró (finalized).
+    // ================================
+    if (modeRef.current === "plan_mejora" && finalDocState?.step === "finalized") {
+      await appendAssistant(
+        "✅ El **modo Asesor** ya está **cerrado** (Etapa 10 finalizada).\n\n" +
+          "Si necesitas ayuda adicional, cambia al **modo Asistente general**."
+      );
       return;
     }
 
-    setShowHoursInline(false);
+      // 1) Pintar SIEMPRE mensaje del usuario
+      const userMessage = createMessage("user", text);
+      setMessages((prev) => [...prev, userMessage]);
 
-    const userMessage = createMessage("user", text);
-    setMessages((prev) => [...prev, userMessage]);
-    setIsSending(true);
+      // 2) Intercept horas SOLO en modo general (antes de llamar /api/chat)
+      if (modeRef.current === "general" && isHoursIntent(text)) {
+        setShowHoursInline(true);
+        setMessages((prev) => [
+          ...prev,
+          createMessage("assistant", "Listo ✅ Aquí tienes el formulario para registrar tus horas de esta semana."),
+        ]);
+        return;
+      }
+
+      // Si no es horas, cerramos panel y seguimos normal
+      setShowHoursInline(false);
+
+      setIsSending(true);
 
     try {
       const authHeaders = await getAuthHeaders();
@@ -3278,6 +3732,138 @@ export default function ChatPage() {
         const isStage1Validated = lastStatus === "validated";
 
         // ================================
+        // ETAPA 9: Reporte de avances (fluido con assistant)
+        // ================================
+        if (progressState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+          const assistant = await callProgressAssistant({
+            studentMessage: text,
+            progressState,
+            effectiveChatId,
+          });
+
+          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            await appendAssistant(
+              "⚠️ No pude procesar tu reporte. Cuéntame brevemente qué lograste implementar hasta hoy."
+            );
+            return;
+          }
+
+          const nextState = assistant.payload.updates.nextState as ProgressState;
+
+          setProgressState(nextState);
+          await saveProgressState(nextState, effectiveChatId);
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          if (nextState.step === "review" && isProgressReadyForValidation(nextState)) {
+            const v = await validateProgress(effectiveChatId);
+
+            if (!v.ok) {
+              await appendAssistant("⚠️ No se pudo cerrar el reporte de avances.");
+              return;
+            }
+
+            if (v.payload?.valid) {
+              await appendAssistant(
+                "✅ **Etapa 9 (Reporte de avances) finalizada.**"
+              );
+
+              setProgressState(null);
+
+              // Iniciar Etapa 10: documento final (v1)
+              const initialFinalDoc: FinalDocState = {
+                step: "await_upload",
+                versionNumber: 1,
+                lastFeedback: null,
+                upload: {
+                  fileName: null,
+                  storagePath: null,
+                  extractedText: null,
+                  uploadedAt: null,
+                },
+              };
+
+              setFinalDocState(initialFinalDoc);
+              await saveFinalDocState(initialFinalDoc, effectiveChatId);
+
+              await appendAssistant(
+                "📄 **Etapa 10 (Documento final)**\n\n" +
+                  "En esta etapa podemos trabajar de forma **conversacional**: si tienes dudas sobre tu plan final, pregúntame.\n\n" +
+                  "Cuando quieras, **sube tu Word/PDF** con el botón de adjuntar y haré una revisión crítica cruzando con tus **etapas validadas** y tu **registro de horas**.\n\n" +
+                  "✅ Máximo **2 versiones**:\n" +
+                  "• **Versión 1:** te doy feedback.\n" +
+                  "• **Versión 2:** es la **definitiva** y luego se cierra el Asesor."
+              );
+            }
+          }
+
+          return;
+        }
+
+        // ================================
+        // ETAPA 8: Planificación (fluido con assistant)
+        // ================================
+        if (planningState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+          const assistant = await callPlanningAssistant({
+            studentMessage: text,
+            planningState,
+            caseContext: (ctx.contextJson ?? null) as any,
+            effectiveChatId,
+          });
+
+          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            await appendAssistant(
+              "⚠️ No pude procesar tu Planificación. Dime en 1 línea: ¿cuántas semanas te quedan para aplicar la mejora (aprox.)?"
+            );
+            return;
+          }
+
+          const nextState = assistant.payload.updates.nextState as PlanningState;
+
+          setPlanningState(nextState);
+          await savePlanningState(nextState, effectiveChatId);
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          // Cierre: si llega a review y está listo, validamos Etapa 8
+          if (nextState.step === "review" && isPlanningReadyForValidation(nextState)) {
+            const v = await validatePlanning(effectiveChatId);
+
+            if (!v.ok) {
+              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
+              await appendAssistant(`⚠️ ${msg}`);
+              return;
+            }
+
+            if (v.payload?.valid) {
+              await appendAssistant(
+                "✅ **Etapa 8 (Planificación) finalizada**.\\n\\n" +
+                "Con esto completaste el **Avance 2**.\\n\\n" +
+                "Luego sigue el **Avance 3 (Etapa 9)**: ahí solo reportarás cómo va la implementación y, si ya lo tienes, podrás subir un archivo."
+              );
+
+              // dejamos de capturar Etapa 8
+              setPlanningState(null);
+            }
+
+            const initialProgress: ProgressState = {
+              step: "intro",
+              reportText: null,
+              progressPercent: null,
+              measurementNote: null,
+              summary: null,
+              updatedAtLocal: null,
+            };
+
+            setProgressState(initialProgress);
+            await saveProgressState(initialProgress, effectiveChatId);
+
+          }
+
+          return;
+        }
+
+        // ================================
         // ETAPA 7: Plan de mejora (fluido con assistant)
         // ================================
         if (improvementState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
@@ -3318,6 +3904,28 @@ export default function ChatPage() {
 
               // Importante: dejamos de capturar Etapa 7
               setImprovementState(null);
+
+              // Iniciar PlanningState (vacío) y guardarlo
+              const initialPlanning: PlanningState = {
+                stageIntroDone: false,
+                step: "time_window",
+                time: {
+                  studentWeeks: null,
+                  courseCutoffDate: null,
+                  effectiveWeeks: null,
+                  notes: null,
+                },
+                plan: {
+                  weekly: [],
+                  milestones: [],
+                  risks: [],
+                },
+                lastSummary: null,
+              };
+
+              setPlanningState(initialPlanning);
+              await savePlanningState(initialPlanning, effectiveChatId);
+
             }
           }
 
@@ -5106,7 +5714,7 @@ export default function ChatPage() {
   }
 
   // ---------------------------------------------
-  // Subir archivo Word/PDF y enviar a revisión
+  // Subir archivo Word/PDF (Etapa 10) y validar final
   // ---------------------------------------------
   async function handleUploadPlanFile(file: File) {
     if (!file) return;
@@ -5120,11 +5728,25 @@ export default function ChatPage() {
       return;
     }
 
+    // Solo se permite upload en Etapa 10 cuando está esperando documento (v1) o pidiendo v2
+    if (!finalDocState || !isFinalDocReadyForUpload(finalDocState)) {
+      await appendAssistant(
+        "⚠️ En este momento no se puede subir un documento. Llega a **Etapa 10** para poder adjuntar tu Word/PDF."
+      );
+      return;
+    }
+
+    const effectiveChatId = chatIdRef.current ?? chatId ?? null;
+    if (!effectiveChatId) {
+      await appendAssistant("⚠️ No encontré un chat activo para guardar tu documento. Intenta recargar el chat.");
+      return;
+    }
+
     setMessages((prev) => [
       ...prev,
       createMessage(
         "assistant",
-        `📄 Recibí el archivo "${file.name}". Estoy extrayendo el texto y revisando el plan...`
+        `📄 Recibí el archivo "${file.name}". Estoy extrayendo el texto y evaluando el documento final...`
       ),
     ]);
     setIsSending(true);
@@ -5132,9 +5754,10 @@ export default function ChatPage() {
     try {
       const authHeaders = await getAuthHeaders();
 
+      // 1) Mantener /api/plans/upload (extrae texto + devuelve storagePath)
       const formData = new FormData();
       formData.append("file", file);
-      if (chatId) formData.append("chatId", chatId);
+      formData.append("chatId", effectiveChatId);
 
       const uploadRes = await fetch("/api/plans/upload", {
         method: "POST",
@@ -5142,72 +5765,103 @@ export default function ChatPage() {
         body: formData,
       });
 
-      const uploadData = await uploadRes.json();
+      const uploadData = await uploadRes.json().catch(() => null);
       const uploadOk = uploadRes.ok && uploadData?.ok !== false;
       const uploadPayload = uploadData?.data ?? uploadData;
 
       if (!uploadOk) {
-        setMessages((prev) => [
-          ...prev,
-          createMessage(
-            "assistant",
-            uploadPayload?.message ||
-              uploadPayload?.error ||
-              "No se pudo procesar el archivo. Verifica que sea PDF o Word (.docx)."
-          ),
-        ]);
+        await appendAssistant(
+          uploadPayload?.message ||
+            uploadPayload?.error ||
+            "No se pudo procesar el archivo. Verifica que sea PDF o Word (.docx)."
+        );
         return;
       }
 
-      const planText: string = uploadPayload.text;
+      const extractedText: string = String(uploadPayload?.text ?? "");
+      const storagePath: string = String(uploadPayload?.storagePath ?? "");
 
-      const reviewBody: any = { text: planText, fileName: file.name };
-      if (chatId) reviewBody.chatId = chatId;
+      if (extractedText.trim().length < 50 || !storagePath) {
+        await appendAssistant(
+          "⚠️ Se subió el archivo, pero no se pudo obtener el texto o el storagePath. Intenta subirlo nuevamente."
+        );
+        return;
+      }
 
-      const reviewRes = await fetch("/api/plans/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify(reviewBody),
+      // 2) Llamar IA de Etapa 10 (NO usar /api/plans/review)
+      const versionNumber = finalDocState.versionNumber;
+
+      const a = await callFinalDocAssistant({
+        effectiveChatId,
+        fileName: file.name,
+        storagePath,
+        extractedText,
+        versionNumber,
       });
 
-      const reviewData = await reviewRes.json();
-      const reviewOk = reviewRes.ok && reviewData?.ok !== false;
-      const reviewPayload = reviewData?.data ?? reviewData;
-
-      if (reviewPayload?.chatId && reviewPayload.chatId !== chatId) {
-        setChatId(reviewPayload.chatId);
-        window.sessionStorage.setItem(storageKeyChat, reviewPayload.chatId);
-      }
-
-      if (!reviewOk) {
-        setMessages((prev) => [
-          ...prev,
-          createMessage(
-            "assistant",
-            reviewPayload?.message || reviewPayload?.error || "Hubo un problema al revisar el plan."
-          ),
-        ]);
+      if (!a.ok || !a.payload?.assistantMessage || !a.payload?.updates?.nextState) {
+        await appendAssistant(
+          a.payload?.message ||
+            a.payload?.error ||
+            "⚠️ No se pudo evaluar el documento final. Intenta subirlo otra vez."
+        );
         return;
       }
 
-      let feedbackText = `✅ He revisado el archivo "${file.name}". Esta es la evaluación del plan (versión ${
-        reviewPayload?.version ?? "1"
-      }):\n\n`;
+      const nextFromApi = a.payload.updates.nextState as any;
 
-      for (const section of reviewPayload?.sections || []) {
-        feedbackText += `🟦 *${String(section.section).toUpperCase()}*\n${section.feedback}\n\n`;
+      const nextState: FinalDocState = {
+        step: "review",
+        versionNumber,
+        lastFeedback: String(a.payload.assistantMessage ?? "") || null,
+        upload: {
+          fileName: file.name,
+          storagePath,
+          extractedText,
+          uploadedAt: new Date().toISOString(),
+        },
+        extractedSections: (nextFromApi?.extractedSections ?? null) as any,
+        evaluation: (nextFromApi?.evaluation ?? null) as any,
+      };
+
+      setFinalDocState(nextState);
+      await saveFinalDocState(nextState, effectiveChatId);
+
+      await appendAssistant(a.payload.assistantMessage);
+
+      // 3) Validar / cerrar o pedir v2
+      const v = await validateFinalDoc(effectiveChatId);
+      if (!v.ok) {
+        await appendAssistant("⚠️ No se pudo validar la Etapa 10. Intenta nuevamente.");
+        return;
       }
 
-      setMessages((prev) => [...prev, createMessage("assistant", feedbackText)]);
+      const valid = Boolean((v.payload as any)?.valid);
+      const msg = String((v.payload as any)?.message ?? "").trim();
+
+      if (valid) {
+        if (msg) await appendAssistant(msg);
+        const finalized: FinalDocState = { ...nextState, step: "finalized" };
+        setFinalDocState(finalized);
+        await saveFinalDocState(finalized, effectiveChatId);
+        return;
+      }
+
+      // Si no valida, el backend pide v2 (solo pasa cuando es v1 con observaciones)
+      if (msg) await appendAssistant(msg);
+
+      const needsV2: FinalDocState = {
+        ...nextState,
+        step: "needs_v2",
+        versionNumber: 2,
+        lastFeedback: msg || nextState.lastFeedback,
+      };
+
+      setFinalDocState(needsV2);
+      await saveFinalDocState(needsV2, effectiveChatId);
     } catch (e) {
       console.error("Error en handleUploadPlanFile:", e);
-      setMessages((prev) => [
-        ...prev,
-        createMessage(
-          "assistant",
-          "⚠️ Ocurrió un error al procesar el archivo de plan de mejora."
-        ),
-      ]);
+      await appendAssistant("⚠️ Ocurrió un error al procesar el documento final.");
     } finally {
       setIsSending(false);
     }
@@ -5233,6 +5887,8 @@ export default function ChatPage() {
             setStage0Draft({});
           }}
           onNewChat={() => handleNewChat()}
+          onLogout={handleLogout}
+          displayName={displayName}
         />
       }
       sidebarOpen={sidebarOpen}
@@ -5260,7 +5916,7 @@ export default function ChatPage() {
         </div>
 
         {/* Usuario + logout + theme */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mr-4">
           <button
             type="button"
             onClick={toggleTheme}
@@ -5295,16 +5951,6 @@ export default function ChatPage() {
           </button>
 
           <span className="hidden sm:inline text-[14px] text-[color:var(--muted)]">{displayName}</span>
-
-          <button
-            onClick={handleLogout}
-            className="rounded px-2 py-1 text-[14px]
-            text-[color:var(--foreground)]
-            border border-[color:var(--border)]
-            hover:bg-[color:var(--surface)]"
-          >
-            Cerrar sesión
-          </button>
         </div>
 
       </div>
@@ -5354,25 +6000,41 @@ export default function ChatPage() {
         </div>
       )}
 
-      <MessageList messages={messages} />
-
-      {showHoursInline && (
-        <div className="mt-3">
-          <HoursInlinePanel onClose={() => setShowHoursInline(false)} />
+      {/*
+        PASO 1 (UI): el composer se superpone al chat (tipo Gemini/iMessage).
+        Esto evita que el "fondo" del panel cree una barra sólida debajo del input.
+        (El espacio extra y autoscroll se ajustan en el PASO 2)
+      */}
+      <div ref={chatAreaRef} className="relative flex-1 min-h-0 flex flex-col">
+        {/* ✅ el área scrollable debe ser flex-1 para ocupar todo el alto disponible */}
+        <div className="flex-1 min-h-0 flex">
+          <MessageList messages={messages} isTyping={isSending} />
         </div>
-      )}
 
-      <MessageInput
-        onSend={handleSend}
-        disabled={isSending || !canInteract}
-        onUploadFile={mode === "plan_mejora" && canInteract ? handleUploadPlanFile : undefined}
-      />
+        {showHoursInline && (
+          <div className="mt-3">
+            <HoursInlinePanel onClose={() => setShowHoursInline(false)} />
+          </div>
+        )}
 
-      {(isSending || isLoadingHistory) && (
-        <p className="mt-2 text-[10px] text-slate-200">
-          {isSending ? "OPT-IA está pensando..." : "Cargando historial del chat..."}
-        </p>
-      )}
+        {/* ✅ composer flotante abajo */}
+        <div className="chat-composer absolute -left-6 -right-2 bottom-0 z-20 pointer-events-none">
+          <div ref={composerMeasureRef} className="pointer-events-auto relative z-10">
+            <MessageInput
+              onSend={handleSend}
+              disabled={isSending || !canInteract}
+              onUploadFile={
+                mode === "plan_mejora" &&
+                canInteract &&
+                finalDocState &&
+                isFinalDocReadyForUpload(finalDocState)
+                  ? handleUploadPlanFile
+                  : undefined
+              }
+            />
+          </div>
+        </div>
+      </div>
     </ChatLayout>
   );
 }

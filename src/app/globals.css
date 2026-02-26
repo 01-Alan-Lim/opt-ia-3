@@ -16,7 +16,12 @@
 
   /* Surfaces / borders */
   --surface: rgba(255, 255, 255, 0.05);
+  --surface-elevated: rgba(255, 255, 255, 0.09);
   --border: rgba(255, 255, 255, 0.10);
+
+  /* ✅ scrim inferior tipo iMessage */
+  --composer-scrim: rgba(0, 0, 0, 0.42);
+  --composer-scrim-blur: 18px;
 
   /* Text helpers */
   --muted: rgba(148, 163, 184, 0.9); /* similar a slate-400 */
@@ -42,6 +47,7 @@
   --app-bg-to: #ffffff;
 
   --surface: rgba(0, 0, 0, 0.04);
+  --surface-elevated: rgba(0, 0, 0, 0.06);
   --border: rgba(0, 0, 0, 0.10);
 
   --muted: rgba(51, 65, 85, 0.85); /* similar a slate-600 */
@@ -55,6 +61,9 @@
   --primary-foreground: #ffffff;
 
   --primary-soft: rgba(59, 130, 246, 0.12); /* opcional para botones suaves */
+
+  --composer-scrim: rgba(255, 255, 255, 0.65);
+  --composer-scrim-blur: 18px;
 }
 
 /* Si realmente quieres mapear tokens Tailwind v4 (opcional):
@@ -231,5 +240,164 @@ body {
   from { transform: translateY(0); }
   to   { transform: translateY(-600px); }
 }
+
+
+/* ===== Chat UI refinements ===== */
+
+.chat-composer {
+  /* el wrapper ya está absolute desde page.tsx */
+  position: relative;
+  background: transparent;
+  backdrop-filter: none;
+  isolation: isolate; /* ✅ asegura que el scrim no “ensucie” otros layers */
+}
+
+/* ✅ scrim inferior (NO barra): difumina y oscurece suave SIN borde duro */
+.chat-composer::before {
+  display: none; /* ✅ elimina la sombra cuadrada */
+
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  height: calc(var(--composer-h, 84px) + 96px);
+  background: rgba(0, 0, 0, 0.01);
+
+  backdrop-filter: blur(var(--composer-scrim-blur));
+  -webkit-backdrop-filter: blur(var(--composer-scrim-blur));
+
+  -webkit-mask-image: linear-gradient(
+    to top,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,0.85) 25%,
+    rgba(0,0,0,0.35) 55%,
+    rgba(0,0,0,0) 85%,
+    rgba(0,0,0,0) 100%
+  );
+  mask-image: linear-gradient(
+    to top,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,0.85) 25%,
+    rgba(0,0,0,0.35) 55%,
+    rgba(0,0,0,0) 85%,
+    rgba(0,0,0,0) 100%
+  );
+
+  pointer-events: none;
+  z-index: 0;
+}
+
+
+
+
+/* sombra más sutil (menos “larga” hacia abajo) */
+.chat-bubble-shadow {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+/* “cola” curva SOLO para mensajes del asistente (sin rombo) */
+.bubble-assistant {
+  position: relative;
+  /* hace que la unión con la cola se vea más natural */
+  border-bottom-left-radius: 14px;
+}
+
+/* borde externo de la cola (curvo) */
+.bubble-assistant::before,
+.bubble-assistant::after {
+  content: none; /* ✅ elimina la cola */
+}
+
+
+/* typing indicator: 3 puntos */
+.typing-dots {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 14px;
+}
+
+.typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--muted) 85%, transparent);
+  animation: typing-bounce 1.05s infinite ease-in-out;
+}
+
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.65;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.animation-delay-150 {
+  animation-delay: 0.15s;
+}
+
+.animation-delay-300 {
+  animation-delay: 0.3s;
+}
+
+/* Fade en la parte inferior del chat para evitar “corte” recto con el composer */
+.chat-scroll-fade {
+  /* La máscara hace que el contenido se vuelva transparente al llegar abajo */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,1) 78%,
+    rgba(0,0,0,0) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0,0,0,1) 0%,
+    rgba(0,0,0,1) 78%,
+    rgba(0,0,0,0) 100%
+  );
+
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+
+/* ===== Landing: glow dinámico siguiendo el mouse ===== */
+.magnetic-glow::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+  background:
+    radial-gradient(
+      420px 320px at var(--mx, 50%) var(--my, 50%),
+      rgba(56, 189, 248, 0.22),
+      rgba(56, 189, 248, 0.10) 35%,
+      transparent 70%
+    );
+  filter: blur(2px);
+}
+
+.magnetic-glow:hover::before {
+  opacity: 1;
+}
+
 
 

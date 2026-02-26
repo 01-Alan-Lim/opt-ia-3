@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import clsx from "clsx";
 import { supabase } from "@/lib/supabaseClient";
 
 type Role = "student" | "teacher";
@@ -11,7 +12,7 @@ async function getAccessToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
-export function LoginButton() {
+export function LoginButton({ className }: { className?: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
@@ -42,7 +43,6 @@ export function LoginButton() {
   async function signInWithGoogle() {
     setLoading(true);
     try {
-      // ⚠️ Importante: debe coincidir con tu route /auth/callback
       const redirectTo = `${window.location.origin}/auth/callback`;
 
       const { error } = await supabase.auth.signInWithOAuth({
@@ -50,9 +50,7 @@ export function LoginButton() {
         options: { redirectTo },
       });
 
-      if (error) {
-        console.error(error);
-      }
+      if (error) console.error(error);
     } finally {
       setLoading(false);
     }
@@ -76,15 +74,7 @@ export function LoginButton() {
         body: JSON.stringify({}),
       });
 
-       const json = await res.json().catch(() => null);
-
-      // Si el backend dice "no autorizado", volvemos al home con mensaje
-      if (res.status === 403) {
-        await supabase.auth.signOut();
-        router.push("/?reason=forbidden");
-        return;
-      }
-
+      const json = await res.json().catch(() => null);
 
       if (res.status === 403) {
         await supabase.auth.signOut();
@@ -97,24 +87,17 @@ export function LoginButton() {
         return;
       }
 
-      // ✅ Respuesta estándar: { ok:true, data:{ role } }
       const payload = (json?.data ?? json) as { role?: Role } | null;
       const role = payload?.role ?? "student";
-
-
       router.push(role === "teacher" ? "/docente" : "/chat");
-
     } finally {
       setLoading(false);
     }
   }
 
   async function handleClick() {
-    if (!isAuthed) {
-      await signInWithGoogle();
-    } else {
-      await goToApp();
-    }
+    if (!isAuthed) await signInWithGoogle();
+    else await goToApp();
   }
 
   return (
@@ -122,7 +105,15 @@ export function LoginButton() {
       type="button"
       onClick={handleClick}
       disabled={loading}
-      className="px-4 py-2 rounded bg-sky-500 hover:bg-sky-600 disabled:opacity-60 text-white text-sm font-medium"
+      className={clsx(
+        // ✅ estilo consistente con tus tarjetas
+        "inline-flex items-center justify-center h-12 px-5 rounded-2xl",
+        "bg-sky-500 hover:bg-sky-600 disabled:opacity-60",
+        "text-white text-sm font-semibold",
+        "shadow-lg shadow-sky-500/10",
+        "transition",
+        className
+      )}
     >
       {loading ? "Ingresando..." : isAuthed ? "Entrar a OPT-IA" : "Iniciar sesión con Google"}
     </button>

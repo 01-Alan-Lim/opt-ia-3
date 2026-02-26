@@ -127,6 +127,32 @@ export default function HoursPage() {
     }
   }
 
+    async function connectGoogleCalendar() {
+    setMsg("");
+    try {
+      const redirectTo = `${window.location.origin}/auth/calendar-callback?returnTo=/hours`;
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+          scopes: "https://www.googleapis.com/auth/calendar.events",
+          queryParams: {
+            access_type: "offline",
+            prompt: "consent",
+          },
+        },
+      });
+
+      if (error) {
+        setMsg("No se pudo iniciar conexión con Google Calendar.");
+        console.error(error);
+      }
+    } catch (e: any) {
+      setMsg(String(e?.message ?? e));
+    }
+  }
+
   // 2) Al estar authReady:
   //    - si no hay token => redirige al home (opcional, pero recomendado)
   //    - si hay token => carga lista

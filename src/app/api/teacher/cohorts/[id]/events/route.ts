@@ -69,7 +69,7 @@ export async function GET(
 
     const { data, error } = await supabaseServer
       .from("cohort_events")
-      .select("id, cohort_id, event_kind, event_index, event_date, remind_before_days, is_enabled, updated_at")
+      .select("id, cohort_id, event_kind, event_index, event_key, event_date, remind_before_days, is_enabled, updated_at")
       .eq("cohort_id", cohortId)
       .order("event_kind", { ascending: true })
       .order("event_index", { ascending: true });
@@ -107,7 +107,6 @@ export async function PUT(
       );
     }
 
-    // Next 16: params es Promise => await
     const { id } = ParamsSchema.parse(await ctx.params);
     const cohortId = decodeId(id);
 
@@ -131,31 +130,51 @@ export async function PUT(
       return NextResponse.json(fail("NOT_FOUND", "Cohorte no encontrada."), { status: 404 });
     }
 
-    const events = parsed.data.events.map((ev) => ({
-      cohort_id: cohortId,
-      event_kind: ev.event_kind,
-      event_index: ev.event_index ?? null,
-      event_date: ev.event_date,
-      remind_before_days: ev.remind_before_days ?? 2,
-      is_enabled: ev.is_enabled ?? true,
-    }));
+    const normalized = parsed.data.events.map((ev) => {
+      const idx = ev.event_index ?? null;
+      // event_key estable: ej. FORM_MONTHLY:1, ADVANCE:2, FORM_FINAL:_
+      const event_key = `${ev.event_kind}:${idx === null ? "_" : String(idx)}`;
 
-    // REPLACE TOTAL
-    const { error: delErr } = await supabaseServer.from("cohort_events").delete().eq("cohort_id", cohortId);
-    if (delErr) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo limpiar eventos previos.", delErr), { status: 500 });
-    }
+      return {
+        cohort_id: cohortId,
+        event_kind: ev.event_kind,
+        event_index: idx,
+        event_key,
+        event_date: ev.event_date,
+        remind_before_days: ev.remind_before_days ?? 2,
+        is_enabled: ev.is_enabled ?? true,
+      };
+    });
 
-    const { data: inserted, error: insErr } = await supabaseServer
+    // ✅ Un solo upsert por cohort_id + event_key
+    const { error: upErr } = await supabaseServer
       .from("cohort_events")
-      .insert(events)
-      .select("id, cohort_id, event_kind, event_index, event_date, remind_before_days, is_enabled, updated_at");
+      .upsert(normalized, { onConflict: "cohort_id,event_key" });
 
-    if (insErr) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo guardar eventos.", insErr), { status: 500 });
+    if (upErr) {
+      return NextResponse.json(
+        fail("INTERNAL", "No se pudo upsert cohort_events.", upErr),
+        { status: 500 }
+      );
     }
 
-    return ok({ events: inserted ?? [] });
+    // 3) (Opcional) Si quieres “desactivar” eventos que el docente dejó vacíos,
+    // aquí podríamos poner is_enabled=false a los que no vinieron.
+    // Por ahora NO tocamos para no romper comportamiento actual.
+
+    // 4) Devolver estado actual (ya con IDs estables)
+    const { data, error } = await supabaseServer
+      .from("cohort_events")
+      .select("id, cohort_id, event_kind, event_index, event_key, event_date, remind_before_days, is_enabled, updated_at")
+      .eq("cohort_id", cohortId)
+      .order("event_kind", { ascending: true })
+      .order("event_index", { ascending: true });
+
+    if (error) {
+      return NextResponse.json(fail("INTERNAL", "No se pudo leer eventos.", error), { status: 500 });
+    }
+
+    return ok({ events: data ?? [] });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "INTERNAL";
     if (msg === "UNAUTHORIZED") {

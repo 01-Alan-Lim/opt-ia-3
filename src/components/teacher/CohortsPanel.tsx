@@ -115,9 +115,37 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+async function runCohortCalendarSync(cohortId: string): Promise<{
+  ok: boolean;
+  message?: string;
+  data?: any;
+}> {
+  const headers = await getAuthHeaders();
+
+  const res = await fetch(`/api/teacher/cohorts/${cohortId}/calendar/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ dryRun: false, limit: 200 }),
+  });
+
+  const json = await res.json().catch(() => null);
+
+  if (!res.ok || json?.ok === false) {
+    return {
+      ok: false,
+      message: json?.message ?? "Falló la sincronización de calendarios.",
+      data: json,
+    };
+  }
+
+  return { ok: true, data: json?.data };
+}
+
 export function CohortsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [cohorts, setCohorts] = useState<Cohort[]>([]);
@@ -417,11 +445,28 @@ export function CohortsPanel() {
       setCreating(false);
       setForm(initialForm);
       setEventsForm(initialEventsForm);
+
+      if (newCohortId) {
+        setSyncing(true);
+        setSyncMsg("Sincronizando calendarios de estudiantes...");
+        const sync = await runCohortCalendarSync(newCohortId);
+
+        if (!sync.ok) {
+          setError(sync.message ?? "Falló la sincronización.");
+        } else {
+          const d = sync.data;
+          setSyncMsg(
+            `Calendario actualizado: conectados ${d?.connected ?? 0}/${d?.processed ?? 0} • created ${d?.created ?? 0} • updated ${d?.updated ?? 0}`
+          );
+        }
+      }
+
       await load();
     } catch {
       setError("Error de red creando cohorte.");
     } finally {
       setSaving(false);
+      setSyncing(false);
     }
   }
 
@@ -470,12 +515,29 @@ export function CohortsPanel() {
         }
       }
 
+      // ✅ 3) Sincronizar calendarios de estudiantes (AUTOMÁTICO)
+      setSyncing(true);
+      setSyncMsg("Sincronizando calendarios de estudiantes...");
+
+      const sync = await runCohortCalendarSync(selected.id);
+
+      if (!sync.ok) {
+        // No cancelamos el guardado; solo mostramos error
+        setError(sync.message ?? "Falló la sincronización.");
+      } else {
+        const d = sync.data;
+        setSyncMsg(
+          `Calendario actualizado: conectados ${d?.connected ?? 0}/${d?.processed ?? 0} • created ${d?.created ?? 0} • updated ${d?.updated ?? 0}`
+        );
+      }
+
       await load();
 
     } catch {
       setError("Error de red actualizando cohorte.");
     } finally {
       setSaving(false);
+      setSyncing(false);
     }
   }
 
@@ -542,7 +604,13 @@ export function CohortsPanel() {
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[270px_1fr]">
+      {syncMsg && (
+        <div className="mt-3 rounded-xl border border-sky-900/40 bg-sky-950/30 px-4 py-3 text-sm text-sky-200">
+          {syncMsg}
+        </div>
+      )}
+
+      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[400px_1fr]">
         {/* LISTA */}
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 xl:sticky xl:top-6 self-start">
           <div className="mb-3 flex items-center justify-between">
@@ -718,39 +786,8 @@ export function CohortsPanel() {
             <div className="mt-2 grid grid-cols-1 gap-3 xl:grid-cols-2">
               {/* ✅ Seguimiento + Avances (izquierda) */}
               <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
-                <div className="text-xs font-semibold text-slate-200">Seguimiento de horas</div>
-
-                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Sábado inicial</span>
-                    <input
-                      type="date"
-                      value={form.hours_start_at}
-                      onChange={(e) => setForm((p) => ({ ...p, hours_start_at: e.target.value }))}
-                      className="
-                        w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
-                        pr-1 cursor-pointer
-                        [&::-webkit-calendar-picker-indicator]:opacity-80
-                        [&::-webkit-calendar-picker-indicator]:invert
-                        [&::-webkit-calendar-picker-indicator]:cursor-pointer
-                      "
-                    />
-                  </label>
-
-                  <label className="block">
-                    <span className="mb-1 block text-xs text-slate-400">Hora recordatorio (0–23)</span>
-                    <input
-                      inputMode="numeric"
-                      value={form.reminder_hour}
-                      onChange={(e) => setForm((p) => ({ ...p, reminder_hour: e.target.value }))}
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
-                      placeholder="11"
-                    />
-                  </label>
-                </div>
-
                 {/* ✅ Fechas de avances (debajo, mismo bloque) */}
-                <div className="mt-4">
+                <div className="mt-1">
                   <div className="text-xs font-semibold text-slate-200">Fechas de avances</div>
 
                   {eventsLoading ? (
@@ -917,10 +954,10 @@ export function CohortsPanel() {
                 <button
                   type="button"
                   onClick={handleSaveEdit}
-                  disabled={saving || !selected || !form.name.trim()}
+                  disabled={saving || syncing || !selected || !form.name.trim()}
                   className="rounded-lg bg-sky-600 px-3 py-2 text-sm text-white hover:bg-sky-500 disabled:opacity-60"
                 >
-                  {saving ? "Guardando..." : "Guardar cambios"}
+                  {saving ? "Guardando..." : syncing ? "Sincronizando..." : "Guardar cambios"}
                 </button>
               )}
 

@@ -80,13 +80,24 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   return (
-    <div className="w-full flex justify-start">
+    <div className="w-full flex justify-start px-2 sm:px-4">
       {/* “Bubble” del asistente, chiquito */}
-      <div className="max-w-[520px] w-full rounded-2xl border border-white/12 bg-white/10 backdrop-blur-xl shadow-x1 px-4 py-3">
+      <div
+          className={[
+            "max-w-[760px] w-full rounded-2xl",
+            "border border-[color:var(--border)]",
+            "bg-[color:var(--surface)]",
+            "backdrop-blur-xl",
+            "shadow-xl",
+            "px-5 py-4",
+          ].join(" ")}
+        >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-slate-100">Registrar horas (semanal)</div>
-            <div className="text-xs text-slate-300 mt-0.5">
+            <div className="text-sm font-semibold text-[color:var(--foreground)]">
+              Registrar horas (semanal)
+            </div>
+            <div className="text-xs text-[color:var(--muted)] mt-0.5">
               Ingresa el total de horas y actividades realizadas en la semana.
             </div>
           </div>
@@ -94,14 +105,20 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
           <button
             type="button"
             onClick={onClose}
-            className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/15 border border-white/10"
+            className={[
+            "text-xs px-3 py-1.5 rounded-xl",
+            "border border-[color:var(--border)]",
+            "bg-[color:var(--surface)]",
+            "text-[color:var(--foreground)]",
+            "hover:bg-[color:var(--surface)]",
+          ].join(" ")}
           >
             Cerrar
           </button>
         </div>
 
         <div className="mt-3 grid gap-2">
-          <label className="text-xs text-slate-300">
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
             Horas
             <input
               type="number"
@@ -109,21 +126,18 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
               max={200}
               value={hours}
               onChange={(e) => setHours(Number(e.target.value))}
-              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)]
- outline-none focus:border-sky-500/60"
+              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)] px-3 py-2 outline-none focus:border-sky-500/60"
             />
           </label>
-
-          <label className="text-xs text-slate-300">
+          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 mt-4">
             Actividad realizada
             <textarea
-              rows={2}
+              rows={4}
               value={activity}
               onChange={(e) => setActivity(e.target.value)}
-              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)] outline-none focus:border-sky-500/60"
+              className="mt-1 w-full rounded-lg bg-[color:var(--surface)] border border-[color:var(--border)] text-[color:var(--foreground)] px-3 py-2 outline-none focus:border-sky-500/60"
             />
           </label>
-
           <div className="flex items-center gap-2 mt-1">
             <button
               type="button"
@@ -146,7 +160,14 @@ export function HoursInlinePanel({ onClose }: { onClose: () => void }) {
           ) : null}
 
           {msg ? (
-            <div className="mt-2 text-xs rounded-lg px-3 py-2 bg-black/30 border border-white/10 text-slate-100">
+            <div
+              className={[
+                "mt-2 text-xs rounded-lg px-3 py-2",
+                "border border-[color:var(--border)]",
+                "bg-[color:var(--surface)]",
+                "text-[color:var(--foreground)]",
+              ].join(" ")}
+            >
               {msg}
             </div>
           ) : null}

@@ -56,7 +56,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
                 </button>
               </div>
 
-              <div className="h-[calc(100%-48px)] pl-3 pr-1 py-3 overflow-y-auto">
+              <div className="h-[calc(100%-48px)] px-3 py-3 overflow-y-auto">
                 {sidebar}
               </div>
             </div>
@@ -73,7 +73,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
           )}
         >
           <div className="h-full rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] backdrop-blur-2xl shadow-xl overflow-hidden">
-            <div className="h-full pl-3 pr-1 py-3">{sidebarOpen && sidebar}</div>
+            <div className="h-full px-3 py-3">{sidebarOpen && sidebar}</div>
           </div>
         </aside>
 
@@ -81,8 +81,8 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
         <div className="flex-1 min-w-0 flex">
           <div
             className={clsx(
-              "flex-1 rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] backdrop-blur-2xl shadow-2xl",
-              "flex flex-col pl-6 pr-2 py-4 overflow-hidden"
+              "flex-1 rounded-2xl border border-[color:var(--border)] border-b-0 bg-[color:var(--surface)] backdrop-blur-2xl shadow-2xl",
+              "flex flex-col pl-6 pr-2 pt-4 pb-0 overflow-hidden"
             )}
           >
             <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">{children}</div>

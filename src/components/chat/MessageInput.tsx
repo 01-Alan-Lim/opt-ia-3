@@ -70,80 +70,78 @@ export function MessageInput({
     // Shift+Enter → permite salto de línea (no hacemos nada especial)
   }
 
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="w-full flex justify-center pt-2 pb-1"
-    >
-            <div className="flex items-center gap-2 w-full max-w-2xl px-2">
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder="Escribe tu mensaje …"
-          className="flex-1 resize-none rounded-2xl px-4 py-3 text-sm leading-5 outline-none
-          bg-[color:var(--surface)] border border-[color:var(--border)]
-          text-[color:var(--foreground)] placeholder-[color:var(--muted)]
-          focus:ring-2 focus:ring-sky-400/30 disabled:opacity-60"
-          style={{
-            scrollbarWidth: "none",
-            msOverflowStyle: "none",
-          }}
-        />
-
-        {/* 👇 Botón para subir Word/PDF (solo si viene onUploadFile) */}
-        {onUploadFile && (
-          <>
-            <button
-              type="button"
-              onClick={handleUploadClick}
+    return (
+    <div className="w-full">
+      <form onSubmit={handleSubmit} className="relative z-10 w-full flex justify-center">
+        <div className="flex items-center gap-2 w-full max-w-2xl px-2 py-2">
+          <div
+            className="
+              flex-1
+              rounded-2xl border border-[color:var(--border)]
+              bg-[color:var(--surface)] backdrop-blur-xl
+              chat-bubble-shadow
+            "
+          >
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
               disabled={disabled}
-              className="p-2 rounded-xl text-sm transition-all shadow-lg disabled:opacity-60
-              bg-[color:var(--surface)] hover:bg-[color:var(--surface)]
-              border border-[color:var(--border)]
-              text-[color:var(--foreground)]"
-              title="Subir Word/PDF del plan"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M21 12.5 12.9 20.6a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 1 1 5.7 5.7l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-
-            {/* Input de archivo oculto */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.docx"
-              className="hidden"
-              onChange={handleFileChange}
+              placeholder="Escribe tu mensaje …"
+              className="
+                w-full resize-none
+                rounded-2xl
+                px-4
+                py-[13px]
+                text-sm
+                leading-[22px]
+                min-h-12
+                h-12
+                outline-none
+                bg-transparent
+                border-0
+                text-[color:var(--foreground)]
+                placeholder:text-[color:var(--muted)]
+                focus:outline-none focus:ring-0
+                disabled:opacity-60
+              "
+              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
             />
-          </>
-        )}
-
-        <button
-          type="submit"
-          disabled={disabled}
-          className="px-4 py-2.5 rounded-xl text-sm font-medium transition-all shadow-lg disabled:opacity-60
-          bg-[color:var(--primary)] hover:bg-[color:var(--primary-hover)]
-          text-[color:var(--primary-foreground)]
-          [html[data-theme='light']_&]:bg-[color:var(--primary-soft)]
-          [html[data-theme='light']_&]:text-[color:var(--primary)]
-          [html[data-theme='light']_&]:border
-          [html[data-theme='light']_&]:border-[color:var(--border)]
-          [html[data-theme='light']_&]:shadow-none"
-        >
-          Enviar
-        </button>
-      </div>
-    </form>
+          </div>
+          <button
+            type="submit"
+            disabled={disabled}
+            aria-label="Enviar"
+            title="Enviar"
+            className="
+              h-12 w-12
+              rounded-2xl
+              bg-sky-600 hover:bg-sky-500 disabled:opacity-50
+              text-white
+              flex items-center justify-center
+              transition
+            "
+          >
+            {/* Ícono enviar minimalista */}
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+            >
+              <path d="M22 2L11 13" />
+              <path d="M22 2L15 22L11 13L2 9L22 2Z" />
+            </svg>
+          </button>
+        </div>
+      </form>
+    </div>
   );
+
 }

@@ -39,6 +39,8 @@ export default function OnboardingPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [showCalendarStep, setShowCalendarStep] = useState(false);
+
 
   // Load session/token
   useEffect(() => {
@@ -143,6 +145,30 @@ export default function OnboardingPage() {
     setFieldErrors(next);
   }
 
+  async function connectGoogleCalendarFromOnboarding() {
+    setErrorMsg(null);
+    setInfoMsg(null);
+
+    const redirectTo = `${window.location.origin}/auth/calendar-callback?returnTo=/chat`;
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo,
+        scopes: "https://www.googleapis.com/auth/calendar.events",
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+    });
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("No se pudo iniciar la conexión con Google Calendar.");
+    }
+  }
+
   async function handleSubmit() {
     setErrorMsg(null);
     setInfoMsg(null);
@@ -200,13 +226,49 @@ export default function OnboardingPage() {
         return;
       }
 
-      setInfoMsg("Registro enviado. Queda pendiente de aprobación del docente.");
-      router.replace("/chat");
+      setInfoMsg("✅ Datos guardados. Ahora puedes conectar Google Calendar para recibir recordatorios automáticos.");
+      setShowCalendarStep(true);
     } catch (e) {
       setErrorMsg("Error de red al enviar el registro.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (showCalendarStep) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
+        <div className="w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+          <h1 className="text-xl font-semibold mb-2">Conectar Google Calendar</h1>
+          <p className="text-sm text-slate-400 mb-5">
+            Esto permitirá que OPT-IA cree recordatorios automáticos (formularios y avances) según las fechas de tu cohorte.
+          </p>
+
+          {errorMsg && (
+            <div className="mb-4 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">
+              {errorMsg}
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              onClick={connectGoogleCalendarFromOnboarding}
+              className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold"
+            >
+              Conectar (recomendado)
+            </button>
+
+            <button
+              onClick={() => router.replace("/chat")}
+              className="px-4 py-2 rounded-lg border border-slate-700 hover:bg-slate-900 text-slate-100 font-semibold"
+            >
+              Continuar sin conectar
+            </button>
+          </div>
+
+        </div>
+      </main>
+    );
   }
 
   return (
