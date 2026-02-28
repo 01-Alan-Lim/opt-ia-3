@@ -58,17 +58,42 @@ function buildStudentLabel(s: ProfileStudent): string {
 }
 
 function extractSearchTerm(message: string): string | null {
-  // Heurística simple:
-  // - Si el usuario escribe "reporte de X" o "reporte X" → extraemos X
-  // - Si no, usamos el mensaje completo como búsqueda (para "Alan", "RU 123", email)
   const m = message.trim();
 
-  const rx =
-    /(?:reporte|resumen|informe)\s*(?:del|de)?\s*(.+)$/i;
-  const match = m.match(rx);
-  if (match?.[1]?.trim()) return match[1].trim();
+  // 1) Frases comunes: "cómo va X", "estado de X", "avance de X", "reporte de X"
+  const patterns: RegExp[] = [
+    /(?:reporte|resumen|informe)\s*(?:del|de)?\s*(.+)$/i,
+    /(?:cambiar|otro|nueva persona|nuevo estudiante)\s*(?:a|al|de)?\s*(.+)$/i,
+    /(?:como|cómo)\s+va\s+(.+)$/i,
+    /(?:estado|avance|progreso)\s+(?:de|del)\s+(.+)$/i,
+    /(?:cómo\s+va|como\s+va)\s*(?:el|la)?\s*(.+)$/i,
+  ];
 
-  return m.length <= 120 ? m : m.slice(0, 120);
+  for (const rx of patterns) {
+    const match = m.match(rx);
+    if (match?.[1]?.trim()) {
+      return cleanupTerm(match[1].trim());
+    }
+  }
+
+  // 2) Si no matchea, limpiamos la frase completa (pero quitando ruido)
+  return cleanupTerm(m.length <= 160 ? m : m.slice(0, 160));
+}
+
+function cleanupTerm(term: string): string {
+  // Quitar signos y extremos raros
+  let t = term
+    .replace(/[¿?¡!.,;:"'()[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Quitar muletillas comunes al inicio (para que no busque "va alan")
+  t = t.replace(
+    /^(?:el|la|los|las|un|una|de|del|al|a|por|para|sobre|acerca|dime|mu[eé]strame|quiero|necesito|por favor)\s+/i,
+    ""
+  );
+
+  return t.trim();
 }
 
 function extractRu(search: string): string | null {
@@ -259,6 +284,7 @@ type Intent =
   | "hours"
   | "stages"
   | "interactions"
+  | "usage"
   | "top10"
   | "alerts"
   | "stage_analysis";
@@ -270,6 +296,15 @@ function detectIntent(message: string): Intent {
   if (/^(etapas?|stage)\b/.test(m)) return "stages";
   if (/^(interacciones?|mensajes?)\b/.test(m)) return "interactions";
 
+  // ✅ uso del agente (preguntas de cohorte / globales)
+  if (
+    /(qu[ií]enes|que estudiantes|cu[aá]les)\s+(est[aá]n\s+)?(usando|utilizando|ocupando)/i.test(m) ||
+    /(uso|actividad)\s+(del\s+)?(agente|chat|asistente)/i.test(m) ||
+    /(estudiantes)\s+(activos|inactivos)/i.test(m)
+  ) {
+    return "usage";
+  }
+
   if (/(top\s*10|mejores\s*10|ranking|top10)/i.test(m)) return "top10";
   if (/(alertas?|atrasad|sin\s+avance|sin\s+actividad|problemas)/i.test(m)) return "alerts";
 
@@ -279,39 +314,48 @@ function detectIntent(message: string): Intent {
   return "report";
 }
 
-const LlmRouteSchema = z.object({
+
+const TeacherRouterSchema = z.object({
+  scope: z.enum(["global", "student"]),
   action: z.enum([
-    "report",
-    "hours",
-    "stages",
-    "interactions",
-    "top10",
-    "alerts",
-    "stage_analysis",
-    "switch_student",
+    "report",          // resumen general del estudiante
+    "hours",           // horas
+    "stages",          // etapas validadas/borrador
+    "interactions",    // chats/mensajes
+    "usage",           // quiénes usan el agente
+    "top10",           // ranking avance
+    "alerts",          // alertas
+    "stage_analysis",  // análisis académico de una etapa
+    "switch_student",  // cambiar estudiante
     "unknown",
   ]),
-  term: z.string().trim().min(1).max(160).optional(),
+  term: z.string().trim().min(1).max(160).optional(), // RU/email/nombre
   stage: z.number().int().min(0).max(20).optional(),
+  needs_clarification: z.boolean().optional(),
+  clarification_question: z.string().trim().min(1).max(240).optional(),
   confidence: z.number().min(0).max(1).optional(),
 });
 
-type LlmRoute = z.infer<typeof LlmRouteSchema>;
+type TeacherRouter = z.infer<typeof TeacherRouterSchema>;
+
+
 
 async function routeWithGemini(args: {
   message: string;
-  hasActiveStudent: boolean;
-  activeStudentLabel: string | null;
-}) : Promise<LlmRoute> {
+  ctx: TeacherChatContext;
+}): Promise<TeacherRouter> {
   const model = getGeminiModel();
+
+  const hasActiveStudent = Boolean(args.ctx.activeStudentId);
+  const activeStudentLabel = args.ctx.activeStudentLabel ?? null;
 
   const prompt = `
 Eres un asistente para DOCENTES (panel docente OPT-IA).
 Tu tarea: clasificar la intención del mensaje y devolver SOLO un JSON válido.
 
 Contexto:
-- Hay estudiante en foco: ${args.hasActiveStudent ? "SI" : "NO"}
-- Etiqueta estudiante en foco: ${args.activeStudentLabel ?? "—"}
+- Hay estudiante en foco: ${hasActiveStudent ? "SI" : "NO"}
+- Etiqueta estudiante en foco: ${activeStudentLabel ?? "—"}
 
 Acciones permitidas:
 - report: pedir un reporte general del estudiante (progreso+actividad)
@@ -325,10 +369,16 @@ Acciones permitidas:
 - unknown: si no puedes clasificar
 
 Reglas IMPORTANTES:
+- Debes incluir "scope":
+  - "global" si la pregunta NO depende de un estudiante específico (top10, alerts, usage, métricas generales).
+  - "student" si la pregunta es sobre un estudiante en foco o uno que el docente menciona.
 - Si el docente menciona un RU, email o nombre, ponlo en "term".
 - Si pide "cambiar" o "otro estudiante", usa switch_student y pon term.
 - Si pide “analiza etapa X” o “etapa X”, usa stage_analysis y pon stage.
-- Si NO hay estudiante en foco y pide horas/etapas/interacciones/reporte, usa report con term si lo menciona; si no menciona, usa unknown.
+- Si NO hay estudiante en foco y pide report/horas/etapas/interacciones sin mencionar a quién, usa:
+  - action: "unknown"
+  - needs_clarification: true
+  - clarification_question: "¿De qué estudiante? Pásame RU, email o nombre."
 - Devuelve SOLO JSON (sin markdown, sin texto extra).
 
 Mensaje del docente:
@@ -338,12 +388,10 @@ Mensaje del docente:
   const res = await model.generateContent(prompt);
   const txt = res.response.text().trim();
 
-  // Intentamos parsear JSON robustamente
   let obj: unknown = null;
   try {
     obj = JSON.parse(txt);
   } catch {
-    // fallback: si Gemini devolvió texto alrededor, intentamos extraer el primer { ... }
     const start = txt.indexOf("{");
     const end = txt.lastIndexOf("}");
     if (start >= 0 && end > start) {
@@ -355,12 +403,13 @@ Mensaje del docente:
     }
   }
 
-  const parsed = LlmRouteSchema.safeParse(obj);
-  if (!parsed.success) {
-    return { action: "unknown", confidence: 0 };
-  }
+  const parsed = TeacherRouterSchema.safeParse(obj);
+  if (!parsed.success) return { scope: "student", action: "unknown", confidence: 0 };
   return parsed.data;
 }
+
+
+
 
 function detectStageNumber(message: string): number | null {
   const m = message.toLowerCase();
@@ -455,6 +504,90 @@ function formatInteractionsReply(student: ProfileStudent, chatsCount: number, me
   lines.push("");
   lines.push(`• Chats: ${chatsCount}`);
   lines.push(`• Mensajes (total): ${messagesCount}`);
+  return lines.join("\n");
+}
+
+async function getUsageSummary(): Promise<string> {
+  const { data: students, error: stErr } = await supabaseServer
+    .from("profiles")
+    .select("user_id,ru,first_name,last_name")
+    .eq("role", "student")
+    .eq("registration_status", "approved")
+    .limit(200);
+
+  if (stErr || !students || students.length === 0) {
+    return "No hay estudiantes aprobados para analizar uso del agente.";
+  }
+
+  const ids = students.map((s: any) => s.user_id).filter(Boolean);
+
+  const { data: chats } = await supabaseServer
+    .from("chats")
+    .select("id,client_id")
+    .in("client_id", ids)
+    .limit(5000);
+
+  if (!chats || chats.length === 0) {
+    return "Aún no hay actividad registrada en el chat.";
+  }
+
+  const chatIds = chats.map((c: any) => c.id);
+
+  const { data: messages } = await supabaseServer
+    .from("messages")
+    .select("chat_id")
+    .in("chat_id", chatIds)
+    .limit(20000);
+
+  const messagesByChat = new Map<string, number>();
+  if (messages) {
+    for (const m of messages as any[]) {
+      const cid = String(m.chat_id);
+      messagesByChat.set(cid, (messagesByChat.get(cid) ?? 0) + 1);
+    }
+  }
+
+  const usageByStudent = new Map<string, { chats: number; messages: number }>();
+
+  for (const c of chats as any[]) {
+    const uid = String(c.client_id);
+    if (!usageByStudent.has(uid)) {
+      usageByStudent.set(uid, { chats: 0, messages: 0 });
+    }
+
+    const record = usageByStudent.get(uid)!;
+    record.chats += 1;
+    record.messages += messagesByChat.get(String(c.id)) ?? 0;
+  }
+
+  const ranked = (students as any[])
+    .map((s) => {
+      const u = usageByStudent.get(String(s.user_id));
+      return {
+        name: [s.first_name, s.last_name].filter(Boolean).join(" ").trim() || s.user_id,
+        ru: s.ru ? `RU ${s.ru}` : "RU —",
+        chats: u?.chats ?? 0,
+        messages: u?.messages ?? 0,
+      };
+    })
+    .filter((r) => r.chats > 0 || r.messages > 0)
+    .sort((a, b) => b.messages - a.messages)
+    .slice(0, 15);
+
+  if (ranked.length === 0) {
+    return "Aún no encontré estudiantes con actividad en el agente.";
+  }
+
+  const lines: string[] = [];
+  lines.push("📊 ESTUDIANTES QUE UTILIZAN EL AGENTE");
+  lines.push("");
+
+  ranked.forEach((r, i) => {
+    lines.push(
+      `${i + 1}) ${r.name} (${r.ru}) — 💬 ${r.messages} mensajes • 🗂️ ${r.chats} chats`
+    );
+  });
+
   return lines.join("\n");
 }
 
@@ -923,9 +1056,17 @@ export async function POST(req: Request) {
     if (looksFreeForm) {
       const routed = await routeWithGemini({
         message,
-        hasActiveStudent: Boolean(ctx.activeStudentId),
-        activeStudentLabel: ctx.activeStudentLabel ?? null,
+        ctx,
       });
+
+      if (routed.needs_clarification && routed.clarification_question) {
+        return ok({ reply: routed.clarification_question, context: ctx });
+      }
+
+      // ✅ SIEMPRE guardar el term si viene (aunque no sea switch_student)
+      if (routed.term?.trim()) {
+        (ctx as any).__llm_term = routed.term.trim();
+      }
 
       // mapeo de acción LLM a intent existente
       if (routed.action === "switch_student") {
@@ -957,6 +1098,11 @@ export async function POST(req: Request) {
     return ok({ reply, context: ctx });
     }
 
+    if (intent === "usage") {
+      const reply = await getUsageSummary();
+      return ok({ reply, context: ctx });
+    }
+
     const llmTerm = (ctx as any).__llm_term as string | null | undefined;
     const llmWantsChange = (ctx as any).__llm_wantsChange as boolean | undefined;
 
@@ -971,11 +1117,19 @@ export async function POST(req: Request) {
       const students = term ? await findStudentsByTerm(term) : [];
 
       if (students.length === 0) {
-        return ok({
-          reply:
-            "No encontré estudiantes con ese dato. Prueba con RU (ej: `RU 12345`), email o nombre/apellido.",
-          context: { activeStudentId: null, activeStudentLabel: null },
-        });
+        const hint = term ? `Intenté buscar: "${term}". ` : "";
+        const reply = [
+          `${hint}No pude identificar al estudiante todavía.`,
+          "",
+          "Prueba con uno de estos formatos:",
+          "- RU (ej: `RU 12345` o `12345`)",
+          "- Email institucional",
+          "- Nombre + apellido (ej: `Alan Lima`)",
+          "",
+          "Si quieres, también puedes decirme: **“cambiar a RU 12345”** o **“buscar Alan Lima”**.",
+        ].join("\n");
+
+        return ok({ reply, context: ctx });
       }
 
       if (students.length > 1) {

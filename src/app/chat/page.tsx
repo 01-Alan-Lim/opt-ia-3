@@ -1286,8 +1286,10 @@ export default function ChatPage() {
               "assistant",
               "¡Hola! 👋 Ya tengo tu **Contexto del Caso** registrado:\n\n" +
                 summary +
-                "\n\n¿Quieres que pasemos a **Etapa 1 (Diagnóstico)**?\n" +
-                "Responde: **ok**, **vamos**, **listo**.\n" +
+                "\n\n👉 **Importante:** la **Etapa 1 (Productividad)** se puede completar **más adelante**, cuando tengas datos del mes.\n" +
+                "Por ahora, para avanzar con el diagnóstico podemos empezar con **Etapa 2 (FODA)**.\n\n" +
+                "Si quieres continuar ahora, responde: **ok**, **vamos**, **listo**.\n" +
+                "Si ya tienes datos, escribe: **productividad**.\n" +
                 "O si quieres editar: **cambiar sector/producto/área**."
             ),
           ]);
@@ -2276,8 +2278,10 @@ export default function ChatPage() {
         "assistant",
         "✅ Listo, ya actualicé tu **Contexto del Caso (Etapa 0)**:\n\n" +
           summary +
-          "\n\n¿Confirmamos para pasar a **Etapa 1 (Diagnóstico)**?\n" +
-          "Puedes decir: **ok**, **vamos**, **listo**.\n\n" +
+          "\n\n👉 **Importante:** la **Etapa 1 (Productividad)** se puede completar **más adelante**, cuando tengas datos del mes.\n" +
+          "Para avanzar, podemos iniciar con **Etapa 2 (FODA)**.\n\n" +
+          "Puedes decir: **ok**, **vamos**, **listo** para continuar.\n" +
+          "O escribe: **productividad** si ya tienes tus datos.\n\n" +
           "Si quieres cambiar algo: **cambiar sector/producto/área**."
       ),
     ]);
@@ -3731,10 +3735,15 @@ export default function ChatPage() {
         const lastStatus = lastReport.ok ? lastReport.payload?.status : null;
         const isStage1Validated = lastStatus === "validated";
 
+        // ✅ Etapa 1 (Productividad) NO bloquea el avance a FODA y siguientes.
+        // La productividad se puede completar cuando el estudiante tenga datos del mes.
+        const allowSkipProductivity = true;
+        const diagUnlocked = isStage1Validated || allowSkipProductivity;
+
         // ================================
         // ETAPA 9: Reporte de avances (fluido con assistant)
         // ================================
-        if (progressState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (progressState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callProgressAssistant({
             studentMessage: text,
             progressState,
@@ -3803,7 +3812,7 @@ export default function ChatPage() {
         // ================================
         // ETAPA 8: Planificación (fluido con assistant)
         // ================================
-        if (planningState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callPlanningAssistant({
             studentMessage: text,
             planningState,
@@ -3866,7 +3875,7 @@ export default function ChatPage() {
         // ================================
         // ETAPA 7: Plan de mejora (fluido con assistant)
         // ================================
-        if (improvementState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (improvementState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callImprovementAssistant({
             studentMessage: text,
             improvementState,
@@ -3935,7 +3944,7 @@ export default function ChatPage() {
         // ================================
         // ETAPA 6: Objetivos (en progreso)
         // ================================
-        if (objectivesState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (objectivesState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callObjectivesAssistant({
             studentMessage: text,
             objectivesState,
@@ -3993,7 +4002,7 @@ export default function ChatPage() {
         // ================================
         // ETAPA 5: Pareto (en progreso)
         // ================================
-        if (paretoState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (paretoState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callParetoAssistant({
             studentMessage: text,
             paretoState,
@@ -4054,7 +4063,7 @@ export default function ChatPage() {
 
         // ✅ Si el usuario viene de "Nuevo chat" y el state aún no cargó en React,
         // lo buscamos directo del backend (chatId opcional, fallback por periodo).
-        if (!effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (!effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const resIsh = await getIshikawaState({ ignoreChatId: true });
           const exists = resIsh.ok && resIsh.payload?.exists && resIsh.payload?.state;
 
@@ -4072,7 +4081,7 @@ export default function ChatPage() {
           }
         }        
 
-        if (effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const ishikawaState = effectiveIshikawaState;
           // 1) Si aún no hay problema, el primer mensaje del estudiante se toma como problema (1 línea)
           const problemText =
@@ -4250,7 +4259,7 @@ export default function ChatPage() {
         // ETAPA 3: Lluvia de ideas (en progreso)
         // ================================
 
-        if (brainstormState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (brainstormState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const readyToClose = isBrainstormReadyToClose(brainstormState);
           const isNewIdea = looksLikeNewCause(text);
 
@@ -4463,7 +4472,7 @@ export default function ChatPage() {
         }
 
         // ETAPA 2: FODA en progreso (con IA)
-        if (fodaState && ctx.ok && ctx.status === "confirmed" && isStage1Validated) {
+        if (fodaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callFodaAssistant({
             studentMessage: text,
             fodaState,
@@ -5293,8 +5302,10 @@ export default function ChatPage() {
                 "assistant",
                 "✅ Listo, ya registré tu **Contexto del Caso (Etapa 0)**:\n\n" +
                   finalSummary +
-                  "\n\n¿Confirmamos para pasar a **Etapa 1 (Diagnóstico)**?\n" +
-                  "Puedes decir: **ok**, **vamos**, **listo**.\n\n" +
+                  "\n\n👉 **Importante:** la **Etapa 1 (Productividad)** se puede completar **más adelante**, cuando tengas datos del mes.\n" +
+                  "Para avanzar, podemos iniciar con **Etapa 2 (FODA)**.\n\n" +
+                  "Puedes decir: **ok**, **vamos**, **listo** para continuar.\n" +
+                  "O escribe: **productividad** si ya tienes tus datos.\n\n" +
                   "Si quieres cambiar algo: **cambiar sector/producto/área**."
               ),
             ]);
@@ -5324,22 +5335,51 @@ export default function ChatPage() {
           lastAssistantN.includes("pasar a etapa 1") ||
           lastAssistantN.includes("productividad mensual");
 
-        if (ctx.ok && ctx.status === "confirmed" && lastWasStage1Confirm && isReadyIntent(text)) {
-          setAwaitingStage1Start(clientId, false);
+          if (ctx.ok && ctx.status === "confirmed" && lastWasStage1Confirm) {
 
-          const products = Array.isArray(ctx.contextJson?.products)
-            ? ctx.contextJson.products.filter(Boolean)
-            : [];
-          const autoLine = products.length === 1 ? String(products[0]) : undefined;
+          // Si pide productividad explícitamente
+          if (text.toLowerCase().includes("productividad")) {
+            setAwaitingStage1Start(clientId, false);
 
-          setProdDraft({ line: autoLine, required_costs: 3 });
-          setProdStep(1);
+            const products = Array.isArray(ctx.contextJson?.products)
+              ? ctx.contextJson.products.filter(Boolean)
+              : [];
+            const autoLine = products.length === 1 ? String(products[0]) : undefined;
 
-          setMessages((prev) => [
-            ...prev,
-            createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
-          ]);
-          return;
+            setProdDraft({ line: autoLine, required_costs: 3 });
+            setProdStep(1);
+
+            setMessages((prev) => [
+              ...prev,
+              createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
+            ]);
+            return;
+          }
+
+          // Si responde ok/listo → iniciar FODA
+          if (isReadyIntent(text)) {
+            setAwaitingStage1Start(clientId, false);
+
+            const initial: FodaState = {
+              currentQuadrant: "F",
+              items: {
+                F: [],
+                D: [],
+                O: [],
+                A: [],
+              },
+            };
+
+            setFodaState(initial);
+            await saveFodaState(initial);
+
+            await appendAssistant(
+              "Perfecto 👍 Iniciamos **Etapa 2: Análisis FODA**.\n\n" +
+              "Empezamos con **Fortalezas (internas)**.\n\n" +
+              "Dime una fortaleza real del proceso o área que analizas."
+            );
+            return;
+          }
         }
 
         // 1) Si ya está confirmado: recién llamamos /api/plans/review
@@ -5375,7 +5415,7 @@ export default function ChatPage() {
               createMessage(
                 "assistant",
                 "Claro 🙂 En esta parte solo validamos **ingresos del mes** y **costos del mes** " +
-                  "para una línea específica (ej: Yogurt). Luego recién pasaremos a FODA y lo demás.\n\n" +
+                  "para una línea específica (ej: Yogurt). Productividad se puede completar más adelante; ahora podemos continuar con FODA.\n\n" +
                   "Sigamos:"
               ),
               createMessage("assistant", promptProd(1, ctx.contextJson, prodDraft)),
@@ -5384,12 +5424,13 @@ export default function ChatPage() {
             return;
           }
 
-          // listo => iniciamos paso 1
-          if (isReadyIntent(text)) {
+          // Si escribe "productividad", iniciar Etapa 1
+          if (text.toLowerCase().includes("productividad")) {
             setAwaitingStage1Start(clientId, false);
 
-            // inicializa draft con línea sugerida si solo hay 1 producto
-            const products = Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products.filter(Boolean) : [];
+            const products = Array.isArray(ctx.contextJson?.products)
+              ? ctx.contextJson.products.filter(Boolean)
+              : [];
             const autoLine = products.length === 1 ? String(products[0]) : undefined;
 
             setProdDraft({ line: autoLine, required_costs: 3 });
@@ -5399,6 +5440,31 @@ export default function ChatPage() {
               ...prev,
               createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
             ]);
+            return;
+          }
+
+          // Si escribe "ok / listo / vamos" iniciar FODA (Etapa 2)
+          if (isReadyIntent(text)) {
+            setAwaitingStage1Start(clientId, false);
+
+            const initial: FodaState = {
+              currentQuadrant: "F",
+              items: {
+                F: [],
+                D: [],
+                O: [],
+                A: [],
+              },
+            };
+
+            setFodaState(initial);
+            await saveFodaState(initial);
+
+            await appendAssistant(
+              "Perfecto 👍 Iniciamos **Etapa 2: Análisis FODA**.\n\n" +
+              "Empezamos con **Fortalezas (internas)**.\n\n" +
+              "Dime una fortaleza real del proceso o área que analizas."
+            );
             return;
           }
 
@@ -6018,7 +6084,7 @@ export default function ChatPage() {
         )}
 
         {/* ✅ composer flotante abajo */}
-        <div className="chat-composer absolute -left-6 -right-2 bottom-0 z-20 pointer-events-none">
+        <div className="chat-composer absolute -left-6 -right-2 bottom-3 z-20 pointer-events-none">
           <div ref={composerMeasureRef} className="pointer-events-auto relative z-10">
             <MessageInput
               onSend={handleSend}

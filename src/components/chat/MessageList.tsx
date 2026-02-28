@@ -118,7 +118,12 @@ export function MessageList({
       ref={scrollerRef}
       className="absolute inset-0 overflow-y-auto scrollbar-optia px-3"
       style={{
-        scrollPaddingBottom: "calc(var(--composer-h, 84px) + 12px)",
+        scrollPaddingBottom: "calc(var(--composer-h, 84px) + 24px)",
+        // ✅ Desvanecimiento arriba/abajo (como el chat docente)
+        maskImage:
+          "linear-gradient(to bottom, black 0%, black 3%, black 92%, transparent 100%)",
+        WebkitMaskImage:
+          "linear-gradient(to bottom, black 0%, black 3%, black 92%, transparent 100%)",
       }}
     >
         {/* ✅ Hace que cuando hay pocos mensajes se queden abajo */}
@@ -134,12 +139,14 @@ export function MessageList({
                 >
                   <div
                     className={clsx(
-                      "max-w-[80%] rounded-2xl text-sm leading-relaxed backdrop-blur-xl",
-                      "px-5 py-2",
-                      "whitespace-pre-wrap",
+                      "max-w-[85%]",
+                      "px-4 py-3",
+                      "text-sm leading-relaxed",
+                      "border",
+                      "shadow-[0_10px_30px_rgba(0,0,0,0.25)]",
                       isUser
-                        ? "bubble-user bg-sky-500/60 text-white shadow-[0_8px_18px_rgba(2,132,199,0.12)]"
-                        : "bubble-assistant bg-[color:var(--surface-elevated)] text-[color:var(--foreground)] border border-[color:var(--border)] shadow-[0_8px_18px_rgba(0,0,0,0.12)]"
+                        ? "rounded-3xl rounded-br-xl bg-[color:var(--bubble-user-bg)] border-[color:var(--bubble-user-border)] text-[color:var(--bubble-user-text)]"
+                        : "rounded-3xl rounded-bl-xl bg-[color:var(--bubble-assistant-bg)] border-[color:var(--bubble-assistant-border)] text-[color:var(--bubble-assistant-text)] whitespace-pre-line"
                     )}
                   >
                     {renderTextWithLinks(msg.content)}

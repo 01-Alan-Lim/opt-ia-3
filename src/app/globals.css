@@ -35,7 +35,17 @@
   --primary-hover: #0369a1;     /* sky-700 aprox */
   --primary-foreground: #ffffff;
 
+    /* Chat bubbles (Dark) */
+  --bubble-assistant-bg: rgba(2, 6, 23, 0.35);
+  --bubble-assistant-border: rgba(148, 163, 184, 0.16);
+  --bubble-assistant-text: rgba(241, 245, 249, 0.96);
+
+  --bubble-user-bg: rgba(2, 132, 199, 0.22);
+  --bubble-user-border: rgba(56, 189, 248, 0.18);
+  --bubble-user-text: #ffffff;
+
 }
+
 
 /* Light theme */
 :root[data-theme="light"] {
@@ -46,9 +56,9 @@
   --app-bg-via: #f3f6ff;
   --app-bg-to: #ffffff;
 
-  --surface: rgba(0, 0, 0, 0.04);
-  --surface-elevated: rgba(0, 0, 0, 0.06);
-  --border: rgba(0, 0, 0, 0.10);
+  --surface: rgba(255, 255, 255, 0.70);
+  --surface-elevated: rgba(255, 255, 255, 0.92);
+  --border: rgba(15, 23, 42, 0.12);
 
   --muted: rgba(51, 65, 85, 0.85); /* similar a slate-600 */
 
@@ -64,7 +74,19 @@
 
   --composer-scrim: rgba(255, 255, 255, 0.65);
   --composer-scrim-blur: 18px;
+
+    /* Chat bubbles (Light) */
+  --bubble-assistant-bg: rgba(255, 255, 255, 0.92);
+  --bubble-assistant-border: rgba(15, 23, 42, 0.10);
+  --bubble-assistant-text: rgba(15, 23, 42, 0.92);
+
+  --bubble-user-bg: rgba(59, 130, 246, 0.16);
+  --bubble-user-border: rgba(59, 130, 246, 0.18);
+  --bubble-user-text: rgba(15, 23, 42, 0.92);
+
 }
+
+
 
 /* Si realmente quieres mapear tokens Tailwind v4 (opcional):
 @theme inline {
