@@ -14,7 +14,8 @@ export type ApiErrorCode =
   | "PENDING_APPROVAL"
   | "COHORT_INACTIVE"
   | "ACCESS_NOT_STARTED"
-  | "ACCESS_EXPIRED";
+  | "ACCESS_EXPIRED"
+  | "PAYLOAD_TOO_LARGE";
 
 
 export function ok<T>(data: T, init?: ResponseInit) {

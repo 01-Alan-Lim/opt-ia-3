@@ -6,6 +6,8 @@ import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
 
+import { assertJsonSizeOrFail } from "@/lib/api/payloadLimit";
+
 
 export const runtime = "nodejs";
 
@@ -80,6 +82,16 @@ export async function POST(req: NextRequest) {
     }
 
     const { chatId, stage, stateJson } = parsed.data;
+
+    // ✅ Blindaje global: evita que cualquier etapa rompa por payload gigante
+    const tooLarge = assertJsonSizeOrFail({
+      value: stateJson,
+      maxBytes: 180_000, // ajustable: 180KB (seguro y estable)
+      message:
+        "Tu avance en esta etapa creció demasiado para guardarse de una sola vez. " +
+        "Te pediremos abrir un nuevo chat, pero mantendremos tu progreso.",
+    });
+    if (tooLarge) return tooLarge;
 
     const access = await assertChatOwner(user.userId, chatId);
     if (!access.ok) return failResponse(access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message, access.status);

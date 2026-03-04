@@ -35,16 +35,33 @@ function extractJsonSafe(text: string) {
 function countRootCandidates(state: any) {
   const cats = Array.isArray(state?.categories) ? state.categories : [];
   const roots: string[] = [];
+
   for (const c of cats) {
     const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+
     for (const m of mains) {
       const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+
       for (const s of subs) {
-        const t = (s?.text ?? "").toString().trim();
+        const whys = Array.isArray(s?.whys) ? s.whys : [];
+
+        const normalizedWhys = whys
+          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+          .map((t: any) => (t ?? "").toString().trim())
+          .filter(Boolean);
+
+        if (normalizedWhys.length > 0) {
+          const last = normalizedWhys[normalizedWhys.length - 1];
+          if (last) roots.push(last);
+          continue;
+        }
+
+        const t = (s?.text ?? s?.name ?? "").toString().trim();
         if (t) roots.push(t);
       }
     }
   }
+
   return roots;
 }
 

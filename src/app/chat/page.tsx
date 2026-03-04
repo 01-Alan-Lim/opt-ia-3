@@ -2541,8 +2541,10 @@ export default function ChatPage() {
       const data = await res.json().catch(() => null);
       const ok = res.ok && data?.ok === true;
 
-      return { ok, payload: ok ? data.data : null };
-    } catch {
+      const payload = ok && data?.data?.exists === false ? null : (ok ? data.data : null);
+
+      return { ok, payload };
+    } catch (err) {
       return { ok: false, payload: null };
     }
   }

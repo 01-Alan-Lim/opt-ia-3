@@ -10,7 +10,6 @@ export const runtime = "nodejs";
 type ApiErrorCode =
   | "UNAUTHORIZED"
   | "BAD_REQUEST"
-  | "NOT_FOUND"
   | "DB_ERROR"
   | "FORBIDDEN";
 
@@ -89,7 +88,19 @@ export async function GET(req: Request) {
   const { data, error } = await query.maybeSingle();
 
   if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
-  if (!data) return err(404, "NOT_FOUND", "No existe reporte para ese periodo.");
+
+  // ✅ Importante UX:
+  // Esta consulta se hace al cargar el chat para ver si ya existe un reporte.
+  // Si no existe aún, NO es un error real: devolvemos ok=true con exists=false
+  // para evitar 404 en el navegador y evitar que el front lo trate como fallo.
+  if (!data) {
+    return ok({
+      exists: false,
+      period_key: period ?? null,
+      chat_id: chatId ?? null,
+      report: null,
+    });
+  }
 
   return ok(data);
 }

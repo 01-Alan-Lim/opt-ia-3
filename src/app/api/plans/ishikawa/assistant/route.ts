@@ -39,6 +39,42 @@ export type IshikawaState = {
   rootCauses?: string[]; // opcional: se puede rellenar al final
 };
 
+
+function countRootCandidates(state: any) {
+  const cats = Array.isArray(state?.categories) ? state.categories : [];
+  const roots: string[] = [];
+
+  for (const c of cats) {
+    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+
+    for (const m of mains) {
+      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+
+      for (const s of subs) {
+        const whys = Array.isArray(s?.whys) ? s.whys : [];
+
+        const normalizedWhys = whys
+          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+          .map((t: any) => (t ?? "").toString().trim())
+          .filter(Boolean);
+
+        // Si hay 5-porqués, la raíz candidata es el último porqué
+        if (normalizedWhys.length > 0) {
+          const last = normalizedWhys[normalizedWhys.length - 1];
+          if (last) roots.push(last);
+          continue;
+        }
+
+        // Fallback: si no hay whys, cuenta la subcausa como candidata
+        const t = (s?.text ?? s?.name ?? "").toString().trim();
+        if (t) roots.push(t);
+      }
+    }
+  }
+
+  return roots;
+}
+
 function extractJsonSafe(raw: string) {
   if (!raw) return null;
 
@@ -344,58 +380,132 @@ function guessCategoryIdFromText(state: IshikawaState, text: string): string | n
   return null;
 }
 
-function buildIshikawaMap(state: IshikawaState) {
-  const problem =
-    typeof state.problem === "string" ? state.problem :
-    state.problem?.text ?? "";
+function buildIshikawaMap(state: any) {
+  const cats = Array.isArray(state?.categories) ? state.categories : [];
+
+  const minCats = state?.minCategories ?? 4;
+  const minMain = state?.minMainCausesPerCategory ?? 3; // OJO: si quieres 2, cambia aquí a 2
+  const minSub = state?.minSubCausesPerMain ?? 1; // recomendado 1 si usan 5-porqués
+
+  const isPlaceholder = (s: string) => {
+    const t = (s ?? "").toString().trim().toLowerCase();
+    return !t || t === "causa" || t === "subcausa";
+  };
+
+  const labelMain = (mc: any) => {
+    const raw = (mc?.name ?? mc?.text ?? "").toString().trim();
+    return isPlaceholder(raw) ? "(sin nombre de causa principal)" : raw;
+  };
+
+  const labelSub = (sc: any) => {
+    const raw = (sc?.name ?? sc?.text ?? "").toString().trim();
+    return isPlaceholder(raw) ? "(sin nombre de subcausa)" : raw;
+  };
+
+  const normalizeWhys = (sc: any) => {
+    const whys = Array.isArray(sc?.whys) ? sc.whys : [];
+    return whys
+      .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+      .map((t: any) => (t ?? "").toString().trim())
+      .filter(Boolean);
+  };
+
+  // Causa raíz candidata = último porqué (si existe), si no la subcausa
+  const roots: string[] = [];
+  for (const c of cats) {
+    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+    for (const m of mains) {
+      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+      for (const s of subs) {
+        const whys = normalizeWhys(s);
+        if (whys.length > 0) {
+          roots.push(whys[whys.length - 1]);
+        } else {
+          const t = (s?.text ?? s?.name ?? "").toString().trim();
+          if (t && !isPlaceholder(t)) roots.push(t);
+        }
+      }
+    }
+  }
+
+  // Subcausa válida si tiene nombre útil o al menos 1 porqué útil
+  const isSubValid = (sc: any) => {
+    const n = (sc?.name ?? sc?.text ?? "").toString().trim();
+    if (n && !isPlaceholder(n)) return true;
+    const whys = normalizeWhys(sc);
+    return whys.length > 0;
+  };
+
+  // Causa principal completa si tiene minSub subcausas válidas
+  const isMainComplete = (mc: any) => {
+    const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
+    const validSubs = subs.filter(isSubValid);
+    return validSubs.length >= minSub;
+  };
+
+  // Categoría completa si tiene minMain causas principales completas
+  const mainCompleteCount = (cat: any) => {
+    const mains = Array.isArray(cat?.mainCauses) ? cat.mainCauses : [];
+    return mains.filter(isMainComplete).length;
+  };
+
+  const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
 
   const lines: string[] = [];
-  lines.push(`🧠 Problema: ${problem || "(sin problema)"}`);
+
+  lines.push("📊 Progreso mínimo del Ishikawa");
+  lines.push(`Categorías completas: ${completeCats.length}/${minCats}`);
+  lines.push(`Causas raíz identificadas: ${roots.length}/10`);
   lines.push("");
 
-  // Conteos por categoría
-  for (const c of state.categories ?? []) {
-    const count = c.mainCauses?.length ?? 0;
-    lines.push(`- ${c.name}: ${count}/${state.minMainCausesPerCategory} causas principales`);
+  if (completeCats.length >= minCats && roots.length >= 10) {
+    lines.push("✅ Ya cumples los mínimos para pasar a Pareto.");
+  } else {
+    lines.push("🧩 Para poder pasar a Pareto te falta:");
+    if (completeCats.length < minCats) {
+      lines.push(`- Completar al menos ${minCats} categorías (con ${minMain} causas principales completas cada una)`);
+    }
+    if (roots.length < 10) {
+      lines.push(`- Identificar ${10 - roots.length} causas raíz adicionales`);
+    }
   }
-    lines.push("");
 
-    lines.push("🧩 Mapa:");
+  lines.push("");
+  lines.push("📌 Estado por categoría");
+  for (const c of cats) {
+    const done = mainCompleteCount(c);
+    const ok = done >= minMain;
+    lines.push(`${ok ? "✅" : "❌"} ${c?.name ?? "Categoría"} — causas completas: ${done}/${minMain}`);
+  }
 
-    for (const c of state.categories ?? []) {
-    lines.push(`▶ ${c.name}`);
+  lines.push("");
+  lines.push("🗺️ Mapa Ishikawa");
+  lines.push("");
 
-    for (const mc of c.mainCauses ?? []) {
-        const mcName = mc.name ?? mc.text ?? "(sin nombre)";
-        lines.push(`    ◆ ${mcName}`);
+  // Indentación SOLO por espacios (no líneas). Usamos NBSP para que no se colapse.
+  const i2 = "\u00A0\u00A0";
+  const i4 = "\u00A0\u00A0\u00A0\u00A0";
+  const i6 = "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0";
 
-        for (const sc of mc.subCauses ?? []) {
-          const scName = sc.name ?? sc.text ?? "(sin nombre)";
-          lines.push(`      - ${scName}`);
+  for (const c of cats) {
+    lines.push(`▶ ${c?.name ?? "Categoría"}`);
 
-          const whys = (sc.whys ?? [])
-              .map(w => (typeof w === "string" ? w : (w.text ?? "")))
-              .filter(Boolean);
+    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+    for (const mc of mains) {
+      lines.push(`${i2}◆ ${labelMain(mc)}`);
 
-          for (let i = 0; i < whys.length; i++) {
-              lines.push(`          ${i + 1}) ${whys[i]}`);
-          }
+      const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
+      for (const sc of subs) {
+        lines.push(`${i4}- ${labelSub(sc)}`);
+
+        const whys = normalizeWhys(sc);
+        for (let k = 0; k < whys.length; k++) {
+          lines.push(`${i6}${k + 1}) ${whys[k]}`);
         }
+      }
     }
 
-      // espacio entre categorías
-       lines.push("");
-  }
-
-
-  // Rama activa
-  if (state.cursor?.categoryId && state.cursor?.mainCauseId) {
-    const cat = state.categories.find(c => c.id === state.cursor?.categoryId);
-    const mc = cat?.mainCauses.find(m => m.id === state.cursor?.mainCauseId);
-    const catName = cat?.name ?? "(categoría)";
-    const mcName = (mc?.name ?? mc?.text) ?? "(causa)";
     lines.push("");
-    lines.push(`📍 Rama activa: ${catName} → ${mcName}`);
   }
 
   return lines.join("\n");
