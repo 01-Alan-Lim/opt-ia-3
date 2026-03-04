@@ -317,6 +317,13 @@ function detectIntent(message: string): Intent {
   const stageN = detectStageNumber(m);
   if (stageN !== null && isStageAnalysisAsk(m)) return "stage_analysis";
 
+  if (
+    /(mejor|mejores|progreso|avance|va\s+mejor)/i.test(m) ||
+    /(atrasad|rezagad|no\s+avanza|va\s+peor|seguimiento)/i.test(m)
+  ) {
+    return "progress";
+  }
+
   return "report";
 }
 
@@ -329,6 +336,7 @@ const TeacherRouterSchema = z.object({
     "stages",          // etapas validadas/borrador
     "interactions",    // chats/mensajes
     "usage",           // quiénes usan el agente
+    "progress",        // análisis de progreso (predicciones de riesgo, insights)
     "top10",           // ranking avance
     "alerts",          // alertas
     "stage_analysis",  // análisis académico de una etapa
@@ -374,6 +382,7 @@ Acciones permitidas:
 - stage_analysis: análisis académico de una etapa (requiere stage)
 - switch_student: cambiar a otro estudiante (requiere term)
 - unknown: si no puedes clasificar
+- progress: ranking/estado global de avance (mejor, peor, atrasados, seguimiento)
 
 Reglas IMPORTANTES:
 - Debes incluir "scope":
@@ -382,6 +391,13 @@ Reglas IMPORTANTES:
 - Si el mensaje pide "quién usa más" / "quién le da más uso" / "quién está dando más uso" / "más uso" / "más activo" / "quiénes están usando el agente" =>
   - scope: "global"
   - action: "usage"
+  - term: null
+- Si el docente pregunta por:
+  "quién va mejor", "mejor estudiante", "quién está atrasado", "quién no avanza",
+  "quién necesita seguimiento", "quién va peor", "rezagados"
+  =>
+  - scope: "global"
+  - action: "progress"
   - term: null
 - Si el docente menciona un RU, email o nombre, ponlo en "term".
 - Si pide "cambiar" o "otro estudiante", usa switch_student y pon term.
@@ -649,6 +665,126 @@ ${JSON.stringify(
     `Si quieres, puedo mostrar "los menos activos" o "alertas por falta de avance".`,
   ].join("\n");
 }
+
+async function getProgressSummary(message: string): Promise<string> {
+  const { data: students, error: stErr } = await supabaseServer
+    .from("profiles")
+    .select("user_id,ru,first_name,last_name")
+    .eq("role", "student")
+    .eq("registration_status", "approved")
+    .limit(200);
+
+  if (stErr || !students || students.length === 0) {
+    return "No hay estudiantes aprobados para analizar progreso.";
+  }
+
+  const ids = students.map((s: any) => s.user_id).filter(Boolean);
+
+  // Traemos artifacts para medir avance (validadas/borrador)
+  const { data: arts } = await supabaseServer
+    .from("plan_stage_artifacts")
+    .select("user_id,stage,status,updated_at")
+    .in("user_id", ids)
+    .limit(8000);
+
+  // Conteos
+  const validatedByUser = new Map<string, Set<number>>();
+  const draftByUser = new Map<string, Set<number>>();
+  const lastUpdateByUser = new Map<string, string>();
+
+  if (arts) {
+    for (const r of arts as any[]) {
+      const uid = String(r.user_id);
+      const stage = Number(r.stage);
+      if (!Number.isFinite(stage)) continue;
+
+      const status = String(r.status ?? "");
+      if (status === "validated") {
+        if (!validatedByUser.has(uid)) validatedByUser.set(uid, new Set());
+        validatedByUser.get(uid)!.add(stage);
+      } else {
+        if (!draftByUser.has(uid)) draftByUser.set(uid, new Set());
+        draftByUser.get(uid)!.add(stage);
+      }
+
+      const upd = r.updated_at ? String(r.updated_at).slice(0, 10) : null;
+      if (upd) {
+        const prev = lastUpdateByUser.get(uid);
+        if (!prev || upd > prev) lastUpdateByUser.set(uid, upd);
+      }
+    }
+  }
+
+  // si una etapa está validada, no la contamos como draft
+  for (const [uid, setV] of validatedByUser) {
+    const setD = draftByUser.get(uid);
+    if (!setD) continue;
+    for (const s of setV) setD.delete(s);
+  }
+
+  const rows = (students as any[]).map((s) => {
+    const uid = String(s.user_id);
+    const name = [s.first_name, s.last_name].filter(Boolean).join(" ").trim() || "Estudiante";
+    const ru = s.ru ? `RU ${s.ru}` : "RU —";
+    const v = validatedByUser.get(uid)?.size ?? 0;
+    const d = draftByUser.get(uid)?.size ?? 0;
+    const last = lastUpdateByUser.get(uid) ?? "—";
+    return { name, ru, v, d, last };
+  });
+
+  // Ranking: primero validadas, luego borradores, luego fecha
+  const ranked = rows.sort((a, b) => (b.v - a.v) || (b.d - a.d) || (String(b.last).localeCompare(String(a.last))));
+
+  const top5 = ranked.slice(0, 5);
+  const bottom5 = ranked.slice(-5).reverse();
+
+  // Gemini: redacción humana
+  try {
+    const model = getGeminiModel();
+
+    const prompt = `
+Eres un asesor docente dentro de OPT-IA. Responde como humano, directo y útil.
+NO inventes datos: usa SOLO lo que te doy.
+
+Pregunta del docente: "${message}"
+
+Datos reales (por estudiante):
+- v = # etapas validadas
+- d = # etapas en borrador
+- last = última actualización (YYYY-MM-DD)
+
+Top 5:
+${JSON.stringify(top5, null, 2)}
+
+Bottom 5:
+${JSON.stringify(bottom5, null, 2)}
+
+Instrucciones:
+- Explica quién va mejor y por qué (criterio: validadas/borrador).
+- Explica quién necesita seguimiento.
+- Da 3 acciones concretas para el docente.
+- Cierra con 1 pregunta sugerida para el estudiante rezagado.
+`.trim();
+
+    const result = await model.generateContent(prompt);
+    const text = result?.response?.text?.()?.trim();
+    if (text) return text;
+  } catch {
+    // fallback abajo
+  }
+
+  // Fallback sin IA
+  return [
+    "📈 PROGRESO (etapas validadas/borrador)",
+    "",
+    "🏆 Top 5:",
+    ...top5.map((r, i) => `${i + 1}) ${r.name} (${r.ru}) — ✅ ${r.v} • 📝 ${r.d} • 🗓️ ${r.last}`),
+    "",
+    "⚠️ Menor avance:",
+    ...bottom5.map((r, i) => `${i + 1}) ${r.name} (${r.ru}) — ✅ ${r.v} • 📝 ${r.d} • 🗓️ ${r.last}`),
+  ].join("\n");
+}
+
 
 async function getTop10(): Promise<string> {
   // 1) estudiantes aprobados (máx 200 para MVP)
@@ -1120,15 +1256,22 @@ export async function POST(req: Request) {
 
       // mapeo de acción LLM a intent existente
       if (routed.action === "switch_student") {
-        (ctx as any).__llm_switch_term = routed.term ?? null;
+        // ✅ estas 2 claves SÍ las lees más abajo
+        (ctx as any).__llm_term = routed.term ?? null;
+        (ctx as any).__llm_wantsChange = true;
+
+        // el intent puede quedarse report, porque luego resolverás estudiante
         intent = "report";
-      } else if (routed.action === "stage_analysis") {
+      }
+      
+      else if (routed.action === "stage_analysis") {
         (ctx as any).__llm_stage = routed.stage ?? null;
         intent = "stage_analysis";
       } else if (routed.action === "hours") intent = "hours";
       else if (routed.action === "stages") intent = "stages";
       else if (routed.action === "interactions") intent = "interactions";
       else if (routed.action === "usage") intent = "usage";
+      else if (routed.action === "progress") intent = "progress";
       else if (routed.action === "top10") intent = "top10";
       else if (routed.action === "alerts") intent = "alerts";
       else if (routed.action === "report") intent = "report";
@@ -1147,6 +1290,11 @@ export async function POST(req: Request) {
 
     if (intent === "usage") {
       const reply = await getUsageSummary(message);
+      return ok({ reply, context: ctx });
+    }
+
+    if (intent === "progress") {
+      const reply = await getProgressSummary(message);
       return ok({ reply, context: ctx });
     }
 
