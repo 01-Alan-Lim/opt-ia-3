@@ -334,6 +334,7 @@ export default function ChatPage() {
     minMainCausesPerCategory: number;   // 2-3
     minSubCausesPerMain: number;        // 2-3
     maxWhyDepth: number;                // 3-5 (prefer 3)
+    minRootCandidates: number;
     cursor?: { categoryId?: string; mainCauseId?: string } | null;
     rootCauses?: string[];
   };
@@ -577,19 +578,45 @@ export default function ChatPage() {
 
   function countRootCandidatesFromIshikawa(st: IshikawaState | null) {
     if (!st) return 0;
+
+    const isPlaceholder = (x: any) => {
+      const t = (x ?? "").toString().trim().toLowerCase();
+      return !t || t === "causa" || t === "subcausa";
+    };
+
+    const normalizeWhys = (sc: any) => {
+      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
+      return whys
+        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+        .map((t: any) => (t ?? "").toString().trim())
+        .filter(Boolean);
+    };
+
     const cats = Array.isArray(st.categories) ? st.categories : [];
-    let n = 0;
+    const roots: string[] = [];
+
     for (const c of cats) {
-      const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+      const mains = Array.isArray((c as any)?.mainCauses) ? (c as any).mainCauses : [];
       for (const m of mains) {
-        const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+        const subs = Array.isArray((m as any)?.subCauses) ? (m as any).subCauses : [];
         for (const s of subs) {
-          const t = (s?.text ?? "").toString().trim();
-          if (t) n += 1;
+          const whys = normalizeWhys(s);
+
+          // raíz = último porqué si existe
+          if (whys.length > 0) {
+            const last = whys[whys.length - 1];
+            if (last && !isPlaceholder(last)) roots.push(last);
+            continue;
+          }
+
+          // fallback: subcausa si tiene texto útil
+          const t = ((s as any)?.text ?? (s as any)?.name ?? "").toString().trim();
+          if (t && !isPlaceholder(t)) roots.push(t);
         }
       }
     }
-    return n;
+
+    return new Set(roots).size;
   }
 
   function isIshikawaReadyToClose(st: IshikawaState | null) {
@@ -604,24 +631,59 @@ export default function ChatPage() {
 
     const cats = Array.isArray(st.categories) ? st.categories : [];
     const minCats = typeof st.minCategories === "number" ? st.minCategories : 4;
-    if (cats.length < minCats) return false;
+    const minMain = typeof st.minMainCausesPerCategory === "number" ? st.minMainCausesPerCategory : 3;
 
-    const minMain = typeof st.minMainCausesPerCategory === "number" ? st.minMainCausesPerCategory : 2;
-    const minSub = typeof st.minSubCausesPerMain === "number" ? st.minSubCausesPerMain : 2;
+    // ✅ Para cierre (pasar a Pareto), consideramos suficiente 1 subcausa válida por causa principal,
+    // porque la profundidad real está en whys[].
+    const minSubForClose = 1;
 
-    for (const c of cats) {
-      const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-      if (mains.length < minMain) return false;
-      for (const m of mains) {
-        const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-        if (subs.length < minSub) return false;
-      }
-    }
+    const isPlaceholder = (x: any) => {
+      const t = (x ?? "").toString().trim().toLowerCase();
+      return !t || t === "causa" || t === "subcausa";
+    };
 
-    // MVP: raíz candidata = subcausa text (como validate backend)
-    return countRootCandidatesFromIshikawa(st) >= 10;
+    const normalizeWhys = (sc: any) => {
+      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
+      return whys
+        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+        .map((t: any) => (t ?? "").toString().trim())
+        .filter(Boolean);
+    };
+
+    const isSubValid = (sc: any) => {
+      const n = ((sc as any)?.name ?? (sc as any)?.text ?? "").toString().trim();
+      if (n && !isPlaceholder(n)) return true;
+      return normalizeWhys(sc).length > 0;
+    };
+
+    const isMainComplete = (mc: any) => {
+      const name = ((mc as any)?.name ?? (mc as any)?.text ?? "").toString().trim();
+      if (!name || isPlaceholder(name)) return false;
+
+      const subs = Array.isArray((mc as any)?.subCauses) ? (mc as any).subCauses : [];
+      const validSubs = subs.filter(isSubValid);
+      return validSubs.length >= minSubForClose;
+    };
+
+    const mainCompleteCount = (cat: any) => {
+      const mains = Array.isArray((cat as any)?.mainCauses) ? (cat as any).mainCauses : [];
+      return mains.filter(isMainComplete).length;
+    };
+
+    // ✅ Categoría completa = tiene ≥ minMain causas principales completas
+    const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
+
+    // ✅ NO exigimos todas las categorías: exigimos al menos minCats categorías completas
+    if (completeCats.length < minCats) return false;
+
+    const minRoots =
+      typeof (st as any).minRootCandidates === "number"
+        ? (st as any).minRootCandidates
+        : Math.max(1, minCats * minMain);
+
+    return countRootCandidatesFromIshikawa(st) >= minRoots;
+
   }
-
 
   function isProgressQuestion(text: string) {
     const raw = (text ?? "").trim();
@@ -3179,12 +3241,16 @@ export default function ChatPage() {
     const res = await fetch("/api/plans/ishikawa/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: chatIdRef.current }),
+      body: JSON.stringify({ chatId }),
     });
 
     const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    const payload = json?.data ?? json;
+
+    // ✅ ok SOLO si valid === true
+    const ok = res.ok && json?.ok !== false && payload?.valid === true;
+
+    return { ok, payload };
   }
 
   async function getParetoState() {
@@ -4295,10 +4361,11 @@ export default function ChatPage() {
                     { id: "cat_medida", name: "Medición", mainCauses: [] },
                     { id: "cat_entorno", name: "Entorno (Medio ambiente)", mainCauses: [] },
                 ],
-                minCategories: 4,
-                minMainCausesPerCategory: 3,
-                minSubCausesPerMain: 2,
+                minCategories: 3,
+                minMainCausesPerCategory: 2,
+                minSubCausesPerMain: 1,
                 maxWhyDepth: 3,
+                minRootCandidates: 6,
                 cursor: null,
               };
 

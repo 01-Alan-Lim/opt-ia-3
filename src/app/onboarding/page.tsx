@@ -149,22 +149,27 @@ export default function OnboardingPage() {
     setErrorMsg(null);
     setInfoMsg(null);
 
-    const redirectTo = `${window.location.origin}/auth/calendar-callback?returnTo=/chat`;
+    try {
+      const res = await fetch(
+        `/api/integrations/google-calendar/start?returnTo=${encodeURIComponent("/chat")}`,
+        { method: "GET", headers: { ...authHeaders } }
+      );
 
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo,
-        scopes: "https://www.googleapis.com/auth/calendar.events",
-        queryParams: {
-          access_type: "offline",
-          prompt: "consent",
-        },
-      },
-    });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.ok === false) {
+        setErrorMsg(json?.message ?? "No se pudo iniciar la conexión con Google Calendar.");
+        return;
+      }
 
-    if (error) {
-      console.error(error);
+      const url = json?.data?.url as string | undefined;
+      if (!url) {
+        setErrorMsg("No se pudo iniciar la conexión con Google Calendar.");
+        return;
+      }
+
+      window.location.href = url;
+    } catch (e) {
+      console.error(e);
       setErrorMsg("No se pudo iniciar la conexión con Google Calendar.");
     }
   }

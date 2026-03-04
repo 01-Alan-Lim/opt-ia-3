@@ -127,27 +127,32 @@ export default function HoursPage() {
     }
   }
 
-    async function connectGoogleCalendar() {
+  async function connectGoogleCalendar() {
     setMsg("");
     try {
-      const redirectTo = `${window.location.origin}/auth/calendar-callback?returnTo=/hours`;
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-          scopes: "https://www.googleapis.com/auth/calendar.events",
-          queryParams: {
-            access_type: "offline",
-            prompt: "consent",
-          },
-        },
-      });
-
-      if (error) {
-        setMsg("No se pudo iniciar conexión con Google Calendar.");
-        console.error(error);
+      if (!token) {
+        setMsg("No encuentro tu sesión. Inicia sesión y vuelve a intentar.");
+        return;
       }
+
+      const res = await fetch(
+        `/api/integrations/google-calendar/start?returnTo=${encodeURIComponent("/hours")}`,
+        { method: "GET", headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok || json?.ok === false) {
+        setMsg(json?.message ?? "No se pudo iniciar conexión con Google Calendar.");
+        return;
+      }
+
+      const url = json?.data?.url as string | undefined;
+      if (!url) {
+        setMsg("No se pudo iniciar conexión con Google Calendar.");
+        return;
+      }
+
+      window.location.href = url;
     } catch (e: any) {
       setMsg(String(e?.message ?? e));
     }

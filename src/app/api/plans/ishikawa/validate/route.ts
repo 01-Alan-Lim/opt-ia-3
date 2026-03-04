@@ -6,13 +6,14 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { z } from "zod";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 export const runtime = "nodejs";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
 const FinalType = "ishikawa_final";
-const PERIOD_KEY = new Date().toISOString().slice(0, 7);
+const PERIOD_KEY = getPeriodKeyLaPaz();
 
 const BodySchema = z.object({
   chatId: z.string().uuid(),
@@ -97,6 +98,7 @@ function buildScore(state: any, roots: string[]) {
   };
 }
 
+
 export async function POST(req: Request) {
   try {
     const authed = await requireUser(req);
@@ -140,6 +142,25 @@ export async function POST(req: Request) {
       draft = fb.data ?? null;
     }
 
+    // ✅ Fallback FINAL: si no existe en el periodo actual (ej: cambió el mes),
+    // retomamos el último estado disponible (sin filtrar period_key).
+    if (!draft?.payload) {
+      const fbAnyPeriod = await supabaseServer
+        .from("plan_stage_artifacts")
+        .select("id, payload, chat_id, updated_at, period_key")
+        .eq("user_id", userId)
+        .eq("stage", STAGE)
+        .eq("artifact_type", DraftType)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (fbAnyPeriod.error) {
+        return NextResponse.json(fail("BAD_REQUEST", fbAnyPeriod.error.message), { status: 400 });
+      }
+      draft = fbAnyPeriod.data ?? null;
+    }
+
     if (!draft?.payload) {
       return NextResponse.json(fail("BAD_REQUEST", "No hay estado de Etapa 4"), { status: 400 });
     }
@@ -159,14 +180,15 @@ export async function POST(req: Request) {
     }
 
     const cats = Array.isArray(s?.categories) ? s.categories : [];
-    const minCats = typeof s?.minCategories === "number" ? s.minCategories : 4;
 
-    if (cats.length < minCats) {
-      return NextResponse.json(ok({ valid: false, message: `Faltan categorías: tienes ${cats.length}, mínimo ${minCats}.` }));
-    }
-
+    // ✅ Nuevas reglas (si el state trae números, los usa; si no, usa defaults nuevos)
+    const minCats = typeof s?.minCategories === "number" ? s.minCategories : 3;
     const minMain = typeof s?.minMainCausesPerCategory === "number" ? s.minMainCausesPerCategory : 2;
     const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 1;
+    const minRoots =
+    typeof s?.minRootCandidates === "number"
+      ? s.minRootCandidates
+      : Math.max(1, minCats * minMain);
 
     const isPlaceholder = (x: any) => {
       const t = (x ?? "").toString().trim().toLowerCase();
@@ -184,41 +206,57 @@ export async function POST(req: Request) {
     const isSubValid = (sc: any) => {
       const n = (sc?.name ?? sc?.text ?? "").toString().trim();
       if (n && !isPlaceholder(n)) return true;
-      const whys = normalizeWhys(sc);
-      return whys.length > 0;
+      return normalizeWhys(sc).length > 0;
     };
 
-    for (const c of cats) {
-      const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-      if (mains.length < minMain) {
-        return NextResponse.json(
-          ok({
-            valid: false,
-            message: `En la categoría "${c?.name ?? "sin nombre"}" faltan causas principales (mín ${minMain}).`,
-          })
-        );
-      }
-      for (const m of mains) {
-        const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-        const validSubs = subs.filter(isSubValid);
+    // ✅ Una causa principal “completa” = tiene ≥ minSub subcausas válidas
+    const isMainComplete = (mc: any) => {
+      const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
+      const validSubs = subs.filter(isSubValid);
+      return validSubs.length >= minSub;
+    };
 
-        if (validSubs.length < minSub) {
-          return NextResponse.json(
-            ok({
-              valid: false,
-              message: `En "${c?.name ?? "categoría"}" > "${m?.text ?? "causa"}" faltan subcausas válidas (mín ${minSub}).`,
-            })
-          );
-        }
-      }
-    }
+    // ✅ Conteo por categoría: cuántas causas principales completas tiene
+    const mainCompleteCount = (cat: any) => {
+      const mains = Array.isArray(cat?.mainCauses) ? cat.mainCauses : [];
+      return mains.filter(isMainComplete).length;
+    };
 
-    const roots = countRootCandidates(s);
-    if (roots.length < 10) {
+    // ✅ Categoría completa = tiene ≥ minMain causas principales completas
+    const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
+
+    if (completeCats.length < minCats) {
+      const statusPerCat = cats
+        .map((c: any) => `${c?.name ?? "Categoría"}: ${mainCompleteCount(c)}/${minMain}`)
+        .join(" | ");
+
       return NextResponse.json(
         ok({
           valid: false,
-          message: `Aún hay pocas causas raíz/candidatas (${roots.length}). Apunta a 10–15 para pasar a Pareto.`,
+          message:
+            `Aún no cumples el mínimo de categorías completas: ` +
+            `${completeCats.length}/${minCats}. ` +
+            `Debes completar ${minCats} categorías con ≥${minMain} causas principales completas (y cada una con ≥${minSub} subcausa válida).`,
+          detail: { statusPerCat },
+        })
+      );
+    }
+
+    const roots = Array.from(
+      new Set(
+        countRootCandidates(s)
+          .map((r: any) => (r ?? "").toString().trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (roots.length < minRoots) {
+      return NextResponse.json(
+        ok({
+          valid: false,
+          message:
+            `Aún hay pocas causas raíz/candidatas (${roots.length}/${minRoots}). ` +
+            `Completa al menos ${minRoots} (recomendado 10–15) para pasar a Pareto.`,
         })
       );
     }

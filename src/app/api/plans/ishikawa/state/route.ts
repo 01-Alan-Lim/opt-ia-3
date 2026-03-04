@@ -5,10 +5,30 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { requireUser } from "@/lib/auth/supabase";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
-const PERIOD_KEY = new Date().toISOString().slice(0, 7);
+const PERIOD_KEY = getPeriodKeyLaPaz();
+
+// ✅ Reglas globales nuevas (tu pantalla)
+const RULES = {
+  minCategories: 3,
+  minMainCausesPerCategory: 2,
+  minSubCausesPerMain: 1,
+  maxWhyDepth: 3,
+  minRootCandidates: 3 * 2,
+};
+
+function applyStage4Rules(out: any) {
+  if (!out || typeof out !== "object") return out;
+  out.minCategories = RULES.minCategories;
+  out.minRootCandidates = RULES.minRootCandidates;
+  out.minMainCausesPerCategory = RULES.minMainCausesPerCategory;
+  out.minSubCausesPerMain = RULES.minSubCausesPerMain;
+  out.maxWhyDepth = RULES.maxWhyDepth;
+  return out;
+}
 
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
@@ -113,6 +133,7 @@ function mergeIshikawaState(base: any, incoming: any) {
   if (!incoming) return base;
 
   const out: any = { ...base, ...incoming };
+  applyStage4Rules(out);
 
   // 1) NO permitir que el problema se pierda si incoming no lo trae
   const incomingProblemMissing =
@@ -163,7 +184,7 @@ function mergeIshikawaState(base: any, incoming: any) {
     out.problem = t ? { text: t } : out.problem;
   }
 
-  return out;
+  return applyStage4Rules(out);
 }
 
 function whyToKey(w: any): string {
@@ -200,10 +221,7 @@ function dedupeWhys(base: any[], incoming: any[], maxKeep: number) {
 function compactIshikawaState(state: any) {
   if (!state || typeof state !== "object") return state;
 
-  const maxWhyDepth =
-    typeof state.maxWhyDepth === "number" && state.maxWhyDepth > 0
-      ? Math.min(state.maxWhyDepth, 7) // cap razonable
-      : 3;
+  const maxWhyDepth = RULES.maxWhyDepth;
 
   const out = { ...state };
 
@@ -235,6 +253,7 @@ function compactIshikawaState(state: any) {
     out.problem = t ? { text: t } : out.problem;
   }
 
+  applyStage4Rules(out);
   return out;
 }
 

@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 export const runtime = "nodejs";
 
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
     const caseContext = body.caseContext ?? {};
     const recentHistory = String(body.recentHistory ?? "");
 
-    const PERIOD_KEY = new Date().toISOString().slice(0, 7); // YYYY-MM
+    const PERIOD_KEY = getPeriodKeyLaPaz();
 
     // Leer Pareto final (Etapa 5) validado para obtener criticalRoots
     const { data: paretoFinal, error: paretoErr } = await supabaseServer

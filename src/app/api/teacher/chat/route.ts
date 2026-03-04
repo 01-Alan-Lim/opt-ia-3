@@ -298,6 +298,9 @@ function detectIntent(message: string): Intent {
 
   // ✅ uso del agente (preguntas de cohorte / globales)
   if (
+    // Ejemplos: "quién usa más", "quien es la persona que le da más uso", "más uso del chat"
+    /(m[aá]s)\s+(uso|actividad|interacciones?|mensajes?)\b/i.test(m) ||
+    /(qu[ií]e?n)\s+(es\s+)?(el|la)?\s*(estudiante|persona)?\s*(que\s+)?(m[aá]s)\s+(usa|utiliza|ocup|ha\s+usado)/i.test(m) ||
     /(qu[ií]enes|que estudiantes|cu[aá]les)\s+(est[aá]n\s+)?(usando|utilizando|ocupando)/i.test(m) ||
     /(uso|actividad)\s+(del\s+)?(agente|chat|asistente)/i.test(m) ||
     /(estudiantes)\s+(activos|inactivos)/i.test(m)
@@ -362,6 +365,7 @@ Acciones permitidas:
 - hours: pedir horas acumuladas / último registro
 - stages: pedir etapas validadas / borrador
 - interactions: pedir número de chats/mensajes
+- usage: ver quiénes usan más el agente (ranking por mensajes/chats)
 - top10: ranking estudiantes
 - alerts: estudiantes con alertas (sin horas, sin etapas, sin registro)
 - stage_analysis: análisis académico de una etapa (requiere stage)
@@ -372,6 +376,7 @@ Reglas IMPORTANTES:
 - Debes incluir "scope":
   - "global" si la pregunta NO depende de un estudiante específico (top10, alerts, usage, métricas generales).
   - "student" si la pregunta es sobre un estudiante en foco o uno que el docente menciona.
+- Si el mensaje pide "quién usa más" / "más uso" / "más activo" => action = "usage" (sin term).
 - Si el docente menciona un RU, email o nombre, ponlo en "term".
 - Si pide "cambiar" o "otro estudiante", usa switch_student y pon term.
 - Si pide “analiza etapa X” o “etapa X”, usa stage_analysis y pon stage.
@@ -1081,6 +1086,7 @@ export async function POST(req: Request) {
       } else if (routed.action === "hours") intent = "hours";
       else if (routed.action === "stages") intent = "stages";
       else if (routed.action === "interactions") intent = "interactions";
+      else if (routed.action === "usage") intent = "usage";
       else if (routed.action === "top10") intent = "top10";
       else if (routed.action === "alerts") intent = "alerts";
       else if (routed.action === "report") intent = "report";

@@ -2,13 +2,38 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
 
-/**
- * 1) Lee `code`/`state` del callback
- * 2) POST /api/integrations/google-calendar/callback  (code -> tokens)
- * 3) POST /api/integrations/google-calendar/sync      (crea/actualiza eventos)
- * 4) Redirige al panel docente
- */
+type OAuthState = {
+  rt?: string; // returnTo
+  csrf?: string;
+};
+
+function safeReturnTo(rt: string | null | undefined, fallback: string) {
+  if (!rt) return fallback;
+  if (!rt.startsWith("/")) return fallback;
+  if (rt.startsWith("//")) return fallback;
+  return rt;
+}
+
+function decodeState(raw: string | null): OAuthState | null {
+  if (!raw) return null;
+  try {
+    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(
+      atob(b64)
+        .split("")
+        .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`)
+        .join("")
+    );
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as OAuthState;
+  } catch {
+    return null;
+  }
+}
+
 export default function CalendarCallbackClient() {
   const router = useRouter();
   const params = useSearchParams();
@@ -27,6 +52,9 @@ export default function CalendarCallbackClient() {
         const state = params.get("state");
         const oauthError = params.get("error");
 
+        const decoded = decodeState(state);
+        const returnTo = safeReturnTo(decoded?.rt, "/chat");
+
         if (oauthError) {
           setStatus("error");
           setMessage(`Autorización cancelada: ${oauthError}`);
@@ -39,10 +67,20 @@ export default function CalendarCallbackClient() {
           return;
         }
 
-        // 1) Intercambiar code por tokens (server)
+        const { data } = await supabase.auth.getSession();
+        const accessToken = data.session?.access_token;
+        if (!accessToken) {
+          setStatus("error");
+          setMessage("No encuentro tu sesión. Inicia sesión y vuelve a intentar.");
+          return;
+        }
+
         const r = await fetch("/api/integrations/google-calendar/callback", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
           body: JSON.stringify({ code, state }),
         });
 
@@ -53,11 +91,13 @@ export default function CalendarCallbackClient() {
           return;
         }
 
-        // 2) Sincronizar eventos (server)
         setMessage("Sincronizando eventos...");
         const sync = await fetch("/api/integrations/google-calendar/sync", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
           body: JSON.stringify({ dryRun: false }),
         });
 
@@ -73,7 +113,7 @@ export default function CalendarCallbackClient() {
 
         setTimeout(() => {
           if (!mounted) return;
-          router.replace("/teacher/cohorts");
+          router.replace(returnTo);
         }, 700);
       } catch (e) {
         console.error(e);
@@ -96,7 +136,11 @@ export default function CalendarCallbackClient() {
       {status === "error" && (
         <button
           className="mt-4 rounded-md border px-4 py-2 text-sm"
-          onClick={() => router.replace("/teacher/cohorts")}
+          onClick={() => {
+            const decoded = decodeState(params.get("state"));
+            const returnTo = safeReturnTo(decoded?.rt, "/chat");
+            router.replace(returnTo);
+          }}
         >
           Volver
         </button>

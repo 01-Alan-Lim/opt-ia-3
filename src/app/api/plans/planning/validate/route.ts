@@ -7,12 +7,13 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 export const runtime = "nodejs";
 
 const STAGE = 8;
 const FinalType = "planning_final";
-const PERIOD_KEY = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+const PERIOD_KEY = getPeriodKeyLaPaz();
 
 const BodySchema = z.object({
   chatId: z.string().uuid(),

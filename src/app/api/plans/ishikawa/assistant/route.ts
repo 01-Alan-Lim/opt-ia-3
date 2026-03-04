@@ -551,6 +551,7 @@ function buildIshikawaMap(state: any) {
   const i2 = "\u00A0\u00A0";
   const i4 = "\u00A0\u00A0\u00A0\u00A0";
   const i6 = "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0";
+  const i8 = "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0";
 
   for (const c of cats) {
     lines.push(`▶ ${c?.name ?? "Categoría"}`);
@@ -565,7 +566,7 @@ function buildIshikawaMap(state: any) {
 
         const whys = normalizeWhys(sc);
         for (let k = 0; k < whys.length; k++) {
-          lines.push(`${i6}${k + 1}) ${whys[k]}`);
+          lines.push(`${i8}${k + 1}) ${whys[k]}`);
         }
       }
     }

@@ -6,13 +6,14 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 export const runtime = "nodejs";
 
 const TABLE = "plan_stage_artifacts";
 const ARTIFACT_TYPE = "productivity_wizard_state";
 const STAGE = 1;
-const PERIOD_KEY = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+const PERIOD_KEY = getPeriodKeyLaPaz();
 
 // --- Schemas ---
 const GetQuerySchema = z.object({

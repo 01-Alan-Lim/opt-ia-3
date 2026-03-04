@@ -5,12 +5,13 @@ import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
+import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 export const runtime = "nodejs";
 
 const STAGE = 5;
 const ARTIFACT_TYPE = "pareto_wizard_state";
-const PERIOD_KEY = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+const PERIOD_KEY = getPeriodKeyLaPaz();
 
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
