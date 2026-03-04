@@ -380,11 +380,51 @@ function guessCategoryIdFromText(state: IshikawaState, text: string): string | n
   return null;
 }
 
+function extractRootCauses(state: any) {
+  const cats = Array.isArray(state?.categories) ? state.categories : [];
+  const roots: { category: string; main: string; sub: string; root: string }[] = [];
+
+  const clean = (x: any) => (x ?? "").toString().trim();
+  const isPlaceholder = (s: string) => {
+    const t = s.toLowerCase().trim();
+    return !t || t === "causa" || t === "subcausa";
+  };
+
+  for (const c of cats) {
+    const cName = clean(c?.name) || "(Categoría)";
+    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+
+    for (const m of mains) {
+      const mNameRaw = clean(m?.name ?? m?.text);
+      const mName = isPlaceholder(mNameRaw) ? "(sin nombre de causa principal)" : mNameRaw;
+
+      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+      for (const s of subs) {
+        const sNameRaw = clean(s?.name ?? s?.text);
+        const sName = isPlaceholder(sNameRaw) ? "(sin nombre de subcausa)" : sNameRaw;
+
+        const whys = (Array.isArray(s?.whys) ? s.whys : [])
+          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+          .map((t: any) => clean(t))
+          .filter(Boolean);
+
+        const root = whys.length > 0 ? whys[whys.length - 1] : (isPlaceholder(sNameRaw) ? "" : sNameRaw);
+
+        if (root) {
+          roots.push({ category: cName, main: mName, sub: sName, root });
+        }
+      }
+    }
+  }
+
+  return roots;
+}
+
 function buildIshikawaMap(state: any) {
   const cats = Array.isArray(state?.categories) ? state.categories : [];
 
   const minCats = state?.minCategories ?? 4;
-  const minMain = state?.minMainCausesPerCategory ?? 3; // OJO: si quieres 2, cambia aquí a 2
+  const minMain = state?.minMainCausesPerCategory ?? 2; // OJO: si quieres 2, cambia aquí a 2
   const minSub = state?.minSubCausesPerMain ?? 1; // recomendado 1 si usan 5-porqués
 
   const isPlaceholder = (s: string) => {
@@ -428,6 +468,7 @@ function buildIshikawaMap(state: any) {
     }
   }
 
+
   // Subcausa válida si tiene nombre útil o al menos 1 porqué útil
   const isSubValid = (sc: any) => {
     const n = (sc?.name ?? sc?.text ?? "").toString().trim();
@@ -457,6 +498,30 @@ function buildIshikawaMap(state: any) {
   lines.push(`Categorías completas: ${completeCats.length}/${minCats}`);
   lines.push(`Causas raíz identificadas: ${roots.length}/10`);
   lines.push("");
+
+  // 🧾 LISTA DE CAUSAS RAÍZ (para que el estudiante vea cuáles son)
+  const uniqueRoots = Array.from(
+    new Set(
+      roots
+        .map((r) => (r ?? "").toString().trim())
+        .filter(Boolean)
+    )
+  );
+
+  lines.push("🧾 Causas raíz identificadas (último porqué de cada rama)");
+  if (uniqueRoots.length === 0) {
+    lines.push("- (aún no se detectaron causas raíz)");
+  } else {
+    const MAX = 15; // evita que el chat se haga infinito
+    for (const r of uniqueRoots.slice(0, MAX)) {
+      lines.push(`- ${r}`);
+    }
+    if (uniqueRoots.length > MAX) {
+      lines.push(`- ... (+${uniqueRoots.length - MAX} más)`);
+    }
+  }
+  lines.push("");
+
 
   if (completeCats.length >= minCats && roots.length >= 10) {
     lines.push("✅ Ya cumples los mínimos para pasar a Pareto.");

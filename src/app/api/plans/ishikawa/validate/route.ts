@@ -166,7 +166,27 @@ export async function POST(req: Request) {
     }
 
     const minMain = typeof s?.minMainCausesPerCategory === "number" ? s.minMainCausesPerCategory : 2;
-    const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 2;
+    const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 1;
+
+    const isPlaceholder = (x: any) => {
+      const t = (x ?? "").toString().trim().toLowerCase();
+      return !t || t === "causa" || t === "subcausa";
+    };
+
+    const normalizeWhys = (sc: any) => {
+      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
+      return whys
+        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
+        .map((t: any) => (t ?? "").toString().trim())
+        .filter(Boolean);
+    };
+
+    const isSubValid = (sc: any) => {
+      const n = (sc?.name ?? sc?.text ?? "").toString().trim();
+      if (n && !isPlaceholder(n)) return true;
+      const whys = normalizeWhys(sc);
+      return whys.length > 0;
+    };
 
     for (const c of cats) {
       const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
@@ -180,11 +200,13 @@ export async function POST(req: Request) {
       }
       for (const m of mains) {
         const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-        if (subs.length < minSub) {
+        const validSubs = subs.filter(isSubValid);
+
+        if (validSubs.length < minSub) {
           return NextResponse.json(
             ok({
               valid: false,
-              message: `En "${c?.name ?? "categoría"}" > "${m?.text ?? "causa"}" faltan subcausas (mín ${minSub}).`,
+              message: `En "${c?.name ?? "categoría"}" > "${m?.text ?? "causa"}" faltan subcausas válidas (mín ${minSub}).`,
             })
           );
         }
