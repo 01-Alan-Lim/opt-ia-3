@@ -82,11 +82,13 @@ export async function GET(req: NextRequest) {
 
     if (!data) return ok({ exists: false });
 
+    const compacted = compactIshikawaState(data.payload);
+
     return ok({
-    exists: true,
-    state: data.payload,
-    status: data.status,
-    updatedAt: data.updated_at,
+      exists: true,
+      state: compacted,
+      status: data.status,
+      updatedAt: data.updated_at,
     });
 
   } catch (e: any) {
@@ -142,11 +144,9 @@ function mergeIshikawaState(base: any, incoming: any) {
         const baseWhys = Array.isArray(baseSc.whys) ? baseSc.whys : [];
         const incWhys = Array.isArray(mergedSc.whys) ? mergedSc.whys : [];
 
-        const mergedWhys = [...baseWhys];
-        for (const w of incWhys) {
-          if (!mergedWhys.includes(w)) mergedWhys.push(w);
-        }
-        mergedSc.whys = mergedWhys;
+        // ✅ dedupe POR TEXTO/ID, no por referencia
+        // ✅ y cap duro para que no crezca infinito
+        mergedSc.whys = dedupeWhys(baseWhys, incWhys, Math.min(out.maxWhyDepth ?? 3, 7));
 
         return mergedSc;
       });
@@ -166,6 +166,77 @@ function mergeIshikawaState(base: any, incoming: any) {
   return out;
 }
 
+function whyToKey(w: any): string {
+  if (typeof w === "string") return w.trim();
+  if (w && typeof w === "object") {
+    const t = typeof w.text === "string" ? w.text.trim() : "";
+    const id = typeof w.id === "string" ? w.id.trim() : "";
+    return t || id || "";
+  }
+  return "";
+}
+
+function dedupeWhys(base: any[], incoming: any[], maxKeep: number) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  const push = (w: any) => {
+    const key = whyToKey(w);
+    if (!key) return;
+    const norm = key.toLowerCase();
+    if (seen.has(norm)) return;
+    seen.add(norm);
+    out.push(key);
+  };
+
+  for (const w of base ?? []) push(w);
+  for (const w of incoming ?? []) push(w);
+
+  // ✅ cap duro para que JAMÁS explote
+  if (out.length > maxKeep) return out.slice(0, maxKeep);
+  return out;
+}
+
+function compactIshikawaState(state: any) {
+  if (!state || typeof state !== "object") return state;
+
+  const maxWhyDepth =
+    typeof state.maxWhyDepth === "number" && state.maxWhyDepth > 0
+      ? Math.min(state.maxWhyDepth, 7) // cap razonable
+      : 3;
+
+  const out = { ...state };
+
+  out.categories = (out.categories ?? []).map((cat: any) => {
+    const cat2 = { ...cat };
+
+    cat2.mainCauses = (cat2.mainCauses ?? []).map((mc: any) => {
+      const mc2 = { ...mc };
+
+      mc2.subCauses = (mc2.subCauses ?? []).map((sc: any) => {
+        const sc2 = { ...sc };
+
+        // ✅ normalizar siempre a string[] y dedupe + cap
+        const merged = dedupeWhys(sc2.whys ?? [], [], maxWhyDepth);
+        sc2.whys = merged;
+
+        return sc2;
+      });
+
+      return mc2;
+    });
+
+    return cat2;
+  });
+
+  // ✅ normalizar problema
+  if (typeof out.problem === "string") {
+    const t = out.problem.trim();
+    out.problem = t ? { text: t } : out.problem;
+  }
+
+  return out;
+}
 
 
 export async function POST(req: NextRequest) {
@@ -202,7 +273,8 @@ export async function POST(req: NextRequest) {
       .eq("period_key", PERIOD_KEY)
       .maybeSingle();
 
-    const mergedState = mergeIshikawaState(existing.data?.payload ?? null, state);
+    const mergedStateRaw = mergeIshikawaState(existing.data?.payload ?? null, state);
+    const mergedState = compactIshikawaState(mergedStateRaw);
 
     const { error } = await supabaseServer
       .from("plan_stage_artifacts")
