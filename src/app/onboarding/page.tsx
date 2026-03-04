@@ -156,6 +156,7 @@ export default function OnboardingPage() {
       );
 
       const json = await res.json().catch(() => null);
+
       if (!res.ok || json?.ok === false) {
         setErrorMsg(json?.message ?? "No se pudo iniciar la conexión con Google Calendar.");
         return;

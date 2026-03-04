@@ -6092,7 +6092,7 @@ export default function ChatPage() {
 
       {/* Selector de modo */}
       <div className="mb-0 flex flex-wrap gap-2 text-[11px]">
-        <span className="mt-1 mr-2 text-[color:var(--muted)]">Modo del asistente:</span>
+        <span className="mt-1 mr-2 text-[color:var(--muted)]">Modo:</span>
 
         <button
           type="button"

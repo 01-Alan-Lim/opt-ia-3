@@ -4,34 +4,11 @@ import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type OAuthState = {
-  rt?: string; // returnTo
-  csrf?: string;
-};
-
 function safeReturnTo(rt: string | null | undefined, fallback: string) {
   if (!rt) return fallback;
   if (!rt.startsWith("/")) return fallback;
   if (rt.startsWith("//")) return fallback;
   return rt;
-}
-
-function decodeState(raw: string | null): OAuthState | null {
-  if (!raw) return null;
-  try {
-    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
-    const json = decodeURIComponent(
-      atob(b64)
-        .split("")
-        .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`)
-        .join("")
-    );
-    const parsed = JSON.parse(json);
-    if (!parsed || typeof parsed !== "object") return null;
-    return parsed as OAuthState;
-  } catch {
-    return null;
-  }
 }
 
 export default function CalendarCallbackClient() {
@@ -51,9 +28,6 @@ export default function CalendarCallbackClient() {
         const code = params.get("code");
         const state = params.get("state");
         const oauthError = params.get("error");
-
-        const decoded = decodeState(state);
-        const returnTo = safeReturnTo(decoded?.rt, "/chat");
 
         if (oauthError) {
           setStatus("error");
@@ -75,6 +49,7 @@ export default function CalendarCallbackClient() {
           return;
         }
 
+        // 1) Intercambiar code por tokens y guardar refresh_token
         const r = await fetch("/api/integrations/google-calendar/callback", {
           method: "POST",
           headers: {
@@ -91,6 +66,7 @@ export default function CalendarCallbackClient() {
           return;
         }
 
+        // 2) Sincronizar eventos
         setMessage("Sincronizando eventos...");
         const sync = await fetch("/api/integrations/google-calendar/sync", {
           method: "POST",
@@ -107,6 +83,8 @@ export default function CalendarCallbackClient() {
           setMessage(sj?.message || "No se pudo sincronizar eventos.");
           return;
         }
+
+        const returnTo = safeReturnTo(j?.data?.returnTo, "/chat");
 
         setStatus("ok");
         setMessage("¡Google Calendar conectado! Redirigiendo...");
@@ -136,11 +114,7 @@ export default function CalendarCallbackClient() {
       {status === "error" && (
         <button
           className="mt-4 rounded-md border px-4 py-2 text-sm"
-          onClick={() => {
-            const decoded = decodeState(params.get("state"));
-            const returnTo = safeReturnTo(decoded?.rt, "/chat");
-            router.replace(returnTo);
-          }}
+          onClick={() => router.replace("/chat")}
         >
           Volver
         </button>

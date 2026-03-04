@@ -1,7 +1,6 @@
 // src/app/api/integrations/google-calendar/callback/route.ts
-import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ok, fail } from "@/lib/api/response";
+import { ok, failResponse } from "@/lib/api/response";
 import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 
@@ -14,10 +13,10 @@ const BodySchema = z.object({
 
 const TokenResponseSchema = z.object({
   access_token: z.string().min(10),
+  refresh_token: z.string().optional(),
+  scope: z.string().optional(),
   expires_in: z.number().optional(),
   token_type: z.string().optional(),
-  scope: z.string().optional(),
-  refresh_token: z.string().optional(),
 });
 
 function base64UrlDecode(input: string) {
@@ -26,11 +25,21 @@ function base64UrlDecode(input: string) {
   return Buffer.from(b64, "base64").toString("utf8");
 }
 
-function safeReturnTo(rt: string | undefined, fallback: string) {
-  if (!rt) return fallback;
+function safeReturnTo(rt: unknown, fallback: string) {
+  if (typeof rt !== "string") return fallback;
   if (!rt.startsWith("/")) return fallback;
   if (rt.startsWith("//")) return fallback;
   return rt;
+}
+
+function getCookie(req: Request, name: string) {
+  const raw = req.headers.get("cookie");
+  if (!raw) return null;
+  const part = raw
+    .split(";")
+    .map((p) => p.trim())
+    .find((p) => p.startsWith(`${name}=`));
+  return part ? part.split("=").slice(1).join("=") : null;
 }
 
 export async function POST(req: Request) {
@@ -40,45 +49,42 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const parsed = BodySchema.safeParse(body);
     if (!parsed.success) {
-      return NextResponse.json(
-        fail("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido."),
-        { status: 400 }
+      return failResponse(
+        "BAD_REQUEST",
+        parsed.error.issues[0]?.message ?? "Payload inválido.",
+        400,
+        parsed.error.issues
       );
     }
 
     const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      return NextResponse.json(
-        fail("INTERNAL", "Faltan GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET en env."),
-        { status: 500 }
+      return failResponse(
+        "INTERNAL",
+        "Faltan GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET en env.",
+        500
       );
     }
 
-    // leer cookie gc_csrf
-    const cookieCsrf = req.headers
-      .get("cookie")
-      ?.split(";")
-      .map((p) => p.trim())
-      .find((p) => p.startsWith("gc_csrf="))
-      ?.split("=")[1];
-
+    // Validación CSRF state vs cookie
+    const cookieCsrf = getCookie(req, "gc_csrf");
     let returnTo = "/chat";
     let stateCsrf: string | undefined;
 
     if (parsed.data.state) {
       try {
-        const raw = base64UrlDecode(parsed.data.state);
-        const obj = JSON.parse(raw) as { rt?: string; csrf?: string };
-        returnTo = safeReturnTo(obj?.rt, "/chat");
-        stateCsrf = obj?.csrf;
+        const obj = JSON.parse(base64UrlDecode(parsed.data.state)) as { rt?: unknown; csrf?: unknown };
+        returnTo = safeReturnTo(obj.rt, "/chat");
+        if (typeof obj.csrf === "string") stateCsrf = obj.csrf;
       } catch {
+        // si state es inválido, igual seguimos pero con returnTo seguro
         returnTo = "/chat";
       }
     }
 
     if (stateCsrf && cookieCsrf && stateCsrf !== cookieCsrf) {
-      return NextResponse.json(fail("FORBIDDEN", "State inválido (CSRF)."), { status: 403 });
+      return failResponse("FORBIDDEN", "State inválido (CSRF).", 403);
     }
 
     const origin = new URL(req.url).origin;
@@ -99,26 +105,20 @@ export async function POST(req: Request) {
 
     const tokenJson = await tokenRes.json().catch(() => null);
     if (!tokenRes.ok || !tokenJson) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo intercambiar el code por tokens."), {
-        status: 500,
-      });
+      return failResponse("INTERNAL", "No se pudo intercambiar el code por tokens.", 500, tokenJson);
     }
 
     const tokenParsed = TokenResponseSchema.safeParse(tokenJson);
     if (!tokenParsed.success) {
-      return NextResponse.json(fail("INTERNAL", "Respuesta de Google inválida (token)."), {
-        status: 500,
-      });
+      return failResponse("INTERNAL", "Respuesta de Google inválida (token).", 500, tokenParsed.error.issues);
     }
 
     const refreshToken = tokenParsed.data.refresh_token;
     if (!refreshToken) {
-      return NextResponse.json(
-        fail(
-          "CONFLICT",
-          "Google no devolvió refresh_token. Revoca el acceso de OPT-IA en tu cuenta de Google y vuelve a conectar."
-        ),
-        { status: 409 }
+      return failResponse(
+        "CONFLICT",
+        "Google no devolvió refresh_token. Revoca el acceso de OPT-IA en tu cuenta Google y vuelve a conectar.",
+        409
       );
     }
 
@@ -137,12 +137,10 @@ export async function POST(req: Request) {
       );
 
     if (error) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo guardar token de calendario.", error), {
-        status: 500,
-      });
+      return failResponse("INTERNAL", "No se pudo guardar token de calendario.", 500, error);
     }
 
-    const res = NextResponse.json(ok({ connected: true, returnTo }));
+    const res = ok({ connected: true, returnTo });
     res.cookies.set("gc_csrf", "", {
       httpOnly: true,
       secure: true,
@@ -151,14 +149,10 @@ export async function POST(req: Request) {
       maxAge: 0,
     });
     return res;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "INTERNAL";
-    if (msg === "UNAUTHORIZED") {
-      return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
-    }
-    if (msg === "FORBIDDEN_DOMAIN") {
-      return NextResponse.json(fail("FORBIDDEN", "Acceso restringido."), { status: 403 });
-    }
-    return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    if (msg === "UNAUTHORIZED") return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
+    if (msg === "FORBIDDEN_DOMAIN") return failResponse("FORBIDDEN", "Acceso restringido.", 403);
+    return failResponse("INTERNAL", "Error interno.", 500, { msg });
   }
 }
