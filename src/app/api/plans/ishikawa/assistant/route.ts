@@ -4,6 +4,12 @@ import { ok, failResponse } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { requireUser } from "@/lib/auth/supabase";
 
+export const runtime = "nodejs";
+
+function makeRequestId() {
+  return `ish_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 type IshikawaWhy = string | { id?: string; text?: string };
 
 type IshikawaCategory = {
@@ -701,7 +707,188 @@ function buildVariedFollowUp(studentMessage: string) {
   return `${opener} ${analysis}\n${q}`;
 }
 
+type IshikawaIntent =
+  | "SHOW_MAP"
+  | "HELP"
+  | "ADVANCE_STAGE"
+  | "CLOSE_BRANCH"
+  | "NON_CAUSAL"
+  | "CAUSE_OR_WHY"
+  | "UNKNOWN";
 
+function classifyIntentRules(msgLower: string): IshikawaIntent {
+  if (!msgLower.trim()) return "UNKNOWN";
+
+  // MAPA / AVANCE / ESTADO
+  if (
+    msgLower.includes("situacion actual") ||
+    msgLower.includes("situación actual") ||
+    msgLower.includes("mapa") ||
+    msgLower.includes("estado actual") ||
+    msgLower.includes("resumen") ||
+    msgLower.includes("que tenemos") ||
+    msgLower.includes("qué tenemos") ||
+    msgLower.includes("en que rama") ||
+    msgLower.includes("en qué rama") ||
+    msgLower.includes("avance") ||
+    msgLower.includes("progreso") ||
+    msgLower.includes("muéstrame") ||
+    msgLower.includes("muestrame") ||
+    msgLower.includes("hasta donde") ||
+    msgLower.includes("donde continuar") ||
+    msgLower.includes("dónde continuar")
+  ) return "SHOW_MAP";
+
+  // AYUDA
+  if (
+    msgLower.includes("ayuda") ||
+    msgLower.includes("no entiendo") ||
+    msgLower.includes("explica") ||
+    msgLower.includes("qué sigue") ||
+    msgLower.includes("que sigue")
+  ) return "HELP";
+
+  // AVANZAR/EMPEZAR ETAPA 4
+  if (isAdvanceToStage4Message(msgLower)) return "ADVANCE_STAGE";
+
+  // CERRAR RAMA
+  if (isCloseBranchConfirm(msgLower)) return "CLOSE_BRANCH";
+
+  // MENSAJE NO CAUSAL (control/navegación)
+  if (isNonCausalMessage(msgLower)) return "NON_CAUSAL";
+
+  return "UNKNOWN";
+}
+
+async function classifyIntentAI(studentMessage: string): Promise<IshikawaIntent> {
+  // Clasificador mínimo: barato y estable. NO edita estado.
+  const system =
+    `Clasifica el mensaje del estudiante en UNA de estas etiquetas EXACTAS:\n` +
+    `SHOW_MAP, HELP, ADVANCE_STAGE, CLOSE_BRANCH, NON_CAUSAL, CAUSE_OR_WHY, UNKNOWN.\n` +
+    `Responde SOLO la etiqueta.`;
+
+  const prompt =
+    `Mensaje: ${studentMessage}\n\n` +
+    `Etiqueta:`;
+
+  try {
+    const raw = await geminiText({ system, prompt, temperature: 0 });
+    const label = (raw ?? "").trim().toUpperCase();
+
+    if (
+      label === "SHOW_MAP" ||
+      label === "HELP" ||
+      label === "ADVANCE_STAGE" ||
+      label === "CLOSE_BRANCH" ||
+      label === "NON_CAUSAL" ||
+      label === "CAUSE_OR_WHY" ||
+      label === "UNKNOWN"
+    ) {
+      return label as IshikawaIntent;
+    }
+    return "UNKNOWN";
+  } catch {
+    return "UNKNOWN";
+  }
+}
+
+async function classifyIntent(studentMessage: string): Promise<IshikawaIntent> {
+  const msgLower = studentMessage.trim().toLowerCase();
+  const ruleIntent = classifyIntentRules(msgLower);
+  if (ruleIntent !== "UNKNOWN") return ruleIntent;
+
+  // Si no matchea reglas, usamos IA solo para clasificar
+  const aiIntent = await classifyIntentAI(studentMessage);
+  return aiIntent;
+}
+
+function buildUnknownIntentMessage(state: IshikawaState) {
+  const nextState = ensureDefaultCategoriesIfEmpty(state);
+  const active = findActiveNodes(nextState);
+
+  const problemText =
+    typeof nextState.problem === "string"
+      ? nextState.problem
+      : nextState.problem?.text ?? "";
+
+  // Mensaje fluido, sin opciones tipo bot
+  // 1) Si hay rama activa: guiamos a retomar ahí
+  if (active?.cat && active?.mc) {
+    const catName = active.cat.name ?? "la categoría actual";
+    const mcName = active.mc.name ?? active.mc.text ?? "esta causa";
+
+    return {
+      assistantMessage:
+        `Te sigo 👍. Para no perder el hilo, dime qué prefieres hacer:\n\n` +
+        `• Si solo quieres ver dónde vas, dime: **"muéstrame el avance"**.\n` +
+        `• Si quieres continuar, sigamos en la rama actual: **${catName} → ${mcName}**.\n\n` +
+        `Ahora dime una razón concreta del tipo: “ocurre porque ___” (qué pasa / dónde / cuándo).`,
+      nextState,
+    };
+  }
+
+  // 2) Si NO hay rama activa: pedimos una causa concreta o pedir avance
+  return {
+    assistantMessage:
+      `Te entiendo 👍.\n\n` +
+      (problemText ? `🎯 Estamos trabajando el problema: **${problemText}**.\n\n` : "") +
+      `Si quieres, puedo mostrarte tu avance (dime **"muéstrame el avance"**).\n` +
+      `Si lo que quieres es seguir construyendo el Ishikawa, dime una **causa concreta** del problema (qué pasa / dónde / cuándo).`,
+    nextState,
+  };
+}
+
+function buildLLMStateContext(state: IshikawaState) {
+  const cursor = state.cursor;
+
+  // si no hay cursor devolvemos estado resumido
+  if (!cursor?.categoryId) {
+    return {
+      cursor: null,
+      categories: (state.categories ?? []).slice(0, 3).map((c) => ({
+        id: c.id,
+        name: c.name,
+        mainCausesCount: c.mainCauses?.length ?? 0,
+      })),
+    };
+  }
+
+  const cat = state.categories.find(c => c.id === cursor.categoryId);
+  if (!cat) return { cursor: null, categories: [] };
+
+  const mc = cat.mainCauses.find(m => m.id === cursor.mainCauseId);
+  const sc = mc?.subCauses.find(s => s.id === cursor.subCauseId);
+
+  return {
+    cursor: state.cursor,
+
+    category: {
+      id: cat.id,
+      name: cat.name
+    },
+
+    mainCause: mc ? {
+      id: mc.id,
+      name: mc.name ?? mc.text ?? ""
+    } : null,
+
+    subCause: sc ? {
+      id: sc.id,
+      name: sc.name ?? sc.text ?? "",
+      whys: (sc.whys ?? []).map(w => typeof w === "string" ? w : w.text)
+    } : null,
+
+    // otras categorías solo como resumen
+    otherCategories: (state.categories ?? [])
+      .filter(c => c.id !== cat.id)
+      .slice(0, 2)
+      .map(c => ({
+        id: c.id,
+        name: c.name,
+        mainCausesCount: c.mainCauses?.length ?? 0
+      }))
+  };
+}
 
 
 export async function POST(req: Request) {
@@ -725,6 +912,20 @@ export async function POST(req: Request) {
 
     const msgLower = studentMessage.trim().toLowerCase();
 
+    const intent = await classifyIntent(studentMessage);
+
+    // ✅ Si la intención quedó "UNKNOWN", NO dispares el prompt gigante.
+    // Mejor aclaramos de forma fluida y seguimos sin romper el estado.
+    if (intent === "UNKNOWN") {
+      const { assistantMessage, nextState } = buildUnknownIntentMessage(ishikawaState);
+
+      return ok({
+        assistantMessage,
+        updates: { nextState },
+      });
+    }
+
+
     // ✅ 1) Asegurar que el problema SIEMPRE esté en ishikawaState (si viene vacío)
     const currentProblem =
       typeof ishikawaState.problem === "string"
@@ -743,27 +944,16 @@ export async function POST(req: Request) {
       ishikawaState.problem = { text: ctxProblem.trim() };
     }
 
-    const wantsMap =
-    msgLower.includes("situacion actual") ||
-    msgLower.includes("situación actual") ||
-    msgLower.includes("mapa") ||
-    msgLower.includes("estado actual") ||
-    msgLower.includes("resumen") ||
-    msgLower.includes("que tenemos") ||
-    msgLower.includes("qué tenemos") ||
-    msgLower.includes("en que rama") ||
-    msgLower.includes("en qué rama");
-
-    if (wantsMap) {
-    const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
-    return ok({
+    if (intent === "SHOW_MAP") {
+      const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
+      return ok({
         assistantMessage: buildIshikawaMap(nextState),
         updates: { nextState },
-    });
+      });
     }
 
     // 0) Si el estudiante está confirmando avanzar a Etapa 4, damos introducción y arrancamos
-    if (isAdvanceToStage4Message(studentMessage) && !hasAnyIshikawaWork(ishikawaState)) {
+    if (intent === "ADVANCE_STAGE" && !hasAnyIshikawaWork(ishikawaState)) {
       const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
 
       const problemText =
@@ -906,27 +1096,7 @@ export async function POST(req: Request) {
         msg.includes("ayuda")
     );
 
-    if (isTransitionToStage4) {
-    const lastIdea =
-        (brainstormState?.ideas && brainstormState.ideas.length
-        ? brainstormState.ideas[brainstormState.ideas.length - 1]?.text
-        : null) ?? null;
-
-    const intro =
-        `✅ Perfecto. Pasamos a la **Etapa 4: Diagrama Ishikawa + 5 Por Qué**.\n\n` +
-        `Este diagrama sirve para **ordenar causas** del problema por categorías (6M) y profundizar con **“¿por qué?”**.\n\n` +
-        (lastIdea
-        ? `Puedes arrancar con la última idea del brainstorm:\n“${lastIdea}”\n\n`
-        : "") +
-        `👉 Dime **una causa concreta** (qué pasa / dónde pasa) o dime en qué categoría 6M crees que entra.`;
-
-    return ok({
-        assistantMessage: intro,
-        updates: { nextState: ishikawaState },
-    });
-    }
-
-    if (isHelpInsideIshikawa) {
+    if (intent === "HELP" && alreadyInIshikawa) {
     return ok({
         assistantMessage:
             "📌 Estamos en Ishikawa y **no reiniciamos** la etapa.\n" +
@@ -1184,6 +1354,13 @@ Responde SOLO con JSON válido (sin markdown).
     });
 
   } catch (e: any) {
-    return failResponse("INTERNAL", e?.message ?? "Error", 500);
+    const requestId = makeRequestId();
+    console.error("[ISHIKAWA] INTERNAL", { requestId, error: e });
+
+    return failResponse(
+      "INTERNAL",
+      `Ocurrió un error interno al procesar Ishikawa. Intenta de nuevo. (ref: ${requestId})`,
+      500
+    );
   }
 }
