@@ -301,7 +301,9 @@ function detectIntent(message: string): Intent {
     // Ejemplos: "quién usa más", "quien es la persona que le da más uso", "más uso del chat"
     /(m[aá]s)\s+(uso|actividad|interacciones?|mensajes?)\b/i.test(m) ||
     /(qu[ií]e?n)\s+(es\s+)?(el|la)?\s*(estudiante|persona)?\s*(que\s+)?(m[aá]s)\s+(usa|utiliza|ocup|ha\s+usado)/i.test(m) ||
-    /(qu[ií]enes|que estudiantes|cu[aá]les)\s+(est[aá]n\s+)?(usando|utilizando|ocupando)/i.test(m) ||
+    // "quién le da más uso", "quién está dando más uso", "quién da más uso"
+    /(qu[ií]e?n)\s+(es\s+)?(el|la)?\s*(estudiante|persona)?\s*(que\s+)?(le\s+)?(est[aá]\s+)?d(a|á|an|ando)\s+(m[aá]s)\s+uso/i.test(m) ||
+    /(qu[ií]enes|que estudiantes|cu[aá]les)\s+(est[aá]n\s+)?(usando|utilizando|ocupando|dando\s+uso)/i.test(m) ||
     /(uso|actividad)\s+(del\s+)?(agente|chat|asistente)/i.test(m) ||
     /(estudiantes)\s+(activos|inactivos)/i.test(m)
   ) {
@@ -376,7 +378,10 @@ Reglas IMPORTANTES:
 - Debes incluir "scope":
   - "global" si la pregunta NO depende de un estudiante específico (top10, alerts, usage, métricas generales).
   - "student" si la pregunta es sobre un estudiante en foco o uno que el docente menciona.
-- Si el mensaje pide "quién usa más" / "más uso" / "más activo" => action = "usage" (sin term).
+- Si el mensaje pide "quién usa más" / "quién le da más uso" / "quién está dando más uso" / "más uso" / "más activo" / "quiénes están usando el agente" =>
+  - scope: "global"
+  - action: "usage"
+  - term: null
 - Si el docente menciona un RU, email o nombre, ponlo en "term".
 - Si pide "cambiar" o "otro estudiante", usa switch_student y pon term.
 - Si pide “analiza etapa X” o “etapa X”, usa stage_analysis y pon stage.
@@ -1050,35 +1055,23 @@ export async function POST(req: Request) {
     // 1) Intent rápido por regex (para comandos cortos)
     let intent = detectIntent(message);
 
-    // 2) Si parece pregunta libre (no comando directo), usamos Gemini para rutear
-    //    Heurística: si detectIntent devolvió "report" pero NO empieza con "reporte/resumen/informe"
-    //    o si contiene preguntas tipo "cómo va", "qué tal", "por qué", "recomienda", etc.
-    const looksFreeForm =
-      intent === "report" &&
-      !/^(reporte|resumen|informe)\b/i.test(message.trim()) &&
-      /(como|cómo|qué|que|por qué|porque|recomienda|estado|avance|va|va\?|\?)/i.test(message);
+    // 2) Router con Gemini (para que el chat docente "entienda" preguntas naturales)
+    //    Solo evitamos LLM en comandos MUY cortos y obvios para mantenerlo rápido.
+    const trimmed = message.trim();
+    const isExplicitShortCommand =
+      trimmed.length <= 40 &&
+      /^(top\s*10|top10|ranking|alertas?|uso|actividad|interacciones?|mensajes?|chats?|horas?|etapas?)\b/i.test(trimmed);
 
-    if (looksFreeForm) {
+    // Por defecto, el chat docente debería comportarse como "IA" -> intentamos rutear con LLM.
+    if (!isExplicitShortCommand) {
       const routed = await routeWithGemini({
         message,
         ctx,
       });
 
-      if (routed.needs_clarification && routed.clarification_question) {
-        return ok({ reply: routed.clarification_question, context: ctx });
-      }
-
-      // ✅ SIEMPRE guardar el term si viene (aunque no sea switch_student)
-      if (routed.term?.trim()) {
-        (ctx as any).__llm_term = routed.term.trim();
-      }
-
       // mapeo de acción LLM a intent existente
       if (routed.action === "switch_student") {
-        // fuerza “cambiar” para disparar la resolución de estudiante
-        // y usa routed.term como término de búsqueda
-        (ctx as any).__llm_term = routed.term ?? null;
-        (ctx as any).__llm_wantsChange = true;
+        (ctx as any).__llm_switch_term = routed.term ?? null;
         intent = "report";
       } else if (routed.action === "stage_analysis") {
         (ctx as any).__llm_stage = routed.stage ?? null;
@@ -1090,7 +1083,6 @@ export async function POST(req: Request) {
       else if (routed.action === "top10") intent = "top10";
       else if (routed.action === "alerts") intent = "alerts";
       else if (routed.action === "report") intent = "report";
-      else intent = intent; // fallback
     }
 
     // ✅ GLOBAL: top10/alertas sin estudiante en foco
