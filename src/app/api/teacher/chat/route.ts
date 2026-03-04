@@ -281,12 +281,13 @@ function formatReport(student: ProfileStudent, report: {
 
 type Intent =
   | "report"
-  | "hours"
-  | "stages"
-  | "interactions"
   | "usage"
+  | "progress"
   | "top10"
   | "alerts"
+  | "interactions"
+  | "hours"
+  | "stages"
   | "stage_analysis";
 
 function detectIntent(message: string): Intent {
@@ -517,7 +518,7 @@ function formatInteractionsReply(student: ProfileStudent, chatsCount: number, me
   return lines.join("\n");
 }
 
-async function getUsageSummary(): Promise<string> {
+async function getUsageSummary(message: string): Promise<string> {
   const { data: students, error: stErr } = await supabaseServer
     .from("profiles")
     .select("user_id,ru,first_name,last_name")
@@ -558,12 +559,9 @@ async function getUsageSummary(): Promise<string> {
   }
 
   const usageByStudent = new Map<string, { chats: number; messages: number }>();
-
   for (const c of chats as any[]) {
     const uid = String(c.client_id);
-    if (!usageByStudent.has(uid)) {
-      usageByStudent.set(uid, { chats: 0, messages: 0 });
-    }
+    if (!usageByStudent.has(uid)) usageByStudent.set(uid, { chats: 0, messages: 0 });
 
     const record = usageByStudent.get(uid)!;
     record.chats += 1;
@@ -574,31 +572,82 @@ async function getUsageSummary(): Promise<string> {
     .map((s) => {
       const u = usageByStudent.get(String(s.user_id));
       return {
-        name: [s.first_name, s.last_name].filter(Boolean).join(" ").trim() || s.user_id,
+        name: [s.first_name, s.last_name].filter(Boolean).join(" ").trim() || "Estudiante",
         ru: s.ru ? `RU ${s.ru}` : "RU —",
         chats: u?.chats ?? 0,
         messages: u?.messages ?? 0,
       };
     })
     .filter((r) => r.chats > 0 || r.messages > 0)
-    .sort((a, b) => b.messages - a.messages)
-    .slice(0, 15);
+    .sort((a, b) => b.messages - a.messages);
 
   if (ranked.length === 0) {
     return "Aún no encontré estudiantes con actividad en el agente.";
   }
 
-  const lines: string[] = [];
-  lines.push("📊 ESTUDIANTES QUE UTILIZAN EL AGENTE");
-  lines.push("");
+  // ✅ Interpretación simple de la pregunta del docente
+  const q = message.toLowerCase();
+  const wantsSingle =
+    /(qui[eé]n|cual|cu[aá]l)\s+(es|ser[ií]a)?\s*(la\s*)?(persona|estudiante)?\s*(que)?\s*(m[aá]s|mayor)/i.test(q) ||
+    /m[aá]s\s+uso|m[aá]s\s+utiliza|m[aá]s\s+activo/i.test(q);
 
-  ranked.forEach((r, i) => {
-    lines.push(
-      `${i + 1}) ${r.name} (${r.ru}) — 💬 ${r.messages} mensajes • 🗂️ ${r.chats} chats`
-    );
-  });
+  const top = ranked[0];
+  const top5 = ranked.slice(0, 5);
 
-  return lines.join("\n");
+  // ✅ IA (Gemini) para responder “como asesor real”
+  try {
+    const model = getGeminiModel();
+
+    const prompt = `
+Eres un asesor docente (tono humano, claro y directo) dentro de una app académica.
+Tu tarea: responder la consulta del docente usando SOLO los datos provistos.
+- No inventes estudiantes ni cifras.
+- Explica el criterio usado (por mensajes y/o por chats).
+- Si el docente pregunta "quién es el que más usa", responde con el #1 y luego muestra top 3 o top 5.
+- Si el docente pide "quiénes usan / ranking", muestra un ranking corto.
+- Cierra con 1 sugerencia útil (ej: a quién hacer seguimiento, o qué indicador mirar después).
+Responde en español.
+
+Pregunta del docente: "${message}"
+
+Datos (ranking por mensajes):
+${JSON.stringify(
+  {
+    totalActivos: ranked.length,
+    top: top,
+    top5: top5,
+  },
+  null,
+  2
+)}
+`.trim();
+
+    const result = await model.generateContent(prompt);
+    const text = result?.response?.text?.()?.trim();
+    if (text) return text;
+  } catch {
+    // fallback abajo
+  }
+
+  // ✅ Fallback sin IA (por si Gemini falla)
+  if (wantsSingle) {
+    return [
+      `📌 El estudiante con **más uso** es: **${top.name} (${top.ru})**.`,
+      `• Mensajes: **${top.messages}**`,
+      `• Chats: **${top.chats}**`,
+      ``,
+      `Top 5 por uso (mensajes):`,
+      ...top5.map((r, i) => `${i + 1}) ${r.name} (${r.ru}) — 💬 ${r.messages} • 🗂️ ${r.chats}`),
+    ].join("\n");
+  }
+
+  return [
+    `📊 Ranking de uso del agente (por mensajes). Activos: ${ranked.length}`,
+    ``,
+    ...top5.map((r, i) => `${i + 1}) ${r.name} (${r.ru}) — 💬 ${r.messages} • 🗂️ ${r.chats}`),
+    ``,
+    `Si quieres, puedo mostrar "los menos activos" o "alertas por falta de avance".`,
+  ].join("\n");
 }
 
 async function getTop10(): Promise<string> {
@@ -1097,7 +1146,7 @@ export async function POST(req: Request) {
     }
 
     if (intent === "usage") {
-      const reply = await getUsageSummary();
+      const reply = await getUsageSummary(message);
       return ok({ reply, context: ctx });
     }
 

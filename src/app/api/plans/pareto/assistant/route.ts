@@ -31,6 +31,8 @@ function extractJsonSafe(text: string) {
   }
 }
 
+
+
 export async function POST(req: NextRequest) {
   try {
     await requireUser(req);
@@ -45,6 +47,120 @@ export async function POST(req: NextRequest) {
     const paretoState: ParetoState = body.paretoState;
     const caseContext = body.caseContext ?? {};
     const recentHistory = String(body.recentHistory ?? "");
+
+    function normalizeText(s: string) {
+      return (s ?? "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .trim();
+    }
+
+    function isOkConfirm(msg: string) {
+      const t = normalizeText(msg);
+      return ["ok", "okay", "dale", "listo", "de acuerdo", "si", "sí"].includes(t);
+    }
+
+    function hasThreeCriteria(state: any) {
+      return Array.isArray(state?.criteria) && state.criteria.length === 3 && state.criteria.every((c: any) => String(c?.name ?? "").trim());
+    }
+
+    function hasWeights(state: any) {
+      if (!Array.isArray(state?.criteria) || state.criteria.length !== 3) return false;
+      return state.criteria.every((c: any) => {
+        const w = Number(c?.weight);
+        return Number.isFinite(w) && w >= 1 && w <= 10;
+      });
+    }
+
+    function assistantResponse(assistantMessage: string, nextState: any, action: string) {
+      return NextResponse.json({
+        ok: true,
+        data: {
+          assistantMessage,
+          updates: { nextState, action },
+        },
+      });
+    }
+
+    // ✅ Short-circuit determinístico para "OK"
+    if (isOkConfirm(studentMessage)) {
+
+        // ✅ Caso clave: OK cuando ya confirmó la lista de causas (selectedRoots)
+        // En tu captura: el bot pide "responde OK" para pasar a definir pesos/criterios,
+        // pero si el step sigue siendo "select_roots", sin esto cae a Gemini y puede fallar.
+        if (paretoState.step === "select_roots") {
+          const selected = Array.isArray(paretoState.selectedRoots)
+            ? paretoState.selectedRoots.map((x) => String(x).trim()).filter(Boolean)
+            : [];
+
+          const minSelected = Number.isFinite(paretoState.minSelected) ? paretoState.minSelected : 10;
+          const maxSelected = Number.isFinite(paretoState.maxSelected) ? paretoState.maxSelected : 15;
+
+          // Si todavía no está en rango, NO avanzar: pedir ajuste (sin IA)
+          if (selected.length < minSelected || selected.length > maxSelected) {
+            return assistantResponse(
+              `Aún no estamos en el rango. Selecciona entre **${minSelected} y ${maxSelected}** causas raíz.\n` +
+                `Actualmente tienes **${selected.length}**.\n\n` +
+                `👉 Responde con la lista final (puede ser en viñetas o separada por comas).`,
+              { ...paretoState }, // no cambia step
+              "ask_clarify"
+            );
+          }
+
+          // Si está en rango, avanzar a definir criterios
+          const nextState = { ...paretoState, step: "define_criteria" as const };
+          return assistantResponse(
+            "Perfecto ✅ La lista de causas está lista.\n\n" +
+              "Ahora define **exactamente 3 criterios** para priorizar (ej: Impacto, Frecuencia, Costo).\n" +
+              "Escríbelos así:\n" +
+              "- Criterio 1: ...\n" +
+              "- Criterio 2: ...\n" +
+              "- Criterio 3: ...",
+            nextState,
+            "define_criteria"
+          );
+        }
+
+
+      // Si el bot ya te mostró 3 criterios y espera confirmación → pasar a pesos
+      if (paretoState.step === "define_criteria" && hasThreeCriteria(paretoState)) {
+        const nextState = { ...paretoState, step: "set_weights" as const };
+        return assistantResponse(
+          "Perfecto ✅ Ahora asigna **pesos (1–10)** a cada criterio.\n\n" +
+            "Escríbelos así:\n" +
+            "- Criterio 1: 8\n" +
+            "- Criterio 2: 6\n" +
+            "- Criterio 3: 9",
+          nextState,
+          "set_weights"
+        );
+      }
+
+      // Si ya hay pesos y el estudiante dice OK → instruir Excel
+      if (paretoState.step === "set_weights" && hasWeights(paretoState)) {
+        const nextState = { ...paretoState, step: "excel_work" as const };
+        return assistantResponse(
+          "Listo ✅ Ahora haz el **Pareto en Excel (80/20)** con tus causas.\n\n" +
+            `👉 Cuando termines, vuelve y envíame la lista de **causas críticas (Top 20%)**.\n` +
+            `Ejemplo: "Causas críticas: A, B, C".`,
+          nextState,
+          "instruct_excel"
+        );
+      }
+
+      // Si está en excel_work y dice OK → pedir críticas (sin fallar)
+      if (paretoState.step === "excel_work") {
+        const nextState = { ...paretoState, step: "collect_critical" as const };
+        return assistantResponse(
+          "Genial. Ahora envíame tu lista de **causas críticas (Top 20%)** según tu Excel.\n" +
+            "Escríbelas en viñetas o separadas por comas.",
+          nextState,
+          "collect_critical"
+        );
+      }
+    }
+
 
     const model = getGeminiModel();
 

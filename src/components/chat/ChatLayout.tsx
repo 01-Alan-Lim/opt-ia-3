@@ -84,7 +84,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
               "rounded-3xl",
               "border border-[color:var(--border)]",
               "bg-[color:var(--surface)]",
-              "shadow-xl",
+              "chat-panel-shadow",
               "flex flex-col overflow-hidden"
             )}
           >

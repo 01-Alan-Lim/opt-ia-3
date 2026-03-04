@@ -266,6 +266,14 @@ body {
 
 /* ===== Chat UI refinements ===== */
 
+.chat-panel-shadow {
+  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+}
+
+html[data-theme="light"] .chat-panel-shadow {
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+}
+
 .chat-composer {
   /* el wrapper ya está absolute desde page.tsx */
   position: relative;
@@ -312,11 +320,14 @@ body {
 }
 
 
-
-
 /* sombra más sutil (menos “larga” hacia abajo) */
 .chat-bubble-shadow {
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.10);
+}
+
+/* En light, todavía más sutil para que no “corte” duro */
+html[data-theme="light"] .chat-bubble-shadow {
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.08);
 }
 
 /* “cola” curva SOLO para mensajes del asistente (sin rombo) */

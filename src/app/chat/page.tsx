@@ -1078,6 +1078,7 @@ export default function ChatPage() {
 
           if (ishiExists && ishi) {
             setIshikawaState(ishi);
+            setIshikawaClosePending(isIshikawaReadyToClose(ishi as IshikawaState));
 
             // ✅ Migrar el state al chat nuevo para que futuros GET/validate lo encuentren por chat_id
             if (created.ok && created.chatId) {
@@ -1450,10 +1451,16 @@ export default function ChatPage() {
       if (!res.ok) return;
 
       if (res.payload?.exists && res.payload?.state) {
-        setIshikawaState(res.payload.state as IshikawaState);
+        const st = res.payload.state as IshikawaState;
+        setIshikawaState(st);
+
+        // ✅ si el estado ya está listo, mantenemos el “pending”
+        setIshikawaClosePending(isIshikawaReadyToClose(st));
       } else {
         setIshikawaState(null);
+        setIshikawaClosePending(false);
       }
+
     })();
 
     return () => {
@@ -1788,14 +1795,35 @@ export default function ChatPage() {
   function wantsAdvanceStage(input: string) {
     const t = normalizeText(input);
 
-    // confirmaciones típicas
+    // confirmaciones típicas (texto corto)
     if (["si", "sí", "ok", "okay", "dale", "listo", "vamos", "de acuerdo"].includes(t)) return true;
 
-    // frases comunes de avanzar etapa
+    // frases comunes de avanzar
     if (t.includes("pasemos") || t.includes("avancemos") || t.includes("continuemos") || t.includes("sigamos")) return true;
 
-    // menciona etapa 4 explícitamente
+    // intención explícita: pasar / avanzar a etapa 5 / pareto
+    if (
+      t.includes("pasar a") ||
+      t.includes("pasemos a") ||
+      t.includes("ir a") ||
+      t.includes("vamos a")
+    ) {
+      if (
+        t.includes("etapa 5") ||
+        t.includes("etapa cinco") ||
+        t.includes("quinta etapa") ||
+        t.includes("fase 5") ||
+        t.includes("pareto") ||
+        t.includes("5ta") ||
+        t.includes("5a")
+      ) {
+        return true;
+      }
+    }
+
+    // menciona etapa 4 o etapa 5 explícitamente
     if (t.includes("etapa 4") || t.includes("etapa cuatro") || t.includes("fase 4")) return true;
+    if (t.includes("etapa 5") || t.includes("etapa cinco") || t.includes("fase 5") || t.includes("pareto")) return true;
 
     return false;
   }
@@ -3284,7 +3312,7 @@ export default function ChatPage() {
     const json = await res.json().catch(() => null);
     const ok = res.ok && json?.ok !== false;
 
-    if (!ok) console.error("[PARETO] save state failed", { status: res.status, json });
+    if (!ok) console.warn("[PARETO] save state failed", { status: res.status, json });
     return { ok };
   }
 

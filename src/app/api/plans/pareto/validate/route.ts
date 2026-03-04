@@ -72,9 +72,12 @@ export async function POST(req: NextRequest) {
     const s: any = draft.payload;
 
     // 2) leer Ishikawa final (Etapa 4) para obtener roots oficiales
-    const { data: ishFinal, error: ishErr } = await supabaseServer
+    let ishFinal: any = null;
+
+    // (A) Primero: intentar en el mismo period_key (flujo normal)
+    const samePeriod = await supabaseServer
       .from("plan_stage_artifacts")
-      .select("payload, updated_at")
+      .select("payload, updated_at, period_key")
       .eq("user_id", user.userId)
       .eq("stage", 4)
       .eq("artifact_type", "ishikawa_final")
@@ -84,17 +87,48 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    if (ishErr) return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishErr);
+    if (samePeriod.error) {
+      return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", samePeriod.error);
+    }
+    ishFinal = samePeriod.data ?? null;
 
-    const rootsOfficial: string[] = Array.isArray(ishFinal?.payload?.roots) ? ishFinal.payload.roots : [];
-    if (rootsOfficial.length < 10) {
+    // (B) Fallback: si no existe en este periodo, tomar el último validado sin filtrar period_key
+    if (!ishFinal?.payload) {
+      const anyPeriod = await supabaseServer
+        .from("plan_stage_artifacts")
+        .select("payload, updated_at, period_key")
+        .eq("user_id", user.userId)
+        .eq("stage", 4)
+        .eq("artifact_type", "ishikawa_final")
+        .eq("status", "validated")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (anyPeriod.error) {
+        return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", anyPeriod.error);
+      }
+      ishFinal = anyPeriod.data ?? null;
+    }
+
+    const rootsOfficial: string[] = Array.isArray(ishFinal?.payload?.roots)
+      ? ishFinal.payload.roots.map((x: any) => String(x).trim()).filter(Boolean)
+      : [];
+
+    // ✅ mínimo roots: usa minRootCandidates del Ishikawa final si existe; si no, usa fallback 10
+    const minRoots =
+      typeof ishFinal?.payload?.minRootCandidates === "number"
+        ? ishFinal.payload.minRootCandidates
+        : 10;
+
+    if (rootsOfficial.length < minRoots) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Etapa 4 aún no tiene causas raíz suficientes (mínimo 10) para iniciar Pareto.",
+        message: `Etapa 4 aún no tiene causas raíz suficientes (${rootsOfficial.length}/${minRoots}) para iniciar Pareto.`,
       });
     }
-
+    
     // 3) Validaciones Pareto (MVP)
     const selectedRoots: string[] = Array.isArray(s?.selectedRoots) ? s.selectedRoots.map((x: any) => String(x).trim()).filter(Boolean) : [];
     const minSelected = typeof s?.minSelected === "number" ? s.minSelected : 10;
