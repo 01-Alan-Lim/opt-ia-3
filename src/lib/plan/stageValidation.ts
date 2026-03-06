@@ -17,66 +17,89 @@ export type StageStateRow = {
 
 type LoadValidatedArtifactArgs = {
   userId: string;
-  chatId: string;
   stage: number;
   artifactType: string;
   periodKey?: string;
+  preferredChatId?: string | null;
 };
 
 type LoadValidatedArtifactResult =
   | { ok: true; row: ValidatedArtifactRow | null }
   | { ok: false; error: unknown };
 
+
 export async function loadLatestValidatedArtifact(
   args: LoadValidatedArtifactArgs
 ): Promise<LoadValidatedArtifactResult> {
-  const { userId, chatId, stage, artifactType, periodKey } = args;
+  const { userId, stage, artifactType, periodKey, preferredChatId } = args;
 
   const baseSelect = "payload, chat_id, period_key, updated_at";
 
-  const queries = periodKey
-    ? [
-        () =>
-          supabaseServer
-            .from("plan_stage_artifacts")
-            .select(baseSelect)
-            .eq("user_id", userId)
-            .eq("chat_id", chatId)
-            .eq("stage", stage)
-            .eq("artifact_type", artifactType)
-            .eq("period_key", periodKey)
-            .eq("status", "validated")
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
+  const queries = [
+    ...(preferredChatId && periodKey
+      ? [
+          () =>
+            supabaseServer
+              .from("plan_stage_artifacts")
+              .select(baseSelect)
+              .eq("user_id", userId)
+              .eq("chat_id", preferredChatId)
+              .eq("stage", stage)
+              .eq("artifact_type", artifactType)
+              .eq("period_key", periodKey)
+              .eq("status", "validated")
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+        ]
+      : []),
 
-        () =>
-          supabaseServer
-            .from("plan_stage_artifacts")
-            .select(baseSelect)
-            .eq("user_id", userId)
-            .eq("chat_id", chatId)
-            .eq("stage", stage)
-            .eq("artifact_type", artifactType)
-            .eq("status", "validated")
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-      ]
-    : [
-        () =>
-          supabaseServer
-            .from("plan_stage_artifacts")
-            .select(baseSelect)
-            .eq("user_id", userId)
-            .eq("chat_id", chatId)
-            .eq("stage", stage)
-            .eq("artifact_type", artifactType)
-            .eq("status", "validated")
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-      ];
+    ...(preferredChatId
+      ? [
+          () =>
+            supabaseServer
+              .from("plan_stage_artifacts")
+              .select(baseSelect)
+              .eq("user_id", userId)
+              .eq("chat_id", preferredChatId)
+              .eq("stage", stage)
+              .eq("artifact_type", artifactType)
+              .eq("status", "validated")
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+        ]
+      : []),
+
+    ...(periodKey
+      ? [
+          () =>
+            supabaseServer
+              .from("plan_stage_artifacts")
+              .select(baseSelect)
+              .eq("user_id", userId)
+              .eq("stage", stage)
+              .eq("artifact_type", artifactType)
+              .eq("period_key", periodKey)
+              .eq("status", "validated")
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+        ]
+      : []),
+
+    () =>
+      supabaseServer
+        .from("plan_stage_artifacts")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .eq("stage", stage)
+        .eq("artifact_type", artifactType)
+        .eq("status", "validated")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+  ];
 
   for (const run of queries) {
     const result = await run();
@@ -93,9 +116,6 @@ export async function loadLatestValidatedArtifact(
 
   return { ok: true, row: null };
 }
-
-
-
 
 
 type LoadStageStateArgs = {

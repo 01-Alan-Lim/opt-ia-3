@@ -8,7 +8,10 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
-import {loadLatestStageStateByChat, loadLatestValidatedArtifact} from "@/lib/plan/stageValidation";
+import {
+  loadLatestStageStateByChat,
+  loadLatestValidatedArtifact,
+} from "@/lib/plan/stageValidation";
 
 
 
@@ -84,7 +87,7 @@ export async function POST(req: NextRequest) {
     // 1) Leer Pareto final validado (Etapa 5) para causas críticas oficiales
     const paretoResult = await loadLatestValidatedArtifact({
       userId: user.userId,
-      chatId,
+      preferredChatId: chatId,
       stage: 5,
       artifactType: "pareto_final",
       periodKey: PERIOD_KEY,
@@ -95,8 +98,7 @@ export async function POST(req: NextRequest) {
     }
 
     const paretoFinal = paretoResult.row;
-
-    const criticalRootsOfficial = asStringArray((paretoFinal as any)?.payload?.criticalRoots);
+    const criticalRootsOfficial = asStringArray(paretoFinal?.payload?.criticalRoots);
 
     if (criticalRootsOfficial.length === 0) {
       return NextResponse.json({
@@ -109,7 +111,7 @@ export async function POST(req: NextRequest) {
     // 2) Leer Objectives final validado (Etapa 6)
     const objectivesResult = await loadLatestValidatedArtifact({
       userId: user.userId,
-      chatId,
+      preferredChatId: chatId,
       stage: 6,
       artifactType: "objectives_final",
       periodKey: PERIOD_KEY,
@@ -120,8 +122,7 @@ export async function POST(req: NextRequest) {
     }
 
     const objectivesFinal = objectivesResult.row;
-
-    const objectivesPayload = (objectivesFinal as any)?.payload as
+    const objectivesPayload = objectivesFinal?.payload as
       | { generalObjective?: unknown; specificObjectives?: unknown; linkedCriticalRoots?: unknown }
       | undefined;
 
@@ -138,19 +139,17 @@ export async function POST(req: NextRequest) {
     }
 
     // 3) Leer estado actual de la Etapa 7 desde plan_stage_states
-    const stateResult = await loadLatestStageStateByChat({
+    const stResult = await loadLatestStageStateByChat({
       userId: user.userId,
       chatId,
       stage: STAGE,
     });
 
-    if (!stateResult.ok) {
-      return fail(500, "DB_ERROR", "No se pudo leer el estado de la Etapa 7.", stateResult.error);
+    if (!stResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer el estado de la Etapa 7.", stResult.error);
     }
 
-    const stRow = stateResult.row;
-    
-    if (!stRow?.state_json) {
+    if (!stResult.row?.state_json) {
       return NextResponse.json({
         ok: true,
         valid: false,
@@ -158,7 +157,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const s: any = stRow.state_json;
+    const s = stResult.row.state_json as Record<string, unknown>;
+
+
     const initiativesRaw: Initiative[] = Array.isArray(s?.initiatives) ? s.initiatives : [];
 
     // 4) Gate mínimo (cierre coherente)

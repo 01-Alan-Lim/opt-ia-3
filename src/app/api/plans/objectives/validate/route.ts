@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
 
     const paretoResult = await loadLatestValidatedArtifact({
       userId: user.userId,
-      chatId,
+      preferredChatId: chatId,
       stage: 5,
       artifactType: "pareto_final",
       periodKey: PERIOD_KEY,

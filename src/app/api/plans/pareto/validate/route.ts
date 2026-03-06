@@ -134,7 +134,7 @@ export async function POST(req: NextRequest) {
     // 2) leer Ishikawa final (Etapa 4) para obtener roots oficiales
     const ishResult = await loadLatestValidatedArtifact({
       userId: user.userId,
-      chatId,
+      preferredChatId: chatId,
       stage: 4,
       artifactType: "ishikawa_final",
       periodKey: PERIOD_KEY,
