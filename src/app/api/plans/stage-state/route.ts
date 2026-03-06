@@ -12,8 +12,9 @@ import { assertJsonSizeOrFail } from "@/lib/api/payloadLimit";
 export const runtime = "nodejs";
 
 const GetQuerySchema = z.object({
-  chatId: z.string().uuid(),
+  chatId: z.string().uuid().optional(),
   stage: z.coerce.number().int().min(0),
+  latest: z.coerce.boolean().optional().default(false),
 });
 
 const UpsertBodySchema = z.object({
@@ -45,18 +46,43 @@ export async function GET(req: NextRequest) {
       return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.", 400);
     }
 
-    const { chatId, stage } = parsed.data;
 
-    const access = await assertChatOwner(user.userId, chatId);
-    if (!access.ok) return failResponse(access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message, access.status);
+    const { chatId, stage, latest } = parsed.data;
 
-    const { data, error } = await supabaseServer
-      .from("plan_stage_states")
-      .select("id, user_id, chat_id, stage, state_json, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", stage)
-      .maybeSingle();
+    let data: any = null;
+    let error: any = null;
+
+    if (chatId) {
+      const access = await assertChatOwner(user.userId, chatId);
+      if (!access.ok) {
+        return failResponse(access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message, access.status);
+      }
+
+      const result = await supabaseServer
+        .from("plan_stage_states")
+        .select("id, user_id, chat_id, stage, state_json, updated_at")
+        .eq("user_id", user.userId)
+        .eq("chat_id", chatId)
+        .eq("stage", stage)
+        .maybeSingle();
+
+      data = result.data ?? null;
+      error = result.error ?? null;
+    } else if (latest) {
+      const result = await supabaseServer
+        .from("plan_stage_states")
+        .select("id, user_id, chat_id, stage, state_json, updated_at")
+        .eq("user_id", user.userId)
+        .eq("stage", stage)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      data = result.data ?? null;
+      error = result.error ?? null;
+    } else {
+      return failResponse("BAD_REQUEST", "Debes enviar chatId o latest=true.", 400);
+    }
 
     if (error) {
       return failResponse("INTERNAL", "No se pudo leer el estado de la etapa.", 500);

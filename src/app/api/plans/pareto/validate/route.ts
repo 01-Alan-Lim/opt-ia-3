@@ -7,6 +7,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -56,60 +57,95 @@ export async function POST(req: NextRequest) {
 
     const { chatId } = parsed.data;
 
-    // 1) leer draft de Etapa 5
-    const { data: draft, error: draftErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("id, payload, chat_id, updated_at")
+
+
+    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    const direct = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json, chat_id")
       .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
       .eq("stage", STAGE)
-      .eq("artifact_type", DraftType)
-      .eq("period_key", PERIOD_KEY)
       .maybeSingle();
 
-    if (draftErr) return fail(500, "DB_ERROR", "No se pudo leer el estado de Pareto.", draftErr);
-    if (!draft?.payload) return fail(400, "BAD_REQUEST", "No hay estado de Etapa 5 (Pareto).");
+    if (direct.error) return fail(500, "DB_ERROR", "No se pudo leer el estado de Pareto.", direct.error);
+    stateRow = direct.data ?? null;
 
-    const s: any = draft.payload;
-
-    // 2) leer Ishikawa final (Etapa 4) para obtener roots oficiales
-    let ishFinal: any = null;
-
-    // (A) Primero: intentar en el mismo period_key (flujo normal)
-    const samePeriod = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at, period_key")
-      .eq("user_id", user.userId)
-      .eq("stage", 4)
-      .eq("artifact_type", "ishikawa_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (samePeriod.error) {
-      return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", samePeriod.error);
-    }
-    ishFinal = samePeriod.data ?? null;
-
-    // (B) Fallback: si no existe en este periodo, tomar el último validado sin filtrar period_key
-    if (!ishFinal?.payload) {
-      const anyPeriod = await supabaseServer
-        .from("plan_stage_artifacts")
-        .select("payload, updated_at, period_key")
+    if (!stateRow && !chatId) {
+      const latest = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
         .eq("user_id", user.userId)
-        .eq("stage", 4)
-        .eq("artifact_type", "ishikawa_final")
-        .eq("status", "validated")
+        .eq("stage", STAGE)
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (anyPeriod.error) {
-        return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", anyPeriod.error);
-      }
-      ishFinal = anyPeriod.data ?? null;
+      if (latest.error) return fail(500, "DB_ERROR", "No se pudo leer el estado de Pareto.", latest.error);
+      stateRow = latest.data ?? null;
     }
+
+    let legacyRow: { payload: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (!stateRow?.state_json) {
+      const legacyDirect = await supabaseServer
+        .from("plan_stage_artifacts")
+        .select("payload, chat_id")
+        .eq("user_id", user.userId)
+        .eq("chat_id", chatId)
+        .eq("stage", STAGE)
+        .eq("artifact_type", DraftType)
+        .eq("period_key", PERIOD_KEY)
+        .maybeSingle();
+
+      if (legacyDirect.error) return fail(500, "DB_ERROR", "No se pudo leer el estado legacy de Pareto.", legacyDirect.error);
+      legacyRow = legacyDirect.data ?? null;
+
+      if (!legacyRow && !chatId) {
+        const legacyLatest = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", user.userId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", DraftType)
+          .eq("period_key", PERIOD_KEY)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (legacyLatest.error) return fail(500, "DB_ERROR", "No se pudo leer el estado legacy de Pareto.", legacyLatest.error);
+        legacyRow = legacyLatest.data ?? null;
+      }
+    }
+
+    const s: any = stateRow?.state_json ?? legacyRow?.payload ?? null;
+    const stateChatId = stateRow?.chat_id ?? legacyRow?.chat_id ?? null;
+
+    if (!s) {
+      return fail(
+        400,
+        "BAD_REQUEST",
+        "No hay estado guardado de la Etapa 5 (Pareto)."
+      );
+    }
+
+
+    // 2) leer Ishikawa final (Etapa 4) para obtener roots oficiales
+    const ishResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      chatId,
+      stage: 4,
+      artifactType: "ishikawa_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    if (!ishResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishResult.error);
+    }
+
+    const ishFinal = ishResult.row;
+
 
     const rootsOfficial: string[] = Array.isArray(ishFinal?.payload?.roots)
       ? ishFinal.payload.roots.map((x: any) => String(x).trim()).filter(Boolean)
@@ -128,7 +164,7 @@ export async function POST(req: NextRequest) {
         message: `Etapa 4 aún no tiene causas raíz suficientes (${rootsOfficial.length}/${minRoots}) para iniciar Pareto.`,
       });
     }
-    
+
     // 3) Validaciones Pareto (MVP)
     const selectedRoots: string[] = Array.isArray(s?.selectedRoots) ? s.selectedRoots.map((x: any) => String(x).trim()).filter(Boolean) : [];
     const minSelected = typeof s?.minSelected === "number" ? s.minSelected : 10;
@@ -299,7 +335,7 @@ export async function POST(req: NextRequest) {
       .upsert(
         {
           user_id: user.userId,
-          chat_id: chatId,
+          chat_id: chatId ?? stateChatId ?? null,
           stage: STAGE,
           artifact_type: FinalType,
           period_key: PERIOD_KEY,
@@ -341,7 +377,7 @@ export async function POST(req: NextRequest) {
 
         const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
           user_id: user.userId,
-          chat_id: chatId,
+          chat_id: chatId ?? stateChatId ?? null,
           stage: STAGE,
           artifact_type: FinalType,
           artifact_id: finalArtifactId,

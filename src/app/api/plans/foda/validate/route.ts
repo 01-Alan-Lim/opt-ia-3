@@ -1,5 +1,6 @@
 // src/app/api/plans/foda/validate/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -13,6 +14,10 @@ const STAGE = 2;
 const STATE_ARTIFACT = "foda_wizard_state";
 const FINAL_ARTIFACT = "foda_analysis";
 const PERIOD_KEY = getPeriodKeyLaPaz();
+
+const BodySchema = z.object({
+  chatId: z.string().uuid().nullable().optional(),
+});
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
   return NextResponse.json({ ok: false, code, message, detail }, { status });
@@ -39,22 +44,102 @@ export async function POST(req: NextRequest) {
     const gate = await assertChatAccess(req);
     if (!gate.ok) return fail(403, "FORBIDDEN", gate.message);
 
-    const userId = authed.userId;
+        const userId = authed.userId;
 
-    // 1) Leer estado actual
-    const { data: stateRow, error: stateErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, chat_id")
-      .eq("user_id", userId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", STATE_ARTIFACT)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
+    const raw = await req.json().catch(() => ({}));
+    const parsed = BodySchema.safeParse(raw);
+    if (!parsed.success) {
+      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+    }
 
-    if (stateErr) return fail(500, "DB_ERROR", "No se pudo leer el estado FODA.", stateErr);
-    if (!stateRow?.payload) return fail(400, "BAD_REQUEST", "FODA no iniciado.");
+    const requestedChatId = parsed.data.chatId ?? null;
 
-    const st = stateRow.payload as any;
+
+    // 1) Leer estado vivo desde plan_stage_states
+    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (requestedChatId) {
+      const direct = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
+        .eq("user_id", userId)
+        .eq("chat_id", requestedChatId)
+        .eq("stage", STAGE)
+        .maybeSingle();
+
+      if (direct.error) {
+        return fail(500, "DB_ERROR", "No se pudo leer el estado FODA.", direct.error);
+      }
+
+      stateRow = direct.data ?? null;
+    }
+
+    if (!stateRow && !requestedChatId) {
+      const latest = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
+        .eq("user_id", userId)
+        .eq("stage", STAGE)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latest.error) {
+        return fail(500, "DB_ERROR", "No se pudo leer el estado FODA.", latest.error);
+      }
+
+      stateRow = latest.data ?? null;
+    }
+
+    // Compatibilidad temporal: fallback al wizard_state legacy
+    let legacyRow: { payload: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (!stateRow?.state_json) {
+      if (requestedChatId) {
+        const legacyDirect = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", userId)
+          .eq("chat_id", requestedChatId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", STATE_ARTIFACT)
+          .eq("period_key", PERIOD_KEY)
+          .maybeSingle();
+
+        if (legacyDirect.error) {
+          return fail(500, "DB_ERROR", "No se pudo leer el estado FODA legacy.", legacyDirect.error);
+        }
+
+        legacyRow = legacyDirect.data ?? null;
+      }
+
+      if (!legacyRow && !requestedChatId) {
+        const legacyLatest = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", userId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", STATE_ARTIFACT)
+          .eq("period_key", PERIOD_KEY)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (legacyLatest.error) {
+          return fail(500, "DB_ERROR", "No se pudo leer el estado FODA legacy.", legacyLatest.error);
+        }
+
+        legacyRow = legacyLatest.data ?? null;
+      }
+    }
+
+    const st = (stateRow?.state_json ?? legacyRow?.payload ?? null) as any;
+    const stateChatId = stateRow?.chat_id ?? legacyRow?.chat_id ?? null;
+
+    if (!st) return fail(400, "BAD_REQUEST", "FODA no iniciado.");
+    
+
+
     const items = st?.items ?? null;
 
     const count = (q: "F" | "D" | "O" | "A") => (Array.isArray(items?.[q]) ? items[q].length : 0);
@@ -83,12 +168,14 @@ export async function POST(req: NextRequest) {
       counts: { F: cF, D: cD, O: cO, A: cA },
     };
 
+    const effectiveChatId = requestedChatId ?? stateChatId ?? null;
+
     const { data: finalRow, error: finalErr } = await supabaseServer
       .from("plan_stage_artifacts")
       .upsert(
         {
           user_id: userId,
-          chat_id: stateRow.chat_id ?? null,
+          chat_id: effectiveChatId,
           stage: STAGE,
           artifact_type: FINAL_ARTIFACT,
           period_key: PERIOD_KEY,
@@ -103,6 +190,7 @@ export async function POST(req: NextRequest) {
     if (finalErr || !finalRow?.id) {
       return fail(500, "DB_ERROR", "No se pudo guardar el análisis FODA.", finalErr);
     }
+
 
     // 4) Evaluación IA (rúbrica estándar que definiste)
     const model = getGeminiModel();
@@ -141,7 +229,7 @@ ${JSON.stringify(finalPayload, null, 2)}
 
     const insertEval = await supabaseServer.from("plan_stage_evaluations").insert({
       user_id: userId,
-      chat_id: stateRow.chat_id ?? null,
+      chat_id: effectiveChatId,
       stage: STAGE,
       artifact_type: FINAL_ARTIFACT,
       artifact_id: finalRow.id,

@@ -38,31 +38,117 @@ function extractJsonSafe(text: string) {
 export async function POST(req: NextRequest) {
   try {
     const authed = await requireUser(req);
-    await assertChatAccess(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return NextResponse.json(
+        { ok: false, code: "FORBIDDEN", message: gate.message },
+        { status: 403 }
+      );
+    }
+
     const userId = authed.userId;
 
     const bodyRaw = await req.json().catch(() => ({}));
     const body = BodySchema.parse(bodyRaw);
     const chatId = body?.chatId ?? null;
 
-    // 1) Leer estado Etapa 3 (wizard)
-    const { data: stateRow, error: stateErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload")
-      .eq("user_id", userId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", STATE_ARTIFACT)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
 
-    if (stateErr) {
-      return NextResponse.json(
-        { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: stateErr.message },
-        { status: 500 }
-      );
+   
+        // 1) Leer estado vivo desde plan_stage_states
+    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (chatId) {
+      const direct = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
+        .eq("user_id", userId)
+        .eq("chat_id", chatId)
+        .eq("stage", STAGE)
+        .maybeSingle();
+
+      if (direct.error) {
+        return NextResponse.json(
+          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: direct.error.message },
+          { status: 500 }
+        );
+      }
+
+      stateRow = direct.data ?? null;
     }
 
-    const st = stateRow?.payload as any;
+    if (!stateRow && !chatId) {
+      const latest = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
+        .eq("user_id", userId)
+        .eq("stage", STAGE)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latest.error) {
+        return NextResponse.json(
+          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: latest.error.message },
+          { status: 500 }
+        );
+      }
+
+      stateRow = latest.data ?? null;
+    }
+
+    // Compatibilidad temporal: fallback al wizard_state legacy
+    let legacyRow: { payload: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (!stateRow?.state_json) {
+      if (chatId) {
+        const legacyDirect = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", userId)
+          .eq("chat_id", chatId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", STATE_ARTIFACT)
+          .eq("period_key", PERIOD_KEY)
+          .maybeSingle();
+
+        if (legacyDirect.error) {
+          return NextResponse.json(
+            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: legacyDirect.error.message },
+            { status: 500 }
+          );
+        }
+
+        legacyRow = legacyDirect.data ?? null;
+      }
+
+      if (!legacyRow && !chatId) {
+        const legacyLatest = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", userId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", STATE_ARTIFACT)
+          .eq("period_key", PERIOD_KEY)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (legacyLatest.error) {
+          return NextResponse.json(
+            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: legacyLatest.error.message },
+            { status: 500 }
+          );
+        }
+
+        legacyRow = legacyLatest.data ?? null;
+      }
+    }
+
+    const st = (stateRow?.state_json ?? legacyRow?.payload ?? null) as any;
+    const stateChatId = stateRow?.chat_id ?? legacyRow?.chat_id ?? null;
+
+
     if (!st) {
       return NextResponse.json({ ok: false, message: "Etapa 3 no iniciada" }, { status: 400 });
     }
@@ -84,12 +170,14 @@ export async function POST(req: NextRequest) {
     // 2) Guardar artefacto final (validated)
     const finalPayload = { problem: { text: problemText }, ideas };
 
+    const effectiveChatId = chatId ?? stateChatId ?? null;
+
     const { data: finalArtifact, error: finalErr } = await supabaseServer
       .from("plan_stage_artifacts")
       .upsert(
         {
           user_id: userId,
-          chat_id: chatId, // ✅ guardar trazabilidad por chat si está disponible
+          chat_id: effectiveChatId,
           stage: STAGE,
           artifact_type: FINAL_ARTIFACT,
           period_key: PERIOD_KEY,
@@ -107,26 +195,6 @@ export async function POST(req: NextRequest) {
     if (finalErr || !finalArtifactId) {
       return NextResponse.json(
         { ok: false, message: "No se pudo guardar el artefacto final de Etapa 3", detail: finalErr?.message },
-        { status: 500 }
-      );
-    }
-
-    // 2.1) Marcar el wizard_state como validated para no dejarlo en draft
-    const { error: wizardUpdErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .update({
-        status: "validated",
-        chat_id: chatId ?? undefined,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId)
-      .eq("stage", STAGE)
-      .eq("artifact_type", STATE_ARTIFACT)
-      .eq("period_key", PERIOD_KEY);
-
-    if (wizardUpdErr) {
-      return NextResponse.json(
-        { ok: false, message: "No se pudo marcar wizard_state como validated", detail: wizardUpdErr.message },
         { status: 500 }
       );
     }
@@ -196,7 +264,7 @@ ${JSON.stringify(finalPayload, null, 2)}
     if (!existingEval) {
       const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
         user_id: userId,
-        chat_id: chatId, // ✅ aquí estaba NULL
+        chat_id: effectiveChatId,
         stage: STAGE,
         artifact_type: FINAL_ARTIFACT,
         artifact_id: finalArtifactId,

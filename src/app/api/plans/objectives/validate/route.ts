@@ -9,6 +9,8 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
+import { loadLatestStageStateByChat, loadLatestValidatedArtifact} from "@/lib/plan/stageValidation";
+
 export const runtime = "nodejs";
 
 const STAGE = 6;
@@ -60,20 +62,19 @@ export async function POST(req: NextRequest) {
 
     const { chatId } = parsed.data;
 
-    // 1) Leer Pareto final validado (Etapa 5) y obtener criticalRoots oficiales
-    const { data: paretoFinal, error: paretoErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("stage", 5)
-      .eq("artifact_type", "pareto_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const paretoResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      chatId,
+      stage: 5,
+      artifactType: "pareto_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (paretoErr) return fail(500, "DB_ERROR", "No se pudo leer Pareto final (Etapa 5).", paretoErr);
+    if (!paretoResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer Pareto final (Etapa 5).", paretoResult.error);
+    }
+
+    const paretoFinal = paretoResult.row;
 
     const criticalRootsOfficial = asStringArray((paretoFinal as any)?.payload?.criticalRoots);
     if (criticalRootsOfficial.length === 0) {
@@ -86,16 +87,18 @@ export async function POST(req: NextRequest) {
     }
 
     // 2) Leer estado actual de la Etapa 6 desde plan_stage_states
-    const { data: stRow, error: stErr } = await supabaseServer
-      .from("plan_stage_states")
-      .select("state_json, updated_at")
-      .eq("user_id", user.userId)
-      .eq("stage", STAGE)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const stateResult = await loadLatestStageStateByChat({
+      userId: user.userId,
+      chatId,
+      stage: STAGE,
+    });
 
-    if (stErr) return fail(500, "DB_ERROR", "No se pudo leer el estado de la Etapa 6.", stErr);
+    if (!stateResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer el estado de la Etapa 6.", stateResult.error);
+    }
+
+    const stRow = stateResult.row;
+
     if (!stRow?.state_json) {
       return NextResponse.json({
         ok: true,

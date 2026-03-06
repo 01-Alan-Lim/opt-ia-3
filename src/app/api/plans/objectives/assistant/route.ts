@@ -5,6 +5,7 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -27,65 +28,6 @@ function extractJsonSafe(text: string) {
   } catch {
     return null;
   }
-}
-
-async function loadLatestValidatedPareto(args: {
-  userId: string;
-  chatId: string;
-  periodKey: string;
-}) {
-  const { userId, chatId, periodKey } = args;
-
-  const select = "payload, chat_id, period_key, updated_at";
-
-  // 1) chat + periodo actual
-  const q1 = await supabaseServer
-    .from("plan_stage_artifacts")
-    .select(select)
-    .eq("user_id", userId)
-    .eq("chat_id", chatId)
-    .eq("period_key", periodKey)
-    .eq("stage", 5)
-    .eq("artifact_type", "pareto_final")
-    .eq("status", "validated")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (!q1.error && q1.data) return q1.data;
-
-  // 2) chat (cualquier periodo)
-  const q2 = await supabaseServer
-    .from("plan_stage_artifacts")
-    .select(select)
-    .eq("user_id", userId)
-    .eq("chat_id", chatId)
-    .eq("stage", 5)
-    .eq("artifact_type", "pareto_final")
-    .eq("status", "validated")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (!q2.error && q2.data) return q2.data;
-
-  // 3) usuario (cualquier chat/periodo)
-  const q3 = await supabaseServer
-    .from("plan_stage_artifacts")
-    .select(select)
-    .eq("user_id", userId)
-    .eq("stage", 5)
-    .eq("artifact_type", "pareto_final")
-    .eq("status", "validated")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (!q3.error && q3.data) return q3.data;
-
-  // si hay error real de DB, lo devolvemos para diagnosticar
-  if (q1.error || q2.error || q3.error) {
-    return { __error: q1.error ?? q2.error ?? q3.error } as any;
-  }
-
-  return null;
 }
 
 
@@ -117,22 +59,34 @@ export async function POST(req: NextRequest) {
 
     const PERIOD_KEY = getPeriodKeyLaPaz();
 
-    const paretoFinal: any = await loadLatestValidatedPareto({
+
+
+    const paretoResult = await loadLatestValidatedArtifact({
       userId: user.userId,
       chatId,
+      stage: 5,
+      artifactType: "pareto_final",
       periodKey: PERIOD_KEY,
     });
 
-    if (paretoFinal?.__error) {
+    if (!paretoResult.ok) {
       return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "No se pudo leer Pareto final (Etapa 5).", detail: paretoFinal.__error },
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "No se pudo leer Pareto final (Etapa 5).",
+          detail: paretoResult.error,
+        },
         { status: 500 }
       );
     }
 
+    const paretoFinal = paretoResult.row;
+
     const criticalRoots: string[] = Array.isArray(paretoFinal?.payload?.criticalRoots)
-      ? paretoFinal.payload.criticalRoots.map((x: any) => String(x).trim()).filter(Boolean)
+      ? paretoFinal.payload.criticalRoots.map((x) => String(x).trim()).filter(Boolean)
       : [];
+
 
     if (criticalRoots.length === 0) {
       return NextResponse.json(
@@ -140,8 +94,8 @@ export async function POST(req: NextRequest) {
           ok: false,
           code: "BAD_REQUEST",
           message:
-          "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con causas críticas (top 20%). " +
-          "Si ya terminaste Pareto pero cambiaste de chat/mes, vuelve al chat donde finalizaste Pareto o usa 'Mostrar avance' para re-sincronizar.",
+        "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con causas críticas (top 20%). " +
+        "Si ya terminaste Pareto pero cambiaste de chat/mes, vuelve al chat donde finalizaste Pareto o usa 'Mostrar avance' para re-sincronizar.",
         },
         { status: 400 }
       );

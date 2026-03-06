@@ -7,6 +7,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { z } from "zod";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 
 export const runtime = "nodejs";
 
@@ -102,6 +103,12 @@ function buildScore(state: any, roots: string[]) {
 export async function POST(req: Request) {
   try {
     const authed = await requireUser(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
+    }
+
     const userId = authed.userId;
 
     const raw = await req.json().catch(() => null);
@@ -111,61 +118,91 @@ export async function POST(req: Request) {
     }
     const { chatId } = parsed.data;
 
-    // 1) leer draft (payload)
-    const { data, error } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("id, payload, chat_id, updated_at")
+
+
+
+    // 1) Leer estado vivo desde plan_stage_states
+    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    const direct = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json, chat_id")
       .eq("user_id", userId)
+      .eq("chat_id", chatId)
       .eq("stage", STAGE)
-      .eq("artifact_type", DraftType)
-      .eq("period_key", PERIOD_KEY)
       .maybeSingle();
 
-    if (error) return NextResponse.json(fail("BAD_REQUEST", error.message), { status: 400 });
+    if (direct.error) {
+      return NextResponse.json(fail("BAD_REQUEST", direct.error.message), { status: 400 });
+    }
 
-    let draft = data;
+    stateRow = direct.data ?? null;
 
-    // ✅ Fallback: si el draft no está en este chat (abriste chat nuevo), retomamos el último draft del periodo
-    if (!draft?.payload) {
-      const fb = await supabaseServer
-        .from("plan_stage_artifacts")
-        .select("id, payload, chat_id, updated_at")
+    if (!stateRow && !chatId) {
+      const latest = await supabaseServer
+        .from("plan_stage_states")
+        .select("state_json, chat_id")
         .eq("user_id", userId)
+        .eq("stage", STAGE)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latest.error) {
+        return NextResponse.json(fail("BAD_REQUEST", latest.error.message), { status: 400 });
+      }
+
+      stateRow = latest.data ?? null;
+    }
+
+    // Compatibilidad temporal: fallback legacy
+    let legacyRow: { payload: Record<string, unknown> | null; chat_id: string | null } | null = null;
+
+    if (!stateRow?.state_json) {
+      const legacyDirect = await supabaseServer
+        .from("plan_stage_artifacts")
+        .select("payload, chat_id")
+        .eq("user_id", userId)
+        .eq("chat_id", chatId)
         .eq("stage", STAGE)
         .eq("artifact_type", DraftType)
         .eq("period_key", PERIOD_KEY)
-        .order("updated_at", { ascending: false })
-        .limit(1)
         .maybeSingle();
 
-      if (fb.error) return NextResponse.json(fail("BAD_REQUEST", fb.error.message), { status: 400 });
-      draft = fb.data ?? null;
-    }
-
-    // ✅ Fallback FINAL: si no existe en el periodo actual (ej: cambió el mes),
-    // retomamos el último estado disponible (sin filtrar period_key).
-    if (!draft?.payload) {
-      const fbAnyPeriod = await supabaseServer
-        .from("plan_stage_artifacts")
-        .select("id, payload, chat_id, updated_at, period_key")
-        .eq("user_id", userId)
-        .eq("stage", STAGE)
-        .eq("artifact_type", DraftType)
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (fbAnyPeriod.error) {
-        return NextResponse.json(fail("BAD_REQUEST", fbAnyPeriod.error.message), { status: 400 });
+      if (legacyDirect.error) {
+        return NextResponse.json(fail("BAD_REQUEST", legacyDirect.error.message), { status: 400 });
       }
-      draft = fbAnyPeriod.data ?? null;
+
+      legacyRow = legacyDirect.data ?? null;
+
+      if (!legacyRow && !chatId) {
+        const legacyLatest = await supabaseServer
+          .from("plan_stage_artifacts")
+          .select("payload, chat_id")
+          .eq("user_id", userId)
+          .eq("stage", STAGE)
+          .eq("artifact_type", DraftType)
+          .eq("period_key", PERIOD_KEY)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (legacyLatest.error) {
+          return NextResponse.json(fail("BAD_REQUEST", legacyLatest.error.message), { status: 400 });
+        }
+
+        legacyRow = legacyLatest.data ?? null;
+      }
     }
 
-    if (!draft?.payload) {
+    const s: any = stateRow?.state_json ?? legacyRow?.payload ?? null;
+    const stateChatId = stateRow?.chat_id ?? legacyRow?.chat_id ?? null;
+
+    if (!s) {
       return NextResponse.json(fail("BAD_REQUEST", "No hay estado de Etapa 4"), { status: 400 });
     }
 
-    const s: any = draft.payload;
+
 
     // 2) validaciones mínimas (las mismas que ya tenías)
     const problemText =
@@ -275,7 +312,7 @@ export async function POST(req: Request) {
       .upsert(
         {
           user_id: userId,
-          chat_id: chatId, // se guarda como referencia del chat actual (pero no define unicidad)
+          chat_id: chatId ?? stateChatId ?? null,
           stage: STAGE,
           artifact_type: FinalType,
           period_key: PERIOD_KEY,
@@ -375,7 +412,7 @@ ${JSON.stringify(
 
         const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
           user_id: userId,
-          chat_id: chatId,
+          chat_id: chatId ?? stateChatId ?? null,
           stage: STAGE,
           artifact_type: FinalType,
           artifact_id: finalArtifactId,
