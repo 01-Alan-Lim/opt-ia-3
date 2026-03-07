@@ -3225,7 +3225,10 @@ export default function ChatPage() {
     }
 
 
-    async function getGenericStageState(stage: number, args?: { chatId?: string | null; latest?: boolean }) {
+    async function getGenericStageState(
+      stage: number,
+      args?: { chatId?: string | null; latest?: boolean }
+    ) {
       const authHeaders = await getAuthHeaders();
 
       const qs = new URLSearchParams({ stage: String(stage) });
@@ -3240,6 +3243,25 @@ export default function ChatPage() {
       const ok = res.ok && json?.ok !== false;
       const payload = json?.data ?? json;
       return { ok, payload };
+    }
+
+
+    async function getResumeGate(targetStage: number, sourceChatId?: string | null) {
+      const authHeaders = await getAuthHeaders();
+
+      const qs = new URLSearchParams({
+        targetStage: String(targetStage),
+      });
+
+      if (sourceChatId) qs.set("chatId", sourceChatId);
+
+      const res = await fetch(`/api/plans/resume-gate?${qs.toString()}`, {
+        headers: { ...authHeaders },
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      return { ok, payload: json };
     }
 
 
@@ -3656,68 +3678,101 @@ export default function ChatPage() {
   // -----------------------------
 
   async function restoreLatestAdvisorStageToNewChat(effectiveChatId: string) {
+
     // 10
     const s10 = await getGenericStageState(10, { latest: true });
-    const fd = s10.ok ? (s10.payload?.row?.state_json as FinalDocState | null) : null;
-    if (fd) {
-      setFinalDocState(fd);
-      await saveFinalDocState(fd, effectiveChatId);
+    const s10Row = s10.ok ? s10.payload?.row ?? null : null;
+    const s10ChatId =
+      s10Row && typeof s10Row.chat_id === "string" ? (s10Row.chat_id as string) : null;
+    const prog = s10Row?.state_json ? (s10Row.state_json as ProgressState) : null;
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 10 (Documento final)**.\n\n" +
-        "👉 Continúa subiendo o corrigiendo la versión de tu informe.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (prog && s10ChatId) {
+      const resumeGate10 = await getResumeGate(10, s10ChatId);
+
+      if (resumeGate10.ok && resumeGate10.payload?.allowed) {
+        setProgressState(prog);
+        await saveProgressState(prog, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 10 (Reporte de Avances)**.\n\n" +
+          "👉 Continúa registrando avances, evidencias y resultados parciales/finales.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 9
     const s9 = await getGenericStageState(9, { latest: true });
-    const pg = s9.ok ? (s9.payload?.row?.state_json as ProgressState | null) : null;
-    if (pg) {
-      setProgressState(pg);
-      await saveProgressState(pg, effectiveChatId);
+    const s9Row = s9.ok ? s9.payload?.row ?? null : null;
+    const s9ChatId =
+      s9Row && typeof s9Row.chat_id === "string" ? (s9Row.chat_id as string) : null;
+    const plan9 = s9Row?.state_json ? (s9Row.state_json as PlanningState) : null;
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 9 (Reporte de avances)**.\n\n" +
-        "👉 Continúa reportando el avance real de la implementación.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (plan9 && s9ChatId) {
+      const resumeGate9 = await getResumeGate(9, s9ChatId);
+
+      if (resumeGate9.ok && resumeGate9.payload?.allowed) {
+        setPlanningState(plan9);
+        await savePlanningState(plan9, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 9 (Planificación / Cronograma)**.\n\n" +
+          "👉 Continúa armando el cronograma, responsables, recursos y tiempos.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 8
     const s8 = await getGenericStageState(8, { latest: true });
-    const pl = s8.ok ? (s8.payload?.row?.state_json as PlanningState | null) : null;
-    if (pl) {
-      setPlanningState(pl);
-      await savePlanningState(pl, effectiveChatId);
+    const s8Row = s8.ok ? s8.payload?.row ?? null : null;
+    const s8ChatId =
+      s8Row && typeof s8Row.chat_id === "string" ? (s8Row.chat_id as string) : null;
+    const impl = s8Row?.state_json ? (s8Row.state_json as ImprovementState) : null;
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 8 (Planificación)**.\n\n" +
-        "👉 Continúa definiendo actividades, responsables, tiempos y seguimiento.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (impl && s8ChatId) {
+      const resumeGate8 = await getResumeGate(8, s8ChatId);
+
+      if (resumeGate8.ok && resumeGate8.payload?.allowed) {
+        setImprovementState(impl);
+        await saveImprovementState(impl, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 8 (Plan de Mejora)**.\n\n" +
+          "👉 Continúa desarrollando acciones, responsables, recursos y KPIs.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 7
     const s7 = await getGenericStageState(7, { latest: true });
-    const imp = s7.ok ? (s7.payload?.row?.state_json as ImprovementState | null) : null;
-    if (imp) {
-      setImprovementState(imp);
-      await saveImprovementState(imp, effectiveChatId);
+    const s7Row = s7.ok ? s7.payload?.row ?? null : null;
+    const s7ChatId =
+      s7Row && typeof s7Row.chat_id === "string" ? (s7Row.chat_id as string) : null;
+    const imp = s7Row?.state_json ? (s7Row.state_json as ImprovementState) : null;
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
-        "👉 Continúa afinando acciones, recursos y estructura del plan.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (imp && s7ChatId) {
+      const resumeGate7 = await getResumeGate(7, s7ChatId);
+
+      if (resumeGate7.ok && resumeGate7.payload?.allowed) {
+        setImprovementState(imp);
+        await saveImprovementState(imp, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
+          "👉 Continúa estructurando la propuesta de mejora.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 6
@@ -3728,9 +3783,9 @@ export default function ChatPage() {
     const obj = s6Row?.state_json ? (s6Row.state_json as ObjectivesState) : null;
 
     if (obj && s6ChatId) {
-      const paretoGate = await validatePareto(s6ChatId);
+      const resumeGate6 = await getResumeGate(6, s6ChatId);
 
-      if (paretoGate.ok && paretoGate.payload?.valid) {
+      if (resumeGate6.ok && resumeGate6.payload?.allowed) {
         setObjectivesState(obj);
         await saveObjectivesState(obj, effectiveChatId);
 
@@ -3747,68 +3802,96 @@ export default function ChatPage() {
 
     // 5
     const s5 = await getParetoState(null);
+    const s5ChatId =
+      s5.ok && typeof s5.payload?.chatId === "string" ? (s5.payload.chatId as string) : null;
     const pareto = s5.ok ? (s5.payload?.state as ParetoState | null) : null;
-    if (pareto) {
-      setParetoState(pareto);
-      await saveParetoState(pareto, effectiveChatId);
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 5 (Pareto)**.\n\n" +
-        "👉 Continúa seleccionando, ponderando y cerrando tus causas críticas.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (pareto && s5ChatId) {
+      const resumeGate5 = await getResumeGate(5, s5ChatId);
+
+      if (resumeGate5.ok && resumeGate5.payload?.allowed) {
+        setParetoState(pareto);
+        await saveParetoState(pareto, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 5 (Pareto)**.\n\n" +
+          "👉 Continúa seleccionando, ponderando y cerrando tus causas críticas.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 4
     const s4 = await getIshikawaState({ ignoreChatId: true });
+    const s4ChatId =
+      s4.ok && typeof s4.payload?.chatId === "string" ? (s4.payload.chatId as string) : null;
     const ishi = s4.ok ? (s4.payload?.state as IshikawaState | null) : null;
-    if (ishi) {
-      setIshikawaState(ishi);
-      setIshikawaClosePending(isIshikawaReadyToClose(ishi));
-      await saveIshikawaState(ishi, effectiveChatId);
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 4 (Ishikawa)**.\n\n" +
-        "👉 Continúa bajando desde causa principal hasta causa raíz.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (ishi && s4ChatId) {
+      const resumeGate4 = await getResumeGate(4, s4ChatId);
+
+      if (resumeGate4.ok && resumeGate4.payload?.allowed) {
+        setIshikawaState(ishi);
+        setIshikawaClosePending(isIshikawaReadyToClose(ishi));
+        await saveIshikawaState(ishi, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 4 (Ishikawa)**.\n\n" +
+          "👉 Continúa bajando desde causa principal hasta causa raíz.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 3
     const s3 = await getBrainstormState(null);
+    const s3ChatId =
+      s3.ok && typeof s3.payload?.chatId === "string" ? (s3.payload.chatId as string) : null;
     const bs = s3.ok ? (s3.payload?.state as BrainstormState | null) : null;
-    if (bs) {
-      const clean = sanitizeBrainstormState(bs);
-      setBrainstormState(clean);
-      await saveBrainstormState(clean, effectiveChatId);
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 3 (Lluvia de ideas)**.\n\n" +
-        "👉 Continúa con la siguiente causa concreta.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (bs && s3ChatId) {
+      const resumeGate3 = await getResumeGate(3, s3ChatId);
+
+      if (resumeGate3.ok && resumeGate3.payload?.allowed) {
+        const clean = sanitizeBrainstormState(bs);
+        setBrainstormState(clean);
+        await saveBrainstormState(clean, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 3 (Lluvia de ideas)**.\n\n" +
+          "👉 Continúa con la siguiente causa concreta.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     // 2
     const s2 = await getFodaState(null);
+    const s2ChatId =
+      s2.ok && typeof s2.payload?.chatId === "string" ? (s2.payload.chatId as string) : null;
     const foda = s2.ok ? (s2.payload?.state as FodaState | null) : null;
-    if (foda) {
-      setFodaState(foda);
-      await saveFodaState(foda, effectiveChatId);
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 2 (FODA)**.\n\n" +
-        "👉 Continúa con el siguiente punto de tu cuadrante actual.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (foda && s2ChatId) {
+      const resumeGate2 = await getResumeGate(2, s2ChatId);
+
+      if (resumeGate2.ok && resumeGate2.payload?.allowed) {
+        setFodaState(foda);
+        await saveFodaState(foda, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 2 (FODA)**.\n\n" +
+          "👉 Continúa con el siguiente punto de tu cuadrante actual.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
 
     return false;
@@ -4041,6 +4124,8 @@ export default function ChatPage() {
 
             setProgressState(initialProgress);
             await saveProgressState(initialProgress, effectiveChatId);
+            setPlanningState(null);
+            await clearStageState(9, effectiveChatId);
           }
 
           return;
@@ -4087,6 +4172,7 @@ export default function ChatPage() {
 
               // Importante: dejamos de capturar Etapa 7
               setImprovementState(null);
+              await clearStageState(7, effectiveChatId);
 
               // Iniciar PlanningState (vacío) y guardarlo
               const initialPlanning: PlanningState = {
@@ -4108,6 +4194,8 @@ export default function ChatPage() {
 
               setPlanningState(initialPlanning);
               await savePlanningState(initialPlanning, effectiveChatId);
+              setImprovementState(null);
+              await clearStageState(8, effectiveChatId);
 
             }
           }
@@ -4402,6 +4490,9 @@ export default function ChatPage() {
               setParetoState(initialPareto);
               await saveParetoState(initialPareto, effectiveChatId);
 
+              setIshikawaState(null);
+              await clearStageState(4, effectiveChatId);
+
               const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
 
               await appendAssistant(
@@ -4506,6 +4597,9 @@ export default function ChatPage() {
               setBrainstormClosePending(false);
               setIshikawaState(initialIshikawa);
               await saveIshikawaState(initialIshikawa, effectiveChatId);
+
+              setBrainstormState(null);
+              await clearStageState(3, effectiveChatId);
 
               // ✅ Un solo mensaje natural (sin duplicados)
               await appendAssistant(
@@ -4663,6 +4757,9 @@ export default function ChatPage() {
               if (existing) setBrainstormState(existing);
             }
 
+            setFodaState(null);
+            await clearStageState(2, effectiveChatId);
+
             return;
           }
         }
@@ -4729,6 +4826,9 @@ export default function ChatPage() {
               setBrainstormState(initial);
               await saveBrainstormState(initial, effectiveChatId);
 
+              setFodaState(null);
+              await clearStageState(2, effectiveChatId);
+
               await appendAssistant(
                 "✅ Antes de definir la problemática, dime tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
                 "👉 Escribe por ejemplo: **FO** y dime por qué en 1–2 líneas."
@@ -4741,6 +4841,9 @@ export default function ChatPage() {
             if (existing) {
               setBrainstormState(existing);
               const n = Array.isArray(existing.ideas) ? existing.ideas.length : 0;
+
+              setFodaState(null);
+              await clearStageState(2, effectiveChatId);
 
               await appendAssistant(
                 `📌 Retomemos tu **Etapa 3 (Lluvia de ideas)**.\n\n` +
