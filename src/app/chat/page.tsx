@@ -2870,7 +2870,10 @@ export default function ChatPage() {
 
   async function getFodaState(chatIdArg?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const effectiveChatId = chatIdArg ?? chatIdRef.current ?? null;
+
+    const effectiveChatId =
+      chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
+
     const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
 
     const res = await fetch(`/api/plans/foda/state${qs}`, {
@@ -2944,7 +2947,10 @@ export default function ChatPage() {
 
   async function getBrainstormState(chatIdArg?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const effectiveChatId = chatIdArg ?? chatIdRef.current ?? null;
+
+    const effectiveChatId =
+      chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
+
     const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
 
     const res = await fetch(`/api/plans/brainstorm/state${qs}`, {
@@ -3146,7 +3152,10 @@ export default function ChatPage() {
 
   async function getParetoState(chatIdArg?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const effectiveChatId = chatIdArg ?? chatIdRef.current ?? null;
+
+    const effectiveChatId =
+      chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
+
     const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
 
     const res = await fetch(`/api/plans/pareto/state${qs}`, {
