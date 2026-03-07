@@ -128,7 +128,7 @@ export function MessageList({
     >
         {/* ✅ Hace que cuando hay pocos mensajes se queden abajo */}
         <div className="min-h-full flex flex-col justify-start">
-          <div className="space-y-5">
+          <div className="space-y-3 sm:space-y-5">
             {messages.map((msg) => {
               const isUser = msg.role === "user";
 
@@ -139,14 +139,14 @@ export function MessageList({
                 >
                   <div
                     className={clsx(
-                      "max-w-[85%]",
-                      "px-4 py-3",
-                      "text-sm leading-relaxed",
+                      "max-w-[84%] sm:max-w-[78%] md:max-w-[72%]",
+                      "px-3 py-2.5 sm:px-4 sm:py-3",
+                      "text-[13px] sm:text-sm leading-[1.5] sm:leading-relaxed",
                       "border",
                       "shadow-[0_10px_30px_rgba(0,0,0,0.25)]",
                       isUser
-                        ? "rounded-3xl rounded-br-xl bg-[color:var(--bubble-user-bg)] border-[color:var(--bubble-user-border)] text-[color:var(--bubble-user-text)]"
-                        : "rounded-3xl rounded-bl-xl bg-[color:var(--bubble-assistant-bg)] border-[color:var(--bubble-assistant-border)] text-[color:var(--bubble-assistant-text)] whitespace-pre-line"
+                        ? "rounded-2xl sm:rounded-3xl rounded-br-lg sm:rounded-br-xl bg-[color:var(--bubble-user-bg)] border-[color:var(--bubble-user-border)] text-[color:var(--bubble-user-text)]"
+                        : "rounded-2xl sm:rounded-3xl rounded-bl-lg sm:rounded-bl-xl bg-[color:var(--bubble-assistant-bg)] border-[color:var(--bubble-assistant-border)] text-[color:var(--bubble-assistant-text)] whitespace-pre-line"
                     )}
                   >
                     {renderTextWithLinks(msg.content)}
@@ -158,10 +158,10 @@ export function MessageList({
               <div className="flex w-full justify-start">
                 <div
                   className={clsx(
-                    "rounded-2xl backdrop-blur-xl",
+                    "rounded-xl sm:rounded-2xl backdrop-blur-xl",
                     "bubble-assistant bg-[color:var(--surface-elevated)] text-[color:var(--foreground)] border border-[color:var(--border)]",
                     "shadow-[0_6px_14px_rgba(0,0,0,0.10)]",
-                    "px-3 py-2 inline-flex items-center"
+                    "px-2.5 py-2 sm:px-3 inline-flex items-center"
                   )}
                 >
                   <TypingDots />

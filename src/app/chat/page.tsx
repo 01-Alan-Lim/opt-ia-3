@@ -1305,7 +1305,9 @@ export default function ChatPage() {
     };
   }, [ready, authenticated, mode, chatId]);
 
-  // 2.x Cargar estado Objectives (Etapa 6)
+
+
+    // 2.x Cargar estado Objectives (Etapa 6)
   useEffect(() => {
     if (!ready || !authenticated) return;
     if (mode !== "plan_mejora") return;
@@ -1332,6 +1334,9 @@ export default function ChatPage() {
       active = false;
     };
   }, [ready, authenticated, mode, chatId]);
+
+
+
 
   // 2.x Cargar estado Improvement (Etapa 7)
   useEffect(() => {
@@ -3204,12 +3209,53 @@ export default function ChatPage() {
     return { ok, payload };
   }
 
-  async function validatePareto() {
+    async function validatePareto(effectiveChatId?: string | null) {
+      const authHeaders = await getAuthHeaders();
+      const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+      const res = await fetch("/api/plans/pareto/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ chatId: cid }),
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      return { ok, payload: json };
+    }
+
+
+    async function getGenericStageState(stage: number, args?: { chatId?: string | null; latest?: boolean }) {
+      const authHeaders = await getAuthHeaders();
+
+      const qs = new URLSearchParams({ stage: String(stage) });
+      if (args?.chatId) qs.set("chatId", args.chatId);
+      if (args?.latest) qs.set("latest", "true");
+
+      const res = await fetch(`/api/plans/stage-state?${qs.toString()}`, {
+        headers: { ...authHeaders },
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      const payload = json?.data ?? json;
+      return { ok, payload };
+    }
+
+
+  async function clearStageState(stage: number, effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/pareto/validate", {
-      method: "POST",
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+    if (!cid) return { ok: false as const, payload: null };
+
+    const res = await fetch("/api/plans/stage-state", {
+      method: "DELETE",
       headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: chatIdRef.current }),
+      body: JSON.stringify({
+        chatId: cid,
+        stage,
+      }),
     });
 
     const json = await res.json().catch(() => null);
@@ -3218,22 +3264,6 @@ export default function ChatPage() {
   }
 
 
-    async function getGenericStageState(stage: number, args?: { chatId?: string | null; latest?: boolean }) {
-    const authHeaders = await getAuthHeaders();
-
-    const qs = new URLSearchParams({ stage: String(stage) });
-    if (args?.chatId) qs.set("chatId", args.chatId);
-    if (args?.latest) qs.set("latest", "true");
-
-    const res = await fetch(`/api/plans/stage-state?${qs.toString()}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
-  }
 
   async function getObjectivesState(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
@@ -3625,7 +3655,7 @@ export default function ChatPage() {
   // Enviar mensaje
   // -----------------------------
 
-    async function restoreLatestAdvisorStageToNewChat(effectiveChatId: string) {
+  async function restoreLatestAdvisorStageToNewChat(effectiveChatId: string) {
     // 10
     const s10 = await getGenericStageState(10, { latest: true });
     const fd = s10.ok ? (s10.payload?.row?.state_json as FinalDocState | null) : null;
@@ -3692,19 +3722,28 @@ export default function ChatPage() {
 
     // 6
     const s6 = await getGenericStageState(6, { latest: true });
-    const obj = s6.ok ? (s6.payload?.row?.state_json as ObjectivesState | null) : null;
-    if (obj) {
-      setObjectivesState(obj);
-      await saveObjectivesState(obj, effectiveChatId);
+    const s6Row = s6.ok ? s6.payload?.row ?? null : null;
+    const s6ChatId =
+      s6Row && typeof s6Row.chat_id === "string" ? (s6Row.chat_id as string) : null;
+    const obj = s6Row?.state_json ? (s6Row.state_json as ObjectivesState) : null;
 
-      const msg =
-        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
-        "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-      return true;
+    if (obj && s6ChatId) {
+      const paretoGate = await validatePareto(s6ChatId);
+
+      if (paretoGate.ok && paretoGate.payload?.valid) {
+        setObjectivesState(obj);
+        await saveObjectivesState(obj, effectiveChatId);
+
+        const msg =
+          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+          "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
+          "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
+        setMessages([createMessage("assistant", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        return true;
+      }
     }
+
 
     // 5
     const s5 = await getParetoState(null);
@@ -4088,7 +4127,16 @@ export default function ChatPage() {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant("⚠️ No pude procesar tus objetivos. ¿Puedes escribir 1 propuesta de **objetivo general** en una sola oración?");
+            const backendMessage =
+              assistant.payload?.message ??
+              assistant.payload?.detail?.message ??
+              null;
+
+            await appendAssistant(
+              backendMessage
+                ? `⚠️ ${backendMessage}`
+                : "⚠️ No pude procesar tus objetivos en este momento. Cuéntame brevemente qué quieres mejorar y te ayudo a redactar un objetivo general."
+            );
             return;
           }
 
@@ -4127,8 +4175,9 @@ export default function ChatPage() {
               setImprovementState(initialImprovement);
               await saveImprovementState(initialImprovement, effectiveChatId);
 
-              // (Recomendado) desactivar ObjectivesState para que no lo siga capturando
+              // Cerrar y limpiar Etapa 6 para que no se reanude por error
               setObjectivesState(null);
+              await clearStageState(6, effectiveChatId);
             }
           }
           return;
@@ -4158,7 +4207,7 @@ export default function ChatPage() {
 
           // Si el assistant marcó done, intentamos validar y cerrar Etapa 5
           if (nextState.step === "done") {
-            const v = await validatePareto();
+            const v = await validatePareto(effectiveChatId);
 
             if (!v.ok) {
               const msg =
@@ -4194,6 +4243,8 @@ export default function ChatPage() {
             await saveObjectivesState(initialObjectives, effectiveChatId);
 
             setParetoState(null);
+            await clearStageState(5, effectiveChatId);
+
           }
 
           return;
@@ -5414,8 +5465,9 @@ export default function ChatPage() {
         )}
 
         {/* ✅ composer flotante abajo */}
-        <div className="chat-composer absolute -left-6 -right-2 bottom-3 z-20 pointer-events-none">
-          <div ref={composerMeasureRef} className="pointer-events-auto relative z-10">
+
+        <div className="chat-composer absolute inset-x-0 bottom-3 z-20 pointer-events-none px-2 sm:px-3">
+          <div ref={composerMeasureRef} className="pointer-events-auto relative z-10 mx-auto w-full max-w-4xl">
             <MessageInput
               onSend={handleSend}
               disabled={isSending || !canInteract}
@@ -5430,6 +5482,7 @@ export default function ChatPage() {
             />
           </div>
         </div>
+
       </div>
     </ChatLayout>
   );

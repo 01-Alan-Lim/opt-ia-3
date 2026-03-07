@@ -22,7 +22,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
         "text-[color:var(--foreground)]"
       )}
     >
-      <section className="flex-1 flex overflow-hidden px-4 py-3 gap-3">
+      <section className="flex-1 flex overflow-hidden px-2 sm:px-4 py-2 sm:py-3 gap-2 sm:gap-3">
         {/* =========================
             Mobile drawer (md:hidden)
            ========================= */}
@@ -88,7 +88,7 @@ export function ChatLayout({ sidebar, children, sidebarOpen, onCloseSidebar }: C
               "flex flex-col overflow-hidden"
             )}
           >
-            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden px-5 pt-5 pb-0">
+            <div className="flex-1 min-h-0 flex flex-col gap-2 overflow-hidden px-2 sm:px-4 md:px-5 pt-3 sm:pt-5 pb-0">
               {children}
             </div>
           </div>
