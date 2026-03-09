@@ -4569,18 +4569,29 @@ export default function ChatPage() {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMessage =
-              assistant.payload?.message ??
-              assistant.payload?.detail?.message ??
-              null;
+          const backendCode = assistant.payload?.code ?? null;
+          const backendMessage =
+            assistant.payload?.message ??
+            assistant.payload?.detail?.message ??
+            null;
 
-            await appendAssistant(
-              backendMessage
-                ? `⚠️ ${backendMessage}`
-                : "⚠️ No pude procesar tus objetivos en este momento. Cuéntame brevemente qué quieres mejorar y te ayudo a redactar un objetivo general."
-            );
-            return;
+          if (backendCode === "BAD_REQUEST") {
+            setObjectivesState(null);
+            await clearStageState(6, effectiveChatId);
+
+            const restored = await restoreLatestAdvisorStageToNewChat(effectiveChatId);
+            if (restored) {
+              return;
+            }
           }
+
+          await appendAssistant(
+            backendMessage
+              ? `⚠️ ${backendMessage}`
+              : "⚠️ No pude procesar tus objetivos en este momento. Cuéntame brevemente qué quieres mejorar y te ayudo a redactar un objetivo general."
+          );
+          return;
+        }
 
           const nextState = assistant.payload.updates.nextState as ObjectivesState;
 

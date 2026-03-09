@@ -1,6 +1,7 @@
 // src/lib/plan/activeStage.ts
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 type JsonMap = Record<string, unknown>;
 
@@ -47,6 +48,45 @@ type LatestArtifactRow = {
   updated_at: string | null;
   status: string | null;
 };
+
+const RESUME_GATE_BY_STAGE: Partial<
+  Record<ActivePlanStage, { requiredStage: number; artifactType: string }>
+> = {
+  2: { requiredStage: 1, artifactType: "productivity_report" },
+  3: { requiredStage: 2, artifactType: "foda_analysis" },
+  4: { requiredStage: 3, artifactType: "brainstorm_ideas" },
+  5: { requiredStage: 4, artifactType: "ishikawa_final" },
+  6: { requiredStage: 5, artifactType: "pareto_final" },
+  7: { requiredStage: 6, artifactType: "objectives_final" },
+  8: { requiredStage: 7, artifactType: "improvement_final" },
+  9: { requiredStage: 8, artifactType: "planning_final" },
+  10: { requiredStage: 9, artifactType: "progress_final" },
+};
+
+async function canResumeStage(args: {
+  userId: string;
+  targetStage: ActivePlanStage;
+  sourceChatId: string | null;
+  periodKey: string;
+}): Promise<boolean> {
+  const gate = RESUME_GATE_BY_STAGE[args.targetStage];
+
+  if (!gate) return true;
+
+  const result = await loadLatestValidatedArtifact({
+    userId: args.userId,
+    preferredChatId: args.sourceChatId,
+    stage: gate.requiredStage,
+    artifactType: gate.artifactType,
+    periodKey: args.periodKey,
+  });
+
+  if (!result.ok) {
+    throw result.error;
+  }
+
+  return !!result.row;
+}
 
 async function loadLatestStageState(
   userId: string,
@@ -109,30 +149,50 @@ export async function resolveActivePlanStage(
   // Etapas avanzadas: 10 -> 6
   for (const stage of [10, 9, 8, 7, 6] as const) {
     const row = await loadLatestStageState(userId, stage);
-    if (row?.state_json) {
-      return {
-        found: true,
-        stage,
-        source: "stage_state",
-        sourceChatId: row.chat_id ?? null,
-        stateJson: row.state_json,
-        meta: null,
-      };
-    }
+
+    if (!row?.state_json) continue;
+
+    const allowed = await canResumeStage({
+      userId,
+      targetStage: stage,
+      sourceChatId: row.chat_id ?? null,
+      periodKey,
+    });
+
+    if (!allowed) continue;
+
+    return {
+      found: true,
+      stage,
+      source: "stage_state",
+      sourceChatId: row.chat_id ?? null,
+      stateJson: row.state_json,
+      meta: null,
+    };
   }
 
   // Etapa 5: Pareto (state primero, artifact legacy después)
   {
     const stateRow = await loadLatestStageState(userId, 5);
+
     if (stateRow?.state_json) {
-      return {
-        found: true,
-        stage: 5,
-        source: "stage_state",
+      const allowed = await canResumeStage({
+        userId,
+        targetStage: 5,
         sourceChatId: stateRow.chat_id ?? null,
-        stateJson: stateRow.state_json,
-        meta: null,
-      };
+        periodKey,
+      });
+
+      if (allowed) {
+        return {
+          found: true,
+          stage: 5,
+          source: "stage_state",
+          sourceChatId: stateRow.chat_id ?? null,
+          stateJson: stateRow.state_json,
+          meta: null,
+        };
+      }
     }
 
     const legacyPareto = await loadLatestArtifact({
@@ -143,32 +203,51 @@ export async function resolveActivePlanStage(
     });
 
     if (legacyPareto?.payload) {
-      return {
-        found: true,
-        stage: 5,
-        source: "artifact",
+      const allowed = await canResumeStage({
+        userId,
+        targetStage: 5,
         sourceChatId: legacyPareto.chat_id ?? null,
-        stateJson: legacyPareto.payload,
-        meta: {
-          artifactType: "pareto_wizard_state",
-        },
-      };
+        periodKey,
+      });
+
+      if (allowed) {
+        return {
+          found: true,
+          stage: 5,
+          source: "artifact",
+          sourceChatId: legacyPareto.chat_id ?? null,
+          stateJson: legacyPareto.payload,
+          meta: {
+            artifactType: "pareto_wizard_state",
+          },
+        };
+      }
     }
   }
 
   // Etapas intermedias: 4 -> 2
   for (const stage of [4, 3, 2] as const) {
     const row = await loadLatestStageState(userId, stage);
-    if (row?.state_json) {
-      return {
-        found: true,
-        stage,
-        source: "stage_state",
-        sourceChatId: row.chat_id ?? null,
-        stateJson: row.state_json,
-        meta: null,
-      };
-    }
+
+    if (!row?.state_json) continue;
+
+    const allowed = await canResumeStage({
+      userId,
+      targetStage: stage,
+      sourceChatId: row.chat_id ?? null,
+      periodKey,
+    });
+
+    if (!allowed) continue;
+
+    return {
+      found: true,
+      stage,
+      source: "stage_state",
+      sourceChatId: row.chat_id ?? null,
+      stateJson: row.state_json,
+      meta: null,
+    };
   }
 
   // Etapa 1: productividad por artifact legacy
