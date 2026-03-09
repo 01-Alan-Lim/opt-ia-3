@@ -8,6 +8,7 @@ import { z } from "zod";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -435,6 +436,12 @@ ${JSON.stringify(
       }
     }
 
+    const next = await advancePlanStage({
+      userId,
+      chatId: chatId ?? stateChatId ?? null,
+      fromStage: STAGE,
+    });
+
     return ok({
       valid: true,
       message: "Etapa 4 validada.",
@@ -442,6 +449,7 @@ ${JSON.stringify(
       score,
       evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
       ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+      next,
     });
   } catch (e: any) {
     return NextResponse.json(fail("BAD_REQUEST", e?.message ?? "Error"), { status: 500 });

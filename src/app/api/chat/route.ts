@@ -90,12 +90,36 @@ Tienes acceso de SOLO LECTURA a estas tablas de Supabase:
 1) method_engineering_experiences
    - id
    - codigo_id_de_la_empresa        (ID asignado por la Plataforma Aceleradora de Productividad)
-   - nombre_o_razon_social_de_la_empresa
+   - nombre_o_razon_social_de_la_empresa   (dato sensible: puede usarse para filtrar internamente, pero NO debe revelarse)
    - rubro                          (ej: textil, alimentos, servicios)
    - tamano_empresa                 (micro, pequeña, mediana, grande)
    - departamento
    - municipio
    - gestion
+   - tipo_de_plan
+   - materia
+   - area_de_intervencion
+   - otra_area_de_intervencion
+   - linea_de_produccion_servicio_priorizada
+   - nombre_del_producto_principal_1
+   - precio_del_producto_principal_1
+   - materia_prima_principal_del_producto_principal_1
+   - matriz_foda_herramienta
+   - lluvia_de_ideas
+   - diagrama_de_ishikawa
+   - diagrama_de_pareto
+   - cursograma_sinoptico
+   - cursograma_analitico
+   - diagrama_de_recorrido
+   - mapeo_de_la_cadena_de_valor
+   - analisis_de_la_operacion
+   - tecnica_del_interrogatorio
+   - analisis_de_desperdicios
+   - muestreo_del_trabajo
+   - estudio_de_tiempos
+   - otra_herramienta_empleada
+   - enfoque_de_la_solucion
+   - otro_enfoque_de_la_solucion
    - descripcion_mejora_planteada
    - implementacion_de_la_mejora
    - perspectivas_de_implementacion
@@ -113,6 +137,10 @@ Tienes acceso de SOLO LECTURA a estas tablas de Supabase:
    - nombre_de_la_empresa           (nombre oficial de la empresa)
 
 Reglas IMPORTANTE:
+- Aunque el usuario pregunte por una empresa concreta, el sistema final NO debe revelar
+  nombres reales de empresas en la respuesta.
+- Puedes usar el nombre real SOLO como referencia interna para construir filtros,
+  pero la salida final debe ser anónima.
 - La tabla "companies" SOLO tiene id_empresa y nombre_de_la_empresa como datos relevantes.
 - NO inventes columnas como sector, ciudad o país.
 - Si el usuario pregunta por "ID de la empresa", "id_empresa", "código de empresa" o similar,
@@ -304,6 +332,52 @@ function pickCompanyNameFromExperienceRows(rows: any[]): string | null {
   return null;
 }
 
+function compactText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function looksPresent(value: unknown): boolean {
+  const v = compactText(value).toLowerCase();
+  if (!v) return false;
+  return !["no", "ninguno", "ninguna", "na", "n/a", "null", "no aplica", "no se aplicó"].includes(v);
+}
+
+function makeAnonymousCompanyLabel(row: any, index: number): string {
+  const gestion = compactText(row?.gestion).replace(/[^a-zA-Z0-9]/g, "");
+  const suffix = gestion ? `-${gestion}` : "";
+  return `Empresa anónima E-${String(index + 1).padStart(2, "0")}${suffix}`;
+}
+
+function collectToolsUsed(row: any): string[] {
+  const tools: Array<{ key: string; label: string }> = [
+    { key: "matriz_foda_herramienta", label: "FODA" },
+    { key: "lluvia_de_ideas", label: "Lluvia de ideas" },
+    { key: "diagrama_de_ishikawa", label: "Ishikawa" },
+    { key: "diagrama_de_pareto", label: "Pareto" },
+    { key: "cursograma_sinoptico", label: "Cursograma sinóptico" },
+    { key: "cursograma_analitico", label: "Cursograma analítico" },
+    { key: "diagrama_de_recorrido", label: "Diagrama de recorrido" },
+    { key: "mapeo_de_la_cadena_de_valor", label: "Mapa de cadena de valor" },
+    { key: "analisis_de_la_operacion", label: "Análisis de la operación" },
+    { key: "tecnica_del_interrogatorio", label: "Técnica del interrogatorio" },
+    { key: "analisis_de_desperdicios", label: "Análisis de desperdicios" },
+    { key: "muestreo_del_trabajo", label: "Muestreo del trabajo" },
+    { key: "estudio_de_tiempos", label: "Estudio de tiempos" },
+  ];
+
+  const present = tools
+    .filter((tool) => looksPresent(row?.[tool.key]))
+    .map((tool) => tool.label);
+
+  const otherTool = compactText(row?.otra_herramienta_empleada);
+  if (otherTool) {
+    present.push(`Otra herramienta: ${otherTool}`);
+  }
+
+  return present;
+}
+
 // --------------------------------------
 // 📌 4) Construir texto con los resultados SQL
 // (sin cambios funcionales)
@@ -313,61 +387,116 @@ function buildDbContext(
   rows: any[],
   companiesById?: Map<string, CompanyLite>
 ): string {
-
   if (!rows.length) return "";
 
   if (table === "companies") {
     return rows
       .map((row: any, i: number) => {
-        const nombre = row.nombre_de_la_empresa ?? "Empresa sin nombre";
-        const idEmpresa = row.id_empresa ?? "";
+        const alias = `Empresa anónima C-${String(i + 1).padStart(2, "0")}`;
+        const idEmpresa = compactText(row?.id_empresa);
 
-        return `(${i + 1}) ${nombre}${idEmpresa ? ` – ID plataforma: ${idEmpresa}` : ""}`;
+        return `(${i + 1}) ${alias}${idEmpresa ? ` – ID plataforma: ${idEmpresa}` : ""}`;
       })
       .join("\n");
   }
 
   return rows
     .map((row: any, i: number) => {
-      const empresa =
-        row.nombre_o_razon_social_de_la_empresa ??
-        row.nombre_de_la_empresa ??
-        "Empresa sin nombre";
-
-      const codigo = row.codigo_id_de_la_empresa ?? row.id_empresa ?? "";
+      const alias = makeAnonymousCompanyLabel(row, i);
+      const codigo = compactText(row?.codigo_id_de_la_empresa ?? row?.id_empresa);
       const official = codigo && companiesById ? companiesById.get(codigo) : null;
-      const officialText =
-        official && (official.nombre_de_la_empresa || official.id_empresa)
-          ? ` (oficial: ${official.nombre_de_la_empresa ?? "sin nombre"}${official.id_empresa ? ` – ID ${official.id_empresa}` : ""})`
-          : "";
-      const gestion = row.gestion ?? "gestión no especificada";
-      const rubro = row.rubro ?? "rubro no especificado";
-      const size = row.tamano_empresa ?? "tamaño no especificado";
 
-      const ubicacion = [row.municipio, row.departamento].filter(Boolean).join(", ");
-      const desc = row.descripcion_mejora_planteada ?? "";
+      const gestion = compactText(row?.gestion) || "gestión no especificada";
+      const rubro = compactText(row?.rubro) || "rubro no especificado";
+      const size = compactText(row?.tamano_empresa) || "tamaño no especificado";
+      const materia = compactText(row?.materia);
+      const tipoPlan = compactText(row?.tipo_de_plan);
 
-      const estado = row.implementacion_de_la_mejora ?? row.perspectivas_de_implementacion ?? "";
+      const municipio = compactText(row?.municipio);
+      const departamento = compactText(row?.departamento);
+      const ubicacion = [municipio, departamento].filter(Boolean).join(", ");
 
-      const causasArray = [row.causa_principal_1, row.causa_principal_2, row.causa_principal_3].filter(
-        (c: string | null | undefined) => !!c && c.trim().length > 0
-      );
+      const area = compactText(row?.area_de_intervencion);
+      const otraArea = compactText(row?.otra_area_de_intervencion);
+      const linea = compactText(row?.linea_de_produccion_servicio_priorizada);
+
+      const producto = compactText(row?.nombre_del_producto_principal_1);
+      const precio = compactText(row?.precio_del_producto_principal_1);
+      const materiaPrima = compactText(row?.materia_prima_principal_del_producto_principal_1);
+
+      const enfoque = compactText(row?.enfoque_de_la_solucion);
+      const otroEnfoque = compactText(row?.otro_enfoque_de_la_solucion);
+
+      const mejora = compactText(row?.descripcion_mejora_planteada);
+      const implementacion = compactText(row?.implementacion_de_la_mejora);
+      const perspectivas = compactText(row?.perspectivas_de_implementacion);
+
+      const herramientas = collectToolsUsed(row);
+
+      const causasArray = [row?.causa_principal_1, row?.causa_principal_2, row?.causa_principal_3]
+        .map((c) => compactText(c))
+        .filter(Boolean);
 
       const causasTexto = causasArray
-        .map((c: string, idx: number) => `${idx + 1}. "${c.trim()}"`)
+        .map((c, idx) => `${idx + 1}. "${c}"`)
         .join(" ");
 
-      return `(${i + 1}) ${empresa}${codigo ? ` [ID ${codigo}]` : ""}${officialText} – Gestión: ${
-        gestion || "sin dato"
-      }. ${rubro || "sin rubro"}${size ? `, tamaño ${size}` : ""}${
-        ubicacion ? `, ${ubicacion}` : ""
-      }. Mejora registrada: ${desc || "sin descripción"}${
-        estado ? `. Estado/implementación: ${estado}` : ""
-      }${
-        causasArray.length
-          ? `\nCausas raíz REGISTRADAS EN LA BASE DE DATOS (texto literal, no interpretar): ${causasTexto}`
-          : ""
-      }`;
+      const bloques: string[] = [];
+
+      bloques.push(
+        `(${i + 1}) ${alias}${codigo ? ` [ID plataforma: ${codigo}]` : ""}. Gestión: ${gestion}. Rubro: ${rubro}. Tamaño: ${size}.`
+      );
+
+      if (tipoPlan) bloques.push(`Tipo de plan: ${tipoPlan}.`);
+      if (materia) bloques.push(`Materia: ${materia}.`);
+      if (ubicacion) bloques.push(`Ubicación referencial: ${ubicacion}.`);
+      if (area || otraArea) bloques.push(`Área de intervención: ${[area, otraArea].filter(Boolean).join(" / ")}.`);
+      if (linea) bloques.push(`Línea priorizada: ${linea}.`);
+      if (producto || precio || materiaPrima) {
+        bloques.push(
+          `Producto principal referencial: ${[
+            producto ? `producto "${producto}"` : "",
+            precio ? `precio ${precio}` : "",
+            materiaPrima ? `materia prima "${materiaPrima}"` : "",
+          ]
+            .filter(Boolean)
+            .join(", ")}.`
+        );
+      }
+
+      if (herramientas.length) {
+        bloques.push(`Herramientas empleadas: ${herramientas.join(", ")}.`);
+      }
+
+      if (enfoque || otroEnfoque) {
+        bloques.push(`Enfoque de solución: ${[enfoque, otroEnfoque].filter(Boolean).join(" / ")}.`);
+      }
+
+      bloques.push(`Mejora planteada: ${mejora || "sin descripción registrada"}.`);
+
+      if (implementacion) {
+        bloques.push(`Implementación de la mejora: ${implementacion}.`);
+      }
+
+      if (perspectivas) {
+        bloques.push(`Perspectivas de implementación: ${perspectivas}.`);
+      }
+
+      if (causasArray.length) {
+        bloques.push(
+          `Causas raíz REGISTRADAS EN LA BASE DE DATOS (texto literal, no interpretar): ${causasTexto}`
+        );
+      }
+
+      if (official?.id_empresa && official.id_empresa !== codigo) {
+        bloques.push(`Referencia interna adicional: ID plataforma ${official.id_empresa}.`);
+      }
+
+      bloques.push(
+        `Privacidad: no revelar nombre real, razón social, NIT, dirección, web ni redes sociales de esta empresa.`
+      );
+
+      return bloques.join(" ");
     })
     .join("\n\n");
 }
@@ -820,8 +949,13 @@ EN SU LUGAR:
 - Si la pregunta pide ejemplos de empresas, usa la información del contexto que recibes,
   y si no hay un caso exacto, crea un ejemplo ilustrativo y realista basado en buenas prácticas,
   dejando claro que es un ejemplo ilustrativo, pero SIN mencionar documentos ni bases de datos.
-- Puedes usar nombres de empresas que aparezcan en el contexto (por ejemplo, del listado de empresas),
-  pero no inventes datos numéricos exactos (ventas, montos, etc.) salvo que sea necesario y claramente aproximado.
+- NO puedes revelar nombres reales de empresas, razones sociales, NIT, direcciones, páginas web,
+  redes sociales ni otros identificadores sensibles.
+- Si el usuario pregunta por empresas específicas, responde usando alias anónimos
+  como "Empresa E-01" o agrupando por rubro, gestión, tamaño o tipo de mejora.
+- Sí puedes explicar patrones, tipos de mejora, causas raíz, herramientas utilizadas,
+  enfoques de solución, implementaciones y aprendizajes comparativos.
+- No inventes datos numéricos exactos (ventas, montos, etc.) salvo que sea necesario y claramente aproximado.
 - Sé claro, conciso y enfocado en ayudar al usuario a tomar decisiones o entender el concepto.
 `;
 

@@ -8,6 +8,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -131,39 +132,46 @@ export async function POST(req: NextRequest) {
     }
 
 
-    // 2) leer Ishikawa final (Etapa 4) para obtener roots oficiales
-    const ishResult = await loadLatestValidatedArtifact({
-      userId: user.userId,
-      preferredChatId: chatId,
-      stage: 4,
-      artifactType: "ishikawa_final",
-      periodKey: PERIOD_KEY,
-    });
-
-    if (!ishResult.ok) {
-      return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishResult.error);
-    }
-
-    const ishFinal = ishResult.row;
-
-
-    const rootsOfficial: string[] = Array.isArray(ishFinal?.payload?.roots)
-      ? ishFinal.payload.roots.map((x: any) => String(x).trim()).filter(Boolean)
+    // 2) Resolver raíces oficiales para Pareto
+    // Primero usamos las raíces congeladas dentro del propio estado de Pareto.
+    // Solo si no existen, hacemos fallback a Ishikawa final validado.
+    const rootsFromState: string[] = Array.isArray(s?.roots)
+      ? s.roots.map((x: unknown) => String(x).trim()).filter(Boolean)
       : [];
 
-    // ✅ mínimo roots: usa minRootCandidates del Ishikawa final si existe; si no, usa fallback 10
-    const minRoots =
-      typeof ishFinal?.payload?.minRootCandidates === "number"
-        ? ishFinal.payload.minRootCandidates
-        : 10;
+    let rootsOfficial: string[] = rootsFromState;
+    let ishikawaUpdatedAt: string | null = null;
 
-    if (rootsOfficial.length < minRoots) {
+    if (rootsOfficial.length === 0) {
+      const ishResult = await loadLatestValidatedArtifact({
+        userId: user.userId,
+        preferredChatId: chatId,
+        stage: 4,
+        artifactType: "ishikawa_final",
+        periodKey: PERIOD_KEY,
+      });
+
+      if (!ishResult.ok) {
+        return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishResult.error);
+      }
+
+      const ishFinal = ishResult.row;
+      ishikawaUpdatedAt = ishFinal?.updated_at ?? null;
+
+      rootsOfficial = Array.isArray(ishFinal?.payload?.roots)
+        ? ishFinal.payload.roots.map((x: unknown) => String(x).trim()).filter(Boolean)
+        : [];
+    }
+
+    if (rootsOfficial.length === 0) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: `Etapa 4 aún no tiene causas raíz suficientes (${rootsOfficial.length}/${minRoots}) para iniciar Pareto.`,
+        message: "No pude resolver la lista base de causas raíz para validar Pareto.",
       });
     }
+
+    
 
     // 3) Validaciones Pareto (MVP)
     const selectedRoots: string[] = Array.isArray(s?.selectedRoots) ? s.selectedRoots.map((x: any) => String(x).trim()).filter(Boolean) : [];
@@ -251,7 +259,7 @@ export async function POST(req: NextRequest) {
       criticalRoots,
       note: "El cálculo 80/20 se realizó en Excel (herramienta de la materia).",
       validatedAt: new Date().toISOString(),
-      fromStage4: { rootsCount: rootsOfficial.length, ishikawaUpdatedAt: ishFinal?.updated_at ?? null },
+      fromStage4: { rootsCount: rootsOfficial.length, ishikawaUpdatedAt },
     };
 
     // 5) Evaluación pedagógica IA (rúbrica con ponderaciones) - NO bloquea avance si falla
@@ -398,6 +406,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const next = await advancePlanStage({
+      userId: user.userId,
+      chatId: chatId ?? stateChatId ?? null,
+      fromStage: STAGE,
+    });
+
+
     return NextResponse.json(
       {
         ok: true,
@@ -407,6 +422,7 @@ export async function POST(req: NextRequest) {
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
         ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+        next,
       },
       { status: 200 }
     );

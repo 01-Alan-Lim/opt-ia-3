@@ -7,6 +7,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -259,6 +260,12 @@ ${JSON.stringify(
       }
     }
 
+    const next = await advancePlanStage({
+      userId: user.userId,
+      chatId: chatId,
+      fromStage: STAGE,
+    });
+
     return NextResponse.json({
       ok: true,
       valid: true,
@@ -268,7 +275,7 @@ ${JSON.stringify(
       progressPercent,
       evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
       ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
-      next: { stage: 10 },
+      next,
     });
   } catch (e: unknown) {
     const msg = (e as any)?.message ?? "INTERNAL";

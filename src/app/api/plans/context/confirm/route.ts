@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -131,12 +132,19 @@ export async function POST(req: Request) {
       );
     }
 
+    const next = await advancePlanStage({
+      userId: authed.userId,
+      chatId: saved.chat_id ?? null,
+      fromStage: 0,
+    });
+
     return ok({
       status: saved.status,
       version: saved.version,
       chatId: saved.chat_id,
       contextJson: saved.context_json,
       contextText: saved.context_text,
+      next,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "INTERNAL";

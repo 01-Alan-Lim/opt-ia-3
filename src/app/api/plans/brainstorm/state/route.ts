@@ -15,7 +15,7 @@ const PERIOD_KEY = getPeriodKeyLaPaz();
 
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
-  state: z.record(z.string(), z.any()),
+  state: z.record(z.string(), z.unknown()),
 });
 
 const QuerySchema = z.object({
@@ -211,6 +211,28 @@ export async function POST(req: NextRequest) {
       return fail(access.status, access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message);
     }
 
+    const existing = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json")
+      .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
+      .eq("stage", STAGE)
+      .maybeSingle();
+
+    if (existing.error) {
+      return fail(500, "DB_ERROR", "No se pudo leer el estado actual.", existing.error);
+    }
+
+    const prev =
+      existing.data?.state_json && typeof existing.data.state_json === "object"
+        ? existing.data.state_json
+        : {};
+
+    const mergedState = {
+      ...prev,
+      ...state,
+    };
+
     const { error } = await supabaseServer
       .from("plan_stage_states")
       .upsert(
@@ -218,7 +240,7 @@ export async function POST(req: NextRequest) {
           user_id: user.userId,
           chat_id: chatId,
           stage: STAGE,
-          state_json: state,
+          state_json: mergedState,
         },
         { onConflict: "user_id,chat_id,stage" }
       );

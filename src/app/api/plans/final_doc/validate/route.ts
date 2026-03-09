@@ -62,6 +62,13 @@ export async function POST(req: NextRequest) {
         valid: true,
         message: "Etapa 10 ya fue cerrada con una versión final.",
         finalArtifactId: alreadyFinal.id,
+        next: {
+          advanced: false,
+          fromStage: STAGE,
+          toStage: null,
+          persisted: false,
+          reason: "FINAL_STAGE",
+        },
       });
     }
 
@@ -231,7 +238,13 @@ export async function POST(req: NextRequest) {
         message:
           "✅ Ya se recepcionó tu versión final del Plan de Mejora. Gracias por el trabajo del semestre. Te irá muy bien en lo que sigue.",
         final: { officialVersion: versionNumber, artifactId: finalRow.id, score: scoreToSave },
-        next: { stage: null },
+        next: {
+          advanced: false,
+          fromStage: STAGE,
+          toStage: null,
+          persisted: false,
+          reason: "FINAL_STAGE",
+        },
       });
     }
 

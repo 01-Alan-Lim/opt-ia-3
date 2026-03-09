@@ -10,6 +10,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 import { loadLatestStageStateByChat, loadLatestValidatedArtifact} from "@/lib/plan/stageValidation";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -296,6 +297,12 @@ ${JSON.stringify(
       }
     }
 
+    const next = await advancePlanStage({
+      userId: user.userId,
+      chatId: chatId,
+      fromStage: STAGE,
+    });
+
     return NextResponse.json(
       {
         ok: true,
@@ -305,6 +312,7 @@ ${JSON.stringify(
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
         ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+        next,
       },
       { status: 200 }
     );

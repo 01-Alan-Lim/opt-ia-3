@@ -28,7 +28,18 @@ function extractJsonSafe(text: string) {
 export async function POST(req: NextRequest) {
   try {
     await requireUser(req);
-    await assertChatAccess(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: gate.reason,
+          message: gate.message,
+        },
+        { status: 403 }
+      );
+    }
 
     const body = await req.json().catch(() => null);
     if (!body?.studentMessage || !body?.fodaState) {

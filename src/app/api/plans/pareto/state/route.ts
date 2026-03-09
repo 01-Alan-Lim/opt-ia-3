@@ -12,9 +12,36 @@ const STAGE = 5;
 const LEGACY_ARTIFACT_TYPE = "pareto_wizard_state";
 const PERIOD_KEY = getPeriodKeyLaPaz();
 
+const PARETO_STEP_VALUES = [
+  "select_roots",
+  "define_criteria",
+  "set_weights",
+  "excel_work",
+  "collect_critical",
+  "done",
+] as const;
+
+type ParetoStep = (typeof PARETO_STEP_VALUES)[number];
+
+type ParetoCriterion = {
+  id: string;
+  name: string;
+  weight?: number;
+};
+
+type ParetoState = {
+  roots: string[];
+  selectedRoots: string[];
+  criteria: ParetoCriterion[];
+  criticalRoots: string[];
+  minSelected: number;
+  maxSelected: number;
+  step: ParetoStep;
+};
+
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
-  state: z.record(z.string(), z.any()),
+  state: z.unknown(),
 });
 
 const QuerySchema = z.object({
@@ -23,6 +50,167 @@ const QuerySchema = z.object({
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
   return NextResponse.json({ ok: false, code, message, detail }, { status });
+}
+
+function hasOwn(obj: unknown, key: string): boolean {
+  return typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function asStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+
+  return out;
+}
+
+function normalizeWeight(input: unknown): number | undefined {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return undefined;
+  if (n < 1 || n > 10) return undefined;
+  return n;
+}
+
+function defaultCriterionName(index: number): string {
+  if (index === 0) return "Impacto";
+  if (index === 1) return "Frecuencia";
+  return "Controlabilidad";
+}
+
+function normalizeCriteria(input: unknown): ParetoCriterion[] {
+  const raw = Array.isArray(input) ? input : [];
+
+  const cleaned = raw
+    .map((item, index) => {
+      const record =
+        typeof item === "object" && item !== null
+          ? (item as Record<string, unknown>)
+          : {};
+
+      const name = String(record.name ?? "").trim();
+      const id = String(record.id ?? "").trim() || crypto.randomUUID();
+      const weight = normalizeWeight(record.weight);
+
+      return {
+        id,
+        name: name || defaultCriterionName(index),
+        ...(weight !== undefined ? { weight } : {}),
+      };
+    })
+    .filter((item) => item.name.length > 0);
+
+  const out = cleaned.slice(0, 3);
+
+  while (out.length < 3) {
+    const index = out.length;
+    out.push({
+      id: crypto.randomUUID(),
+      name: defaultCriterionName(index),
+    });
+  }
+
+  return out;
+}
+
+function normalizeStep(input: unknown): ParetoStep {
+  const raw = String(input ?? "").trim();
+
+  if ((PARETO_STEP_VALUES as readonly string[]).includes(raw)) {
+    return raw as ParetoStep;
+  }
+
+  const legacyMap: Record<string, ParetoStep> = {
+    init: "select_roots",
+    start: "select_roots",
+    roots: "select_roots",
+    select: "select_roots",
+    criteria: "define_criteria",
+    define: "define_criteria",
+    weights: "set_weights",
+    weight: "set_weights",
+    excel: "excel_work",
+    critical: "collect_critical",
+    critical_roots: "collect_critical",
+    review: "collect_critical",
+    finished: "done",
+    final: "done",
+  };
+
+  return legacyMap[raw] ?? "select_roots";
+}
+
+function normalizePositiveInt(input: unknown, fallback: number): number {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return fallback;
+  const rounded = Math.round(n);
+  return rounded > 0 ? rounded : fallback;
+}
+
+function normalizeParetoState(input: unknown): ParetoState {
+  const source =
+    typeof input === "object" && input !== null
+      ? (input as Record<string, unknown>)
+      : {};
+
+  const roots = dedupeStrings(asStringArray(source.roots));
+  const minSelected = normalizePositiveInt(source.minSelected, 10);
+  const maxSelectedRaw = normalizePositiveInt(source.maxSelected, 15);
+  const maxSelected = Math.max(minSelected, maxSelectedRaw);
+
+  const selectedRootsRaw = asStringArray(source.selectedRoots);
+  const selectedRootsBase =
+    selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected);
+
+  const rootsSet = new Set(roots.map((item) => item.toLowerCase()));
+  const selectedRoots = dedupeStrings(
+    selectedRootsBase.filter((item) => rootsSet.size === 0 || rootsSet.has(item.toLowerCase()))
+  ).slice(0, maxSelected);
+
+  const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
+  const criticalRoots = dedupeStrings(asStringArray(source.criticalRoots)).filter((item) =>
+    selectedSet.size === 0 ? true : selectedSet.has(item.toLowerCase())
+  );
+
+  return {
+    roots,
+    selectedRoots,
+    criteria: normalizeCriteria(source.criteria),
+    criticalRoots,
+    minSelected,
+    maxSelected,
+    step: normalizeStep(source.step),
+  };
+}
+
+function mergeParetoState(baseRaw: unknown, incomingRaw: unknown): ParetoState {
+  const base = normalizeParetoState(baseRaw);
+  const incoming =
+    typeof incomingRaw === "object" && incomingRaw !== null
+      ? (incomingRaw as Record<string, unknown>)
+      : {};
+
+  return normalizeParetoState({
+    roots: hasOwn(incoming, "roots") ? incoming.roots : base.roots,
+    selectedRoots: hasOwn(incoming, "selectedRoots") ? incoming.selectedRoots : base.selectedRoots,
+    criteria: hasOwn(incoming, "criteria") ? incoming.criteria : base.criteria,
+    criticalRoots: hasOwn(incoming, "criticalRoots") ? incoming.criticalRoots : base.criticalRoots,
+    minSelected: hasOwn(incoming, "minSelected") ? incoming.minSelected : base.minSelected,
+    maxSelected: hasOwn(incoming, "maxSelected") ? incoming.maxSelected : base.maxSelected,
+    step: hasOwn(incoming, "step") ? incoming.step : base.step,
+  });
 }
 
 async function assertChatOwner(userId: string, chatId: string) {
@@ -105,7 +293,7 @@ export async function GET(req: NextRequest) {
           ok: true,
           exists: true,
           chatId: stateRow.chat_id ?? null,
-          state: stateRow.state_json,
+          state: normalizeParetoState(stateRow.state_json),
           updatedAt: stateRow.updated_at ?? null,
           source: "stage_state",
         },
@@ -159,14 +347,14 @@ export async function GET(req: NextRequest) {
         ok: true,
         exists: true,
         chatId: legacyRow.chat_id ?? null,
-        state: legacyRow.payload,
+        state: normalizeParetoState(legacyRow.payload),
         updatedAt: legacyRow.updated_at ?? null,
         source: "legacy_artifact",
       },
       { status: 200 }
     );
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "INTERNAL";
     if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
     return fail(500, "INTERNAL", "Error interno.", msg);
   }
@@ -194,6 +382,20 @@ export async function POST(req: NextRequest) {
       return fail(access.status, access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message);
     }
 
+    const existing = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json")
+      .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
+      .eq("stage", STAGE)
+      .maybeSingle();
+
+    if (existing.error) {
+      return fail(500, "DB_ERROR", "No se pudo leer el estado actual de Pareto.", existing.error);
+    }
+
+    const mergedState = mergeParetoState(existing.data?.state_json ?? null, state);
+
     const { error } = await supabaseServer
       .from("plan_stage_states")
       .upsert(
@@ -201,16 +403,16 @@ export async function POST(req: NextRequest) {
           user_id: user.userId,
           chat_id: chatId,
           stage: STAGE,
-          state_json: state,
+          state_json: mergedState,
         },
         { onConflict: "user_id,chat_id,stage" }
       );
 
     if (error) return fail(500, "DB_ERROR", "No se pudo guardar el estado de Pareto (Etapa 5).", error);
 
-    return NextResponse.json({ ok: true, saved: true }, { status: 200 });
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
+    return NextResponse.json({ ok: true, saved: true, state: mergedState }, { status: 200 });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "INTERNAL";
     if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
     return fail(500, "INTERNAL", "Error interno.", msg);
   }

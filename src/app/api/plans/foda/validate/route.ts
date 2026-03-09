@@ -7,6 +7,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -191,6 +192,12 @@ export async function POST(req: NextRequest) {
       return fail(500, "DB_ERROR", "No se pudo guardar el análisis FODA.", finalErr);
     }
 
+    const next = await advancePlanStage({
+      userId,
+      chatId: effectiveChatId,
+      fromStage: STAGE,
+    });
+
 
     // 4) Evaluación IA (rúbrica estándar que definiste)
     const model = getGeminiModel();
@@ -250,12 +257,14 @@ ${JSON.stringify(finalPayload, null, 2)}
       return NextResponse.json(
         {
           ok: true,
+          valid: true,
           validated: true,
           score: evaluation.total_score,
           label: evaluation.total_label,
           feedback: evaluation.feedback,
           warning: "FODA validado, pero no se pudo insertar la evaluación.",
           warningDetail: insertEval.error,
+          next,
         },
         { status: 200 }
       );
@@ -264,10 +273,12 @@ ${JSON.stringify(finalPayload, null, 2)}
     return NextResponse.json(
       {
         ok: true,
+        valid: true,
         validated: true,
         score: evaluation.total_score,
         label: evaluation.total_label,
         feedback: evaluation.feedback,
+        next,
       },
       { status: 200 }
     );

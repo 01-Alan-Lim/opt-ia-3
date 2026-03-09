@@ -7,6 +7,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -287,12 +288,22 @@ ${JSON.stringify(finalPayload, null, 2)}
       }
     }
 
+    const next = await advancePlanStage({
+      userId,
+      chatId: effectiveChatId,
+      fromStage: STAGE,
+    });
+
+
+
     return NextResponse.json({
       ok: true,
+      valid: true,
       artifactId: finalArtifactId,
       score: evaluation.total_score,
       label: evaluation.total_label,
       feedback: evaluation.feedback,
+      next,
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, message: e.message || "Error validando Etapa 3" }, { status: 500 });

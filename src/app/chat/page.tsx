@@ -357,6 +357,107 @@ export default function ChatPage() {
       | "done";
   };
 
+  const PARETO_STEPS = [
+    "select_roots",
+    "define_criteria",
+    "set_weights",
+    "excel_work",
+    "collect_critical",
+    "done",
+  ] as const;
+
+  function normalizeParetoStringArray(input: unknown): string[] {
+    if (!Array.isArray(input)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+
+    for (const item of input) {
+      const value = String(item ?? "").trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+
+    return out;
+  }
+
+  function normalizeParetoStateClient(input: unknown): ParetoState | null {
+    if (!input || typeof input !== "object") return null;
+
+    const source = input as Record<string, unknown>;
+
+    const roots = normalizeParetoStringArray(source.roots);
+    const minSelectedRaw = Number(source.minSelected);
+    const maxSelectedRaw = Number(source.maxSelected);
+
+    const minSelected = Number.isFinite(minSelectedRaw) && minSelectedRaw > 0 ? Math.round(minSelectedRaw) : 10;
+    const maxSelectedBase = Number.isFinite(maxSelectedRaw) && maxSelectedRaw > 0 ? Math.round(maxSelectedRaw) : 15;
+    const maxSelected = Math.max(minSelected, maxSelectedBase);
+
+    const selectedRootsRaw = normalizeParetoStringArray(source.selectedRoots);
+    const selectedRoots = (selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected)).slice(0, maxSelected);
+
+    const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
+    const criticalRoots = normalizeParetoStringArray(source.criticalRoots).filter((item) =>
+      selectedSet.size === 0 ? true : selectedSet.has(item.toLowerCase())
+    );
+
+    const rawCriteria = Array.isArray(source.criteria) ? source.criteria : [];
+    const criteria: ParetoCriterion[] = rawCriteria
+      .map((item, index) => {
+        const record =
+          typeof item === "object" && item !== null
+            ? (item as Record<string, unknown>)
+            : {};
+
+        const name = String(record.name ?? "").trim();
+        const id = String(record.id ?? "").trim() || crypto.randomUUID();
+        const weightRaw = Number(record.weight);
+        const weight =
+          Number.isFinite(weightRaw) && weightRaw >= 1 && weightRaw <= 10
+            ? weightRaw
+            : undefined;
+
+        const fallbackName =
+          index === 0 ? "Impacto" : index === 1 ? "Frecuencia" : "Controlabilidad";
+
+        return {
+          id,
+          name: name || fallbackName,
+          ...(weight !== undefined ? { weight } : {}),
+        };
+      })
+      .filter((item) => item.name.length > 0)
+      .slice(0, 3);
+
+    while (criteria.length < 3) {
+      const index = criteria.length;
+      criteria.push({
+        id: crypto.randomUUID(),
+        name: index === 0 ? "Impacto" : index === 1 ? "Frecuencia" : "Controlabilidad",
+      });
+    }
+
+    const rawStep = String(source.step ?? "").trim();
+    const step = (PARETO_STEPS as readonly string[]).includes(rawStep)
+      ? (rawStep as ParetoState["step"])
+      : "select_roots";
+
+    return {
+      roots,
+      selectedRoots,
+      criteria,
+      criticalRoots,
+      minSelected,
+      maxSelected,
+      step,
+    };
+  }
+
+
+
   type ObjectivesState = {
     generalObjective: string;
     specificObjectives: string[];
@@ -1336,9 +1437,6 @@ export default function ChatPage() {
   }, [ready, authenticated, mode, chatId]);
 
 
-
-
-  // 2.x Cargar estado Improvement (Etapa 7)
   useEffect(() => {
     if (!ready || !authenticated) return;
     if (mode !== "plan_mejora") return;
@@ -1347,17 +1445,11 @@ export default function ChatPage() {
     let active = true;
 
     (async () => {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch(`/api/plans/improvement/state?chatId=${encodeURIComponent(chatId)}`, {
-        headers: { ...authHeaders },
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
+      const res = await getImprovementState(chatId);
       if (!active) return;
-      if (!ok) return;
+      if (!res.ok) return;
 
-      const row = json?.data?.row ?? json?.row ?? null;
+      const row = res.payload?.row ?? null;
       const stateJson = row?.state_json ?? null;
 
       if (stateJson && typeof stateJson === "object") {
@@ -1372,6 +1464,7 @@ export default function ChatPage() {
     };
   }, [ready, authenticated, mode, chatId]);
 
+
   useEffect(() => {
     if (!ready || !authenticated) return;
     if (mode !== "plan_mejora") return;
@@ -1380,17 +1473,11 @@ export default function ChatPage() {
     let active = true;
 
     (async () => {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch(`/api/plans/planning/state?chatId=${encodeURIComponent(chatId)}`, {
-        headers: { ...authHeaders },
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
+      const res = await getPlanningState(chatId);
       if (!active) return;
-      if (!ok) return;
+      if (!res.ok) return;
 
-      const row = json?.data?.row ?? json?.row ?? null;
+      const row = res.payload?.row ?? null;
       const stateJson = row?.state_json ?? null;
 
       if (stateJson && typeof stateJson === "object") {
@@ -1405,6 +1492,8 @@ export default function ChatPage() {
     };
   }, [ready, authenticated, mode, chatId]);
 
+
+
   useEffect(() => {
     if (!ready || !authenticated) return;
     if (mode !== "plan_mejora") return;
@@ -1413,17 +1502,11 @@ export default function ChatPage() {
     let active = true;
 
     (async () => {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch(
-        `/api/plans/progress/state?chatId=${encodeURIComponent(chatId)}`,
-        { headers: { ...authHeaders } }
-      );
-
-      const json = await res.json().catch(() => null);
+      const res = await getProgressState(chatId);
       if (!active) return;
-      if (!res.ok || json?.ok === false) return;
+      if (!res.ok) return;
 
-      const row = json?.data?.row ?? null;
+      const row = res.payload?.row ?? null;
       const stateJson = row?.state_json ?? null;
 
       if (stateJson && typeof stateJson === "object") {
@@ -1576,6 +1659,36 @@ export default function ChatPage() {
         console.warn("No se pudo guardar en storage:", e);
       }
     }, [authenticated, chatId, messages, storageKeyChat, storageKeyMsgs]);
+
+
+  // -----------------------------
+
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+    if (!chatId) return;
+
+    let active = true;
+
+    (async () => {
+      const res = await getFinalDocState(chatId);
+      if (!active) return;
+      if (!res.ok) return;
+
+      const row = res.payload?.row ?? null;
+      const stateJson = row?.state_json ?? null;
+
+      if (stateJson && typeof stateJson === "object") {
+        setFinalDocState(stateJson as FinalDocState);
+      } else {
+        setFinalDocState(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, chatId]);
 
   // -----------------------------
   // Loading state
@@ -2326,6 +2439,22 @@ export default function ChatPage() {
   // -----------------------------
   // API helpers (fetch backend)
   // -----------------------------
+
+  async function getActiveAdvisorStage() {
+    const authHeaders = await getAuthHeaders();
+
+    const res = await fetch("/api/plans/active-stage", {
+      headers: { ...authHeaders },
+    });
+
+    const json = await res.json().catch(() => null);
+    const isOk = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+
+    return { ok: isOk, payload };
+  }
+
+
   async function getAuthHeaders(): Promise<Record<string, string>> {
     if (accessToken) return { Authorization: `Bearer ${accessToken}` };
 
@@ -2661,8 +2790,12 @@ export default function ChatPage() {
 
     const json = await res.json().catch(() => null);
     const ok = res.ok && json?.ok !== false;
-    const data = json?.data ?? json;
-    return { ok, data, status: res.status };
+
+    return {
+      ok,
+      status: res.status,
+      ...(json ?? {}),
+    };
   }
 
   async function handleSendGeneral(text: string) {
@@ -3169,29 +3302,35 @@ export default function ChatPage() {
   }
 
   async function saveParetoState(state: ParetoState, chatId?: string | null) {
-    if (!accessToken) {
-      console.warn("[PARETO] Guardado sin accessToken. Se omite.");
-      return { ok: false };
-    }
+  if (!accessToken) {
+    console.warn("[PARETO] Guardado sin accessToken. Se omite.");
+    return { ok: false };
+  }
 
-    const effectiveChatId = chatId ?? chatIdRef.current ?? null;
-    if (!effectiveChatId) {
-      console.warn("[PARETO] No hay chatId para guardar state. Se omite.");
-      return { ok: false };
-    }
+  const effectiveChatId = chatId ?? chatIdRef.current ?? null;
+  if (!effectiveChatId) {
+    console.warn("[PARETO] No hay chatId para guardar state. Se omite.");
+    return { ok: false };
+  }
 
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/pareto/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ state, chatId: effectiveChatId }),
-    });
+  const normalizedState = normalizeParetoStateClient(state);
+  if (!normalizedState) {
+    console.warn("[PARETO] State inválido antes de guardar.");
+    return { ok: false };
+  }
 
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch("/api/plans/pareto/state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders },
+    body: JSON.stringify({ state: normalizedState, chatId: effectiveChatId }),
+  });
 
-    if (!ok) console.warn("[PARETO] save state failed", { status: res.status, json });
-    return { ok };
+  const json = await res.json().catch(() => null);
+  const ok = res.ok && json?.ok !== false;
+
+  if (!ok) console.warn("[PARETO] save state failed", { status: res.status, json });
+  return { ok };
   }
 
   async function callParetoAssistant(input: {
@@ -3206,7 +3345,7 @@ export default function ChatPage() {
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({
         studentMessage: input.studentMessage,
-        paretoState: input.paretoState,
+        paretoState: normalizeParetoStateClient(input.paretoState),
         caseContext: input.caseContext ?? null,
         recentHistory: buildRecentHistoryForAssistant(10),
       }),
@@ -3255,6 +3394,46 @@ export default function ChatPage() {
     }
 
 
+    async function saveGenericStageState(
+      stage: number,
+      stateJson: Record<string, unknown>,
+      effectiveChatId?: string | null
+    ) {
+      if (!accessToken) {
+        console.warn(`[STAGE ${stage}] Guardado sin accessToken. Se omite.`);
+        return { ok: false as const, payload: null };
+      }
+
+      const authHeaders = await getAuthHeaders();
+      const cid = effectiveChatId ?? chatIdRef.current ?? null;
+
+      if (!cid) {
+        console.warn(`[STAGE ${stage}] No hay chatId para guardar state. Se omite.`);
+        return { ok: false as const, payload: null };
+      }
+
+      const res = await fetch("/api/plans/stage-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({
+          chatId: cid,
+          stage,
+          stateJson,
+        }),
+      });
+
+      const json = await res.json().catch(() => null);
+      const ok = res.ok && json?.ok !== false;
+      const payload = json?.data ?? json;
+
+      if (!ok) {
+        console.error(`[STAGE ${stage}] save state failed`, { status: res.status, json });
+      }
+
+      return { ok, payload };
+    }
+
+
     async function getResumeGate(targetStage: number, sourceChatId?: string | null) {
       const authHeaders = await getAuthHeaders();
 
@@ -3297,43 +3476,13 @@ export default function ChatPage() {
 
 
   async function getObjectivesState(effectiveChatId?: string | null) {
-    const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
     if (!cid) return { ok: false as const, payload: null };
-
-    const res = await fetch(`/api/plans/objectives/state?chatId=${encodeURIComponent(cid)}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return getGenericStageState(6, { chatId: cid });
   }
 
   async function saveObjectivesState(state: ObjectivesState, effectiveChatId?: string | null) {
-    if (!accessToken) {
-      console.warn("[OBJECTIVES] Guardado sin accessToken. Se omite.");
-      return { ok: false as const };
-    }
-
-    const cid = effectiveChatId ?? chatIdRef.current ?? null;
-    if (!cid) {
-      console.warn("[OBJECTIVES] No hay chatId para guardar state. Se omite.");
-      return { ok: false as const };
-    }
-
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/objectives/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid, stateJson: state }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    if (!ok) console.error("[OBJECTIVES] save state failed", { status: res.status, json });
-    return { ok: ok as boolean };
+    return saveGenericStageState(6, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
   async function callObjectivesAssistant(input: {
@@ -3379,43 +3528,13 @@ export default function ChatPage() {
   }
 
   async function getImprovementState(effectiveChatId?: string | null) {
-    const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
     if (!cid) return { ok: false as const, payload: null };
-
-    const res = await fetch(`/api/plans/improvement/state?chatId=${encodeURIComponent(cid)}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return getGenericStageState(7, { chatId: cid });
   }
 
   async function saveImprovementState(state: ImprovementState, effectiveChatId?: string | null) {
-    if (!accessToken) {
-      console.warn("[IMPROVEMENT] Guardado sin accessToken. Se omite.");
-      return { ok: false as const };
-    }
-
-    const cid = effectiveChatId ?? chatIdRef.current ?? null;
-    if (!cid) {
-      console.warn("[IMPROVEMENT] No hay chatId para guardar state. Se omite.");
-      return { ok: false as const };
-    }
-
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/improvement/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid, stateJson: state }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    if (!ok) console.error("[IMPROVEMENT] save state failed", { status: res.status, json });
-    return { ok: ok as boolean };
+    return saveGenericStageState(7, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
   async function callImprovementAssistant(input: {
@@ -3461,38 +3580,13 @@ export default function ChatPage() {
   }
 
   async function getPlanningState(effectiveChatId?: string | null) {
-    const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
     if (!cid) return { ok: false as const, payload: null };
-
-    const res = await fetch(`/api/plans/planning/state?chatId=${encodeURIComponent(cid)}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return getGenericStageState(8, { chatId: cid });
   }
 
   async function savePlanningState(state: PlanningState, effectiveChatId?: string | null) {
-    if (!accessToken) {
-      console.warn("[PLANNING] Guardado sin accessToken. Se omite.");
-      return { ok: false as const };
-    }
-
-    const authHeaders = await getAuthHeaders();
-    const cid = effectiveChatId ?? chatIdRef.current ?? null;
-
-    const res = await fetch("/api/plans/planning/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid, stateJson: state }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return saveGenericStageState(8, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
   async function callPlanningAssistant(args: {
@@ -3537,17 +3631,7 @@ export default function ChatPage() {
   }
 
   async function saveProgressState(state: ProgressState, effectiveChatId?: string | null) {
-    const authHeaders = await getAuthHeaders();
-    const cid = effectiveChatId ?? chatIdRef.current ?? null;
-
-    const res = await fetch("/api/plans/progress/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid, stateJson: state }),
-    });
-
-    const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json };
+    return saveGenericStageState(9, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
   async function callProgressAssistant(args: {
@@ -3586,21 +3670,23 @@ export default function ChatPage() {
     return { ok: res.ok && json?.ok !== false, payload: json };
   }
 
+  async function getProgressState(effectiveChatId?: string | null) {
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) return { ok: false as const, payload: null };
+    return getGenericStageState(9, { chatId: cid });
+  }
+
+  async function getFinalDocState(effectiveChatId?: string | null) {
+    const cid = effectiveChatId ?? chatIdRef.current ?? null;
+    if (!cid) return { ok: false as const, payload: null };
+    return getGenericStageState(10, { chatId: cid });
+  }
+
   // ================================
   // ETAPA 10: helpers API
   // ================================
   async function saveFinalDocState(state: FinalDocState, effectiveChatId?: string | null) {
-    const authHeaders = await getAuthHeaders();
-    const cid = effectiveChatId ?? chatIdRef.current ?? null;
-
-    const res = await fetch("/api/plans/final_doc/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid, stateJson: state }),
-    });
-
-    const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json };
+    return saveGenericStageState(10, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
   async function callFinalDocAssistant(args: {
@@ -3687,220 +3773,517 @@ export default function ChatPage() {
   // -----------------------------
 
   async function restoreLatestAdvisorStageToNewChat(effectiveChatId: string) {
+    const resolved = await getActiveAdvisorStage();
 
-    // 10
-    const s10 = await getGenericStageState(10, { latest: true });
-    const s10Row = s10.ok ? s10.payload?.row ?? null : null;
-    const s10ChatId =
-      s10Row && typeof s10Row.chat_id === "string" ? (s10Row.chat_id as string) : null;
-    const prog = s10Row?.state_json ? (s10Row.state_json as ProgressState) : null;
-
-    if (prog && s10ChatId) {
-      const resumeGate10 = await getResumeGate(10, s10ChatId);
-
-      if (resumeGate10.ok && resumeGate10.payload?.allowed) {
-        setProgressState(prog);
-        await saveProgressState(prog, effectiveChatId);
-
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 10 (Reporte de Avances)**.\n\n" +
-          "👉 Continúa registrando avances, evidencias y resultados parciales/finales.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+    if (!resolved.ok || !resolved.payload?.found) {
+      return false;
     }
 
-    // 9
-    const s9 = await getGenericStageState(9, { latest: true });
-    const s9Row = s9.ok ? s9.payload?.row ?? null : null;
-    const s9ChatId =
-      s9Row && typeof s9Row.chat_id === "string" ? (s9Row.chat_id as string) : null;
-    const plan9 = s9Row?.state_json ? (s9Row.state_json as PlanningState) : null;
+    const stage = resolved.payload.stage as number;
+    const stateJson = (resolved.payload.stateJson ?? null) as Record<string, unknown> | null;
 
-    if (plan9 && s9ChatId) {
-      const resumeGate9 = await getResumeGate(9, s9ChatId);
+    if (stage === 10 && stateJson) {
+      const final10 = stateJson as FinalDocState;
+      setFinalDocState(final10);
+      await saveFinalDocState(final10, effectiveChatId);
 
-      if (resumeGate9.ok && resumeGate9.payload?.allowed) {
-        setPlanningState(plan9);
-        await savePlanningState(plan9, effectiveChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 10 (Documento final)**.\n\n" +
+        "👉 Continúa con tu documento, sube la versión correspondiente o hazme consultas para mejorarlo.";
 
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 9 (Planificación / Cronograma)**.\n\n" +
-          "👉 Continúa armando el cronograma, responsables, recursos y tiempos.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 8
-    const s8 = await getGenericStageState(8, { latest: true });
-    const s8Row = s8.ok ? s8.payload?.row ?? null : null;
-    const s8ChatId =
-      s8Row && typeof s8Row.chat_id === "string" ? (s8Row.chat_id as string) : null;
-    const impl = s8Row?.state_json ? (s8Row.state_json as ImprovementState) : null;
+    if (stage === 9 && stateJson) {
+      const progress9 = stateJson as ProgressState;
+      setProgressState(progress9);
+      await saveProgressState(progress9, effectiveChatId);
 
-    if (impl && s8ChatId) {
-      const resumeGate8 = await getResumeGate(8, s8ChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 9 (Reporte de avances)**.\n\n" +
+        "👉 Continúa registrando avances, evidencias y resultados parciales o finales.";
 
-      if (resumeGate8.ok && resumeGate8.payload?.allowed) {
-        setImprovementState(impl);
-        await saveImprovementState(impl, effectiveChatId);
-
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 8 (Plan de Mejora)**.\n\n" +
-          "👉 Continúa desarrollando acciones, responsables, recursos y KPIs.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 7
-    const s7 = await getGenericStageState(7, { latest: true });
-    const s7Row = s7.ok ? s7.payload?.row ?? null : null;
-    const s7ChatId =
-      s7Row && typeof s7Row.chat_id === "string" ? (s7Row.chat_id as string) : null;
-    const imp = s7Row?.state_json ? (s7Row.state_json as ImprovementState) : null;
+    if (stage === 8 && stateJson) {
+      const planning8 = stateJson as PlanningState;
+      setPlanningState(planning8);
+      await savePlanningState(planning8, effectiveChatId);
 
-    if (imp && s7ChatId) {
-      const resumeGate7 = await getResumeGate(7, s7ChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 8 (Planificación / Cronograma)**.\n\n" +
+        "👉 Continúa armando el cronograma, responsables, recursos y tiempos.";
 
-      if (resumeGate7.ok && resumeGate7.payload?.allowed) {
-        setImprovementState(imp);
-        await saveImprovementState(imp, effectiveChatId);
-
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
-          "👉 Continúa estructurando la propuesta de mejora.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 6
-    const s6 = await getGenericStageState(6, { latest: true });
-    const s6Row = s6.ok ? s6.payload?.row ?? null : null;
-    const s6ChatId =
-      s6Row && typeof s6Row.chat_id === "string" ? (s6Row.chat_id as string) : null;
-    const obj = s6Row?.state_json ? (s6Row.state_json as ObjectivesState) : null;
+    if (stage === 7 && stateJson) {
+      const improvement7 = stateJson as ImprovementState;
+      setImprovementState(improvement7);
+      await saveImprovementState(improvement7, effectiveChatId);
 
-    if (obj && s6ChatId) {
-      const resumeGate6 = await getResumeGate(6, s6ChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
+        "👉 Continúa estructurando la propuesta de mejora.";
 
-      if (resumeGate6.ok && resumeGate6.payload?.allowed) {
-        setObjectivesState(obj);
-        await saveObjectivesState(obj, effectiveChatId);
-
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
-          "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
+    if (stage === 6 && stateJson) {
+      const objectives6 = stateJson as ObjectivesState;
+      setObjectivesState(objectives6);
+      await saveObjectivesState(objectives6, effectiveChatId);
 
-    // 5
-    const s5 = await getParetoState(null);
-    const s5ChatId =
-      s5.ok && typeof s5.payload?.chatId === "string" ? (s5.payload.chatId as string) : null;
-    const pareto = s5.ok ? (s5.payload?.state as ParetoState | null) : null;
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
+        "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
 
-    if (pareto && s5ChatId) {
-      const resumeGate5 = await getResumeGate(5, s5ChatId);
-
-      if (resumeGate5.ok && resumeGate5.payload?.allowed) {
-        setParetoState(pareto);
-        await saveParetoState(pareto, effectiveChatId);
-
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 5 (Pareto)**.\n\n" +
-          "👉 Continúa seleccionando, ponderando y cerrando tus causas críticas.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 4
-    const s4 = await getIshikawaState({ ignoreChatId: true });
-    const s4ChatId =
-      s4.ok && typeof s4.payload?.chatId === "string" ? (s4.payload.chatId as string) : null;
-    const ishi = s4.ok ? (s4.payload?.state as IshikawaState | null) : null;
+    if (stage === 5 && stateJson) {
+      const pareto5 = normalizeParetoStateClient(stateJson);
+      if (!pareto5) return false;
 
-    if (ishi && s4ChatId) {
-      const resumeGate4 = await getResumeGate(4, s4ChatId);
+      setParetoState(pareto5);
+      await saveParetoState(pareto5, effectiveChatId);
 
-      if (resumeGate4.ok && resumeGate4.payload?.allowed) {
-        setIshikawaState(ishi);
-        setIshikawaClosePending(isIshikawaReadyToClose(ishi));
-        await saveIshikawaState(ishi, effectiveChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 5 (Pareto)**.\n\n" +
+        "👉 Continúa priorizando tus causas y, cuando corresponda, compárteme las causas críticas.";
 
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 4 (Ishikawa)**.\n\n" +
-          "👉 Continúa bajando desde causa principal hasta causa raíz.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 3
-    const s3 = await getBrainstormState(null);
-    const s3ChatId =
-      s3.ok && typeof s3.payload?.chatId === "string" ? (s3.payload.chatId as string) : null;
-    const bs = s3.ok ? (s3.payload?.state as BrainstormState | null) : null;
+    if (stage === 4 && stateJson) {
+      const ishikawa4 = stateJson as IshikawaState;
+      setIshikawaState(ishikawa4);
+      setIshikawaClosePending(isIshikawaReadyToClose(ishikawa4));
+      await saveIshikawaState(ishikawa4, effectiveChatId);
 
-    if (bs && s3ChatId) {
-      const resumeGate3 = await getResumeGate(3, s3ChatId);
+      const problemText =
+        typeof ishikawa4.problem === "string"
+          ? ishikawa4.problem
+          : typeof (ishikawa4.problem as { text?: unknown } | null)?.text === "string"
+            ? String((ishikawa4.problem as { text?: string }).text)
+            : null;
 
-      if (resumeGate3.ok && resumeGate3.payload?.allowed) {
-        const clean = sanitizeBrainstormState(bs);
-        setBrainstormState(clean);
-        await saveBrainstormState(clean, effectiveChatId);
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 4 (Ishikawa)**.\n\n" +
+        (problemText ? `- Problema principal: **${problemText}**\n\n` : "") +
+        "👉 Continúa completando causas, subcausas y profundizando con los 5 porqués donde haga falta.";
 
-        const msg =
-          "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-          "Estabas en **Etapa 3 (Lluvia de ideas)**.\n\n" +
-          "👉 Continúa con la siguiente causa concreta.";
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
-        return true;
-      }
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
     }
 
-    // 2
-    const s2 = await getFodaState(null);
-    const s2ChatId =
-      s2.ok && typeof s2.payload?.chatId === "string" ? (s2.payload.chatId as string) : null;
-    const foda = s2.ok ? (s2.payload?.state as FodaState | null) : null;
+    if (stage === 3 && stateJson) {
+      const brainstorm3 = stateJson as BrainstormState;
+      const safeBrainstorm = sanitizeBrainstormState(brainstorm3);
 
-    if (foda && s2ChatId) {
-      const resumeGate2 = await getResumeGate(2, s2ChatId);
+      setBrainstormState(safeBrainstorm);
+      await saveBrainstormState(safeBrainstorm, effectiveChatId);
 
-      if (resumeGate2.ok && resumeGate2.payload?.allowed) {
-        setFodaState(foda);
-        await saveFodaState(foda, effectiveChatId);
+      const nIdeas = Array.isArray((brainstorm3 as { ideas?: unknown[] }).ideas)
+        ? (brainstorm3 as { ideas?: unknown[] }).ideas!.length
+        : 0;
+
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 3 (Lluvia de ideas)**.\n\n" +
+        `- Ideas registradas: **${nIdeas}**\n\n` +
+        "👉 Continúa aportando ideas claras y concretas relacionadas con el problema.";
+
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
+    }
+
+    if (stage === 2) {
+      if (stateJson) {
+        const foda2 = stateJson as FodaState;
+        setFodaState(foda2);
+        await saveFodaState(foda2, effectiveChatId);
 
         const msg =
           "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
           "Estabas en **Etapa 2 (FODA)**.\n\n" +
-          "👉 Continúa con el siguiente punto de tu cuadrante actual.";
-        setMessages([createMessage("assistant", msg)]);
+          "👉 Continúa desarrollando fortalezas, debilidades, oportunidades y amenazas con enfoque en el caso.";
+
+        setMessages((prev) => [...prev, createMessage("assistant", msg)]);
         await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
         return true;
       }
+
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Tu **Contexto del Caso** ya está confirmado.\n\n" +
+        "Ahora corresponde continuar con la **Etapa 2 (FODA)**.\n\n" +
+        "👉 Empecemos por lo más fácil: dime una **fortaleza interna** de la empresa o del proceso analizado.";
+
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
+    }
+
+    if (stage === 1 && stateJson) {
+      const prodState = stateJson as { prodStep?: number; prodDraft?: ProductivityDraft };
+      const nextProdStep =
+        typeof prodState.prodStep === "number" ? (prodState.prodStep as ProdStep) : 1;
+
+      setProdDraft(prodState.prodDraft ?? {});
+      setProdStep(nextProdStep);
+
+      await saveProductivityState(
+        {
+          prodStep: nextProdStep,
+          prodDraft: prodState.prodDraft ?? {},
+        },
+        effectiveChatId
+      );
+
+      const ctx = await getPlanContextStatusCached({ force: true });
+
+      const msg =
+        "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
+        "Estabas en **Etapa 1 (Productividad)**.\n\n" +
+        promptProd(nextProdStep, ctx.contextJson ?? {}, prodState.prodDraft ?? {});
+
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
+    }
+
+    if (stage === 0) {
+      const ctx = await getPlanContextStatusCached({ force: true });
+      const next = getNextStage0StepFromContext(ctx.contextJson);
+      const step = (next === 0 ? 1 : next) as 1 | 2 | 3;
+
+      setStage0Step(step);
+      setStage0Draft({
+        sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
+        products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
+        process_focus: Array.isArray(ctx.contextJson?.process_focus)
+          ? ctx.contextJson.process_focus
+          : undefined,
+      });
+
+      const greet =
+        step === 1
+          ? ADVISOR_GREETING
+          : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
+
+      const msg = `${greet}\n\n${promptForStep(step)}`;
+
+      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      return true;
+    }
+
+    return false;
+  }
+
+    type ValidationPayloadLike = {
+    next?: { toStage?: number | null; hint?: string | null } | null;
+    roots?: string[] | null;
+  };
+
+  function readNextStageFromValidation(
+    payload: ValidationPayloadLike | null | undefined
+  ): 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null {
+    const raw = payload?.next?.toStage;
+    return raw === 3 ||
+      raw === 4 ||
+      raw === 5 ||
+      raw === 6 ||
+      raw === 7 ||
+      raw === 8 ||
+      raw === 9 ||
+      raw === 10
+      ? raw
+      : null;
+  }
+
+  async function applyBackendAdvisorAdvance(args: {
+    fromStage: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+    payload: ValidationPayloadLike | null | undefined;
+    effectiveChatId: string;
+    initialProblemText?: string | null;
+  }) {
+    const { fromStage, payload, effectiveChatId, initialProblemText } = args;
+    const toStage = readNextStageFromValidation(payload);
+
+    if (toStage === null) {
+      return false;
+    }
+
+    if (fromStage === 2 && toStage === 3) {
+      const initial: BrainstormState = {
+        strategy: null,
+        problem: null,
+        ideas: [],
+        minIdeas: 10,
+      };
+
+      setBrainstormState(initial);
+      await saveBrainstormState(initial, effectiveChatId);
+
+      setFodaState(null);
+      await clearStageState(2, effectiveChatId);
+
+      await appendAssistant(
+        "✅ **Etapa 2 (FODA) validada**.\n\n" +
+          "Ahora pasamos automáticamente a la **Etapa 3: Lluvia de ideas (causas)**.\n\n" +
+          "✅ Primero elige tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
+          "👉 Escribe por ejemplo: **FO** y dime por qué en 1–2 líneas."
+      );
+
+      return true;
+    }
+
+    if (fromStage === 3 && toStage === 4) {
+      const initialIshikawa: IshikawaState = {
+        problem: initialProblemText?.trim() ? { text: initialProblemText.trim() } : null,
+        categories: [
+          { id: "cat_hombre", name: "Hombre", mainCauses: [] },
+          { id: "cat_maquina", name: "Máquina", mainCauses: [] },
+          { id: "cat_metodo", name: "Método", mainCauses: [] },
+          { id: "cat_material", name: "Material", mainCauses: [] },
+          { id: "cat_medida", name: "Medición", mainCauses: [] },
+          { id: "cat_entorno", name: "Entorno (Medio ambiente)", mainCauses: [] },
+        ],
+        minCategories: 3,
+        minMainCausesPerCategory: 2,
+        minSubCausesPerMain: 1,
+        maxWhyDepth: 3,
+        minRootCandidates: 6,
+        cursor: null,
+      };
+
+      setBrainstormClosePending(false);
+      setIshikawaState(initialIshikawa);
+      await saveIshikawaState(initialIshikawa, effectiveChatId);
+
+      setBrainstormState(null);
+      await clearStageState(3, effectiveChatId);
+
+      await appendAssistant(
+        "✅ Listo, cerramos la lluvia de ideas y pasamos a **Etapa 4 (Ishikawa)**.\n\n" +
+          (initialProblemText?.trim()
+            ? `🎯 **Problema (cabeza):** ${initialProblemText.trim()}\n\n` +
+              "Respóndeme **OK** si así queda bien, o escríbelo en 1 línea si quieres ajustarlo.\n\n" +
+              "Luego me dices **una causa** y la vamos bajando con **porqués** (causa → subcausa → raíz)."
+            : "Escríbeme el **problema principal** en **1 línea** (la cabeza del Ishikawa).\n\n" +
+              "Después me dices **una causa** y la vamos bajando con **porqués**.")
+      );
+
+      return true;
+    }
+
+    if (fromStage === 4 && toStage === 5) {
+      const roots = Array.isArray(payload?.roots) ? payload.roots : [];
+      const selected = roots.slice(0, 15);
+
+      const initialPareto: ParetoState = {
+        roots,
+        selectedRoots: selected,
+        criteria: [
+          { id: crypto.randomUUID(), name: "Impacto" },
+          { id: crypto.randomUUID(), name: "Frecuencia" },
+          { id: crypto.randomUUID(), name: "Controlabilidad" },
+        ],
+        criticalRoots: [],
+        minSelected: 10,
+        maxSelected: 15,
+        step: "select_roots",
+      };
+
+      setIshikawaClosePending(false);
+      setParetoState(initialPareto);
+      await saveParetoState(initialPareto, effectiveChatId);
+
+      setIshikawaState(null);
+      await clearStageState(4, effectiveChatId);
+
+      const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
+
+      await appendAssistant(
+        "✅ Listo, cerramos **Etapa 4 (Ishikawa)** y pasamos a **Etapa 5 (Pareto)**.\n\n" +
+          "Primero trabajaremos con tus **causas raíz** (10–15). Aquí tienes una lista inicial:\n\n" +
+          list +
+          "\n\n" +
+          "👉 Si quieres **quitar/combinar** alguna, dime cuáles. Si está bien, responde **OK** y pasamos a definir los **3 criterios de priorización**."
+      );
+
+      return true;
+    }
+
+    if (fromStage === 5 && toStage === 6) {
+      const initialObjectives: ObjectivesState = {
+        generalObjective: "",
+        specificObjectives: [],
+        linkedCriticalRoots: [],
+        step: "general",
+      };
+
+      setObjectivesState(initialObjectives);
+      await saveObjectivesState(initialObjectives, effectiveChatId);
+
+      setParetoState(null);
+      await clearStageState(5, effectiveChatId);
+
+      await appendAssistant(
+        "✅ **Etapa 5 (Pareto) finalizada**.\n\n" +
+          "Ahora iniciamos la **Etapa 6: Objetivos del Plan de Mejora**.\n\n" +
+          "👉 Primero redactemos el **Objetivo General** en una sola oración:\n" +
+          "¿Qué vas a lograr atacando esas causas críticas?"
+      );
+
+      return true;
+    }
+
+    if (fromStage === 6 && toStage === 7) {
+      const initialImprovement: ImprovementState = {
+        stageIntroDone: true,
+        step: "discover",
+        focus: { chosenRoot: null, chosenObjective: null },
+        initiatives: [],
+        lastSummary: null,
+      };
+
+      setImprovementState(initialImprovement);
+      await saveImprovementState(initialImprovement, effectiveChatId);
+
+      setObjectivesState(null);
+      await clearStageState(6, effectiveChatId);
+
+      await appendAssistant(
+        "✅ **Etapa 6 (Objetivos) finalizada**.\n\n" +
+          "Ahora entramos a la **Etapa 7: Plan de Mejora**.\n" +
+          "Cuéntame lo primero que se te viene a la mente como mejora (aunque no estés seguro). Si no tienes nada aún, lo construimos juntos."
+      );
+
+      return true;
+    }
+
+    if (fromStage === 7 && toStage === 8) {
+      const initialPlanning: PlanningState = {
+        stageIntroDone: false,
+        step: "time_window",
+        time: {
+          studentWeeks: null,
+          courseCutoffDate: null,
+          effectiveWeeks: null,
+          notes: null,
+        },
+        plan: {
+          weekly: [],
+          milestones: [],
+          risks: [],
+        },
+        lastSummary: null,
+      };
+
+      setImprovementState(null);
+      await clearStageState(7, effectiveChatId);
+
+      setPlanningState(initialPlanning);
+      await savePlanningState(initialPlanning, effectiveChatId);
+
+      await appendAssistant(
+        "✅ **Etapa 7 (Plan de Mejora) finalizada**.\n\n" +
+          "Ahora pasamos a la **Etapa 8 (Planificación)** para definir tiempos, secuencia y un cronograma realista."
+      );
+
+      return true;
+    }
+
+    if (fromStage === 8 && toStage === 9) {
+      const initialProgress: ProgressState = {
+        step: "intro",
+        reportText: null,
+        progressPercent: null,
+        measurementNote: null,
+        summary: null,
+        updatedAtLocal: null,
+      };
+
+      setPlanningState(null);
+      await clearStageState(8, effectiveChatId);
+
+      setProgressState(initialProgress);
+      await saveProgressState(initialProgress, effectiveChatId);
+
+
+
+      
+
+      const hint =
+        typeof payload?.next?.hint === "string" && payload.next.hint.trim().length > 0
+          ? `\n\n${payload.next.hint.trim()}`
+          : "";
+
+      await appendAssistant(
+        "✅ **Etapa 8 (Planificación) finalizada**.\n\n" +
+          "Con esto completaste el **Avance 2**.\n\n" +
+          "Luego sigue el **Avance 3 (Etapa 9)**: ahí reportarás cómo va la implementación y, si ya lo tienes, podrás subir un archivo." +
+          hint
+      );
+
+      return true;
+    }
+
+    if (fromStage === 9 && toStage === 10) {
+      const initialFinalDoc: FinalDocState = {
+        step: "await_upload",
+        versionNumber: 1,
+        lastFeedback: null,
+        upload: {
+          fileName: null,
+          storagePath: null,
+          extractedText: null,
+          uploadedAt: null,
+        },
+      };
+
+      setProgressState(null);
+      await clearStageState(9, effectiveChatId);
+
+      setFinalDocState(initialFinalDoc);
+      await saveFinalDocState(initialFinalDoc, effectiveChatId);
+
+      await appendAssistant(
+        "✅ **Etapa 9 (Reporte de avances) finalizada.**\n\n" +
+          "📄 **Etapa 10 (Documento final)**\n\n" +
+          "En esta etapa podemos trabajar de forma **conversacional**: si tienes dudas sobre tu plan final, pregúntame.\n\n" +
+          "Cuando quieras, **sube tu Word/PDF** con el botón de adjuntar y haré una revisión crítica cruzando con tus **etapas validadas** y tu **registro de horas**.\n\n" +
+          "✅ Máximo **2 versiones**:\n" +
+          "• **Versión 1:** te doy feedback.\n" +
+          "• **Versión 2:** es la **definitiva** y luego se cierra el Asesor."
+      );
+
+      return true;
     }
 
     return false;
@@ -3984,9 +4367,20 @@ export default function ChatPage() {
           }
         }
         
-        if (effectiveChatId) {
-          await persistMessageDB({ chatId: effectiveChatId, role: "user", content: text });
+        if (!effectiveChatId) {
+          setMessages((prev) => [
+            ...prev,
+            createMessage(
+              "assistant",
+              "⚠️ No pude obtener el chat activo del Asesor. Recarga la página e inténtalo nuevamente."
+            ),
+          ]);
+          return;
         }
+
+        const advisorChatId = effectiveChatId;
+
+        await persistMessageDB({ chatId: advisorChatId, role: "user", content: text });
 
         const ctx = await getPlanContextStatusCached();
         const confirmedLike = ctx.status === "confirmed" || isContextComplete(ctx.contextJson);
@@ -4033,36 +4427,17 @@ export default function ChatPage() {
             }
 
             if (v.payload?.valid) {
-              await appendAssistant(
-                "✅ **Etapa 9 (Reporte de avances) finalizada.**"
-              );
+              const moved = await applyBackendAdvisorAdvance({
+                fromStage: 9,
+                payload: v.payload,
+                effectiveChatId: advisorChatId,
+              });
 
-              setProgressState(null);
-
-              // Iniciar Etapa 10: documento final (v1)
-              const initialFinalDoc: FinalDocState = {
-                step: "await_upload",
-                versionNumber: 1,
-                lastFeedback: null,
-                upload: {
-                  fileName: null,
-                  storagePath: null,
-                  extractedText: null,
-                  uploadedAt: null,
-                },
-              };
-
-              setFinalDocState(initialFinalDoc);
-              await saveFinalDocState(initialFinalDoc, effectiveChatId);
-
-              await appendAssistant(
-                "📄 **Etapa 10 (Documento final)**\n\n" +
-                  "En esta etapa podemos trabajar de forma **conversacional**: si tienes dudas sobre tu plan final, pregúntame.\n\n" +
-                  "Cuando quieras, **sube tu Word/PDF** con el botón de adjuntar y haré una revisión crítica cruzando con tus **etapas validadas** y tu **registro de horas**.\n\n" +
-                  "✅ Máximo **2 versiones**:\n" +
-                  "• **Versión 1:** te doy feedback.\n" +
-                  "• **Versión 2:** es la **definitiva** y luego se cierra el Asesor."
-              );
+              if (!moved) {
+                await appendAssistant(
+                  "✅ La Etapa 9 quedó validada, pero no pude preparar automáticamente la Etapa 10. Recarga el chat y retomamos."
+                );
+              }
             }
           }
 
@@ -4114,27 +4489,17 @@ export default function ChatPage() {
               return;
             }
 
-            await appendAssistant(
-              "✅ **Etapa 8 (Planificación) finalizada**.\n\n" +
-              "Con esto completaste el **Avance 2**.\n\n" +
-              "Luego sigue el **Avance 3 (Etapa 9)**: ahí solo reportarás cómo va la implementación y, si ya lo tienes, podrás subir un archivo."
-            );
+            const moved = await applyBackendAdvisorAdvance({
+              fromStage: 8,
+              payload: v.payload,
+              effectiveChatId: advisorChatId,
+            });
 
-            setPlanningState(null);
-
-            const initialProgress: ProgressState = {
-              step: "intro",
-              reportText: null,
-              progressPercent: null,
-              measurementNote: null,
-              summary: null,
-              updatedAtLocal: null,
-            };
-
-            setProgressState(initialProgress);
-            await saveProgressState(initialProgress, effectiveChatId);
-            setPlanningState(null);
-            await clearStageState(9, effectiveChatId);
+            if (!moved) {
+              await appendAssistant(
+                "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
+              );
+            }
           }
 
           return;
@@ -4174,37 +4539,17 @@ export default function ChatPage() {
             }
 
             if (v.payload?.valid) {
-              await appendAssistant(
-                "✅ **Etapa 7 (Plan de Mejora) finalizada**.\n\n" +
-                "Ahora pasamos a la **Etapa 8 (Planificación)** para definir tiempos, secuencia y un cronograma realista."
-              );
+              const moved = await applyBackendAdvisorAdvance({
+                fromStage: 7,
+                payload: v.payload,
+                effectiveChatId: advisorChatId,
+              });
 
-              // Importante: dejamos de capturar Etapa 7
-              setImprovementState(null);
-              await clearStageState(7, effectiveChatId);
-
-              // Iniciar PlanningState (vacío) y guardarlo
-              const initialPlanning: PlanningState = {
-                stageIntroDone: false,
-                step: "time_window",
-                time: {
-                  studentWeeks: null,
-                  courseCutoffDate: null,
-                  effectiveWeeks: null,
-                  notes: null,
-                },
-                plan: {
-                  weekly: [],
-                  milestones: [],
-                  risks: [],
-                },
-                lastSummary: null,
-              };
-
-              setPlanningState(initialPlanning);
-              await savePlanningState(initialPlanning, effectiveChatId);
-              setImprovementState(null);
-              await clearStageState(8, effectiveChatId);
+              if (!moved) {
+                await appendAssistant(
+                  "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
+                );
+              }
 
             }
           }
@@ -4254,27 +4599,17 @@ export default function ChatPage() {
             }
 
             if (v.payload?.valid) {
-              await appendAssistant(
-                "✅ **Etapa 6 (Objetivos) finalizada**.\n\n" +
-                "Ahora entramos a la **Etapa 7: Plan de Mejora**.\n" +
-                "Cuéntame lo primero que se te viene a la mente como mejora (aunque no estés seguro). Si no tienes nada aún, lo construimos juntos."
-              );
+              const moved = await applyBackendAdvisorAdvance({
+                fromStage: 6,
+                payload: v.payload,
+                effectiveChatId: advisorChatId,
+              });
 
-              // Iniciar ImprovementState y guardarlo
-              const initialImprovement: ImprovementState = {
-                stageIntroDone: true,
-                step: "discover",
-                focus: { chosenRoot: null, chosenObjective: null },
-                initiatives: [],
-                lastSummary: null,
-              };
-
-              setImprovementState(initialImprovement);
-              await saveImprovementState(initialImprovement, effectiveChatId);
-
-              // Cerrar y limpiar Etapa 6 para que no se reanude por error
-              setObjectivesState(null);
-              await clearStageState(6, effectiveChatId);
+              if (!moved) {
+                await appendAssistant(
+                  "✅ La Etapa 6 quedó validada, pero no pude preparar automáticamente la Etapa 7. Recarga el chat y retomamos."
+                );
+              }
             }
           }
           return;
@@ -4283,6 +4618,7 @@ export default function ChatPage() {
         // ================================
         // ETAPA 5: Pareto (en progreso)
         // ================================
+
         if (paretoState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callParetoAssistant({
             studentMessage: text,
@@ -4295,53 +4631,69 @@ export default function ChatPage() {
             return;
           }
 
-          const nextState = assistant.payload.updates.nextState as ParetoState;
+          const nextState = normalizeParetoStateClient(assistant.payload.updates.nextState);
+
+          if (!nextState) {
+            await appendAssistant("⚠️ El estado de Pareto llegó incompleto. Vuelve a enviar tu último avance para continuar.");
+            return;
+          }
 
           setParetoState(nextState);
           await saveParetoState(nextState, effectiveChatId);
 
-          await appendAssistant(assistant.payload.assistantMessage);
+          // Si aún no está cerrado, mostramos guía normal
+          if (nextState.step !== "done") {
+            await appendAssistant(assistant.payload.assistantMessage);
+            return;
+          }
 
-          // Si el assistant marcó done, intentamos validar y cerrar Etapa 5
-          if (nextState.step === "done") {
-            const v = await validatePareto(effectiveChatId);
+          // Si llegó a done, primero validamos y recién luego cerramos de verdad
+          const v = await validatePareto(effectiveChatId);
 
-            if (!v.ok) {
-              const msg =
-                v.payload?.message ??
-                "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado el top 20%.";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            if (!v.payload?.valid) {
-              const msg =
-                v.payload?.message ??
-                "Pareto aún no quedó validado. Revisa tus causas críticas (top 20%) antes de pasar a Objetivos.";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            await appendAssistant(
-              "✅ **Etapa 5 (Pareto) finalizada**.\n\n" +
-                "Ahora iniciamos la **Etapa 6: Objetivos del Plan de Mejora**.\n\n" +
-                "👉 Primero redactemos el **Objetivo General** (1 sola oración):\n" +
-                "¿Qué vas a lograr atacando esas causas críticas?"
-            );
-
-            const initialObjectives: ObjectivesState = {
-              generalObjective: "",
-              specificObjectives: [],
-              linkedCriticalRoots: [],
-              step: "general",
+          if (!v.ok) {
+            const rollbackState: ParetoState = {
+              ...nextState,
+              step: "collect_critical",
             };
 
-            setObjectivesState(initialObjectives);
-            await saveObjectivesState(initialObjectives, effectiveChatId);
+            setParetoState(rollbackState);
+            await saveParetoState(rollbackState, effectiveChatId);
 
-            setParetoState(null);
-            await clearStageState(5, effectiveChatId);
+            const msg =
+              v.payload?.message ??
+              "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado el top 20%.";
+            await appendAssistant(`⚠️ ${msg}`);
+            return;
+          }
 
+          if (!v.payload?.valid) {
+            const rollbackState: ParetoState = {
+              ...nextState,
+              step: "collect_critical",
+            };
+
+            setParetoState(rollbackState);
+            await saveParetoState(rollbackState, effectiveChatId);
+
+            const msg =
+              v.payload?.message ??
+              "Pareto aún no quedó validado. Revisa tus causas críticas (top 20%) antes de pasar a Objetivos.";
+            await appendAssistant(`⚠️ ${msg}`);
+            return;
+          }
+
+          await appendAssistant(assistant.payload.assistantMessage);
+
+          const moved = await applyBackendAdvisorAdvance({
+            fromStage: 5,
+            payload: v.payload,
+            effectiveChatId: advisorChatId,
+          });
+
+          if (!moved) {
+            await appendAssistant(
+              "✅ La Etapa 5 quedó validada, pero no pude preparar automáticamente la Etapa 6. Recarga el chat y retomamos."
+            );
           }
 
           return;
@@ -4478,39 +4830,19 @@ export default function ChatPage() {
                 return;
               }
 
-              const roots = Array.isArray(v.payload?.roots) ? (v.payload.roots as string[]) : [];
-              const selected = roots.slice(0, 15);
-
-              const initialPareto: ParetoState = {
-                roots,
-                selectedRoots: selected,
-                criteria: [
-                  { id: crypto.randomUUID(), name: "Impacto" },
-                  { id: crypto.randomUUID(), name: "Frecuencia" },
-                  { id: crypto.randomUUID(), name: "Controlabilidad" },
-                ],
-                criticalRoots: [],
-                minSelected: 10,
-                maxSelected: 15,
-                step: "select_roots",
-              };
-
               setIshikawaClosePending(false);
-              setParetoState(initialPareto);
-              await saveParetoState(initialPareto, effectiveChatId);
 
-              setIshikawaState(null);
-              await clearStageState(4, effectiveChatId);
+              const moved = await applyBackendAdvisorAdvance({
+                fromStage: 4,
+                payload: v.payload,
+                effectiveChatId: advisorChatId,
+              });
 
-              const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
-
-              await appendAssistant(
-                "✅ Listo, cerramos **Etapa 4 (Ishikawa)** y pasamos a **Etapa 5 (Pareto)**.\n\n" +
-                  "Primero trabajaremos con tus **causas raíz** (10–15). Aquí tienes una lista inicial:\n\n" +
-                  list +
-                  "\n\n" +
-                  "👉 Si quieres **quitar/combinar** alguna, dime cuáles. Si está bien, responde **OK** y pasamos a definir **pesos (1–10)** para los 3 criterios."
-              );
+              if (!moved) {
+                await appendAssistant(
+                  "✅ Ishikawa validado, pero no pude preparar automáticamente la Etapa 5. Recarga el chat para continuar desde Pareto."
+                );
+              }
 
               return;
             }
@@ -4568,59 +4900,36 @@ export default function ChatPage() {
                 return;
               }
 
+
+
               const problemFromBrainstorm = (brainstormState?.problem?.text ?? "").trim();
               const problemFromFoda = (typeof (fodaState as any)?.problem === "string"
                 ? ((fodaState as any).problem as string)
                 : ((fodaState as any)?.problem?.text ?? "")
               ).trim();
 
-              const problemFromContext = (ctx?.contextJson?.problem?.text ?? ctx?.contextJson?.problem ?? "").toString().trim();
+              const problemFromContext = (
+                ctx?.contextJson?.problem?.text ??
+                ctx?.contextJson?.problem ??
+                ""
+              ).toString().trim();
 
               const finalProblem = (problemFromBrainstorm || problemFromFoda || problemFromContext).trim();
 
-              const initialIshikawa: IshikawaState = {
-                problem: finalProblem ? { text: finalProblem } : null,
-                categories: [
-                    { id: "cat_hombre", name: "Hombre", mainCauses: [] },
-                    { id: "cat_maquina", name: "Máquina", mainCauses: [] },
-                    { id: "cat_metodo", name: "Método", mainCauses: [] },
-                    { id: "cat_material", name: "Material", mainCauses: [] },
-                    { id: "cat_medida", name: "Medición", mainCauses: [] },
-                    { id: "cat_entorno", name: "Entorno (Medio ambiente)", mainCauses: [] },
-                ],
-                minCategories: 3,
-                minMainCausesPerCategory: 2,
-                minSubCausesPerMain: 1,
-                maxWhyDepth: 3,
-                minRootCandidates: 6,
-                cursor: null,
-              };
-
-              const initialProblemText =
-                typeof initialIshikawa.problem === "string"
-                  ? initialIshikawa.problem
-                  : (typeof (initialIshikawa.problem as any)?.text === "string"
-                      ? (initialIshikawa.problem as any).text
-                      : "");
-
               setBrainstormClosePending(false);
-              setIshikawaState(initialIshikawa);
-              await saveIshikawaState(initialIshikawa, effectiveChatId);
 
-              setBrainstormState(null);
-              await clearStageState(3, effectiveChatId);
+              const moved = await applyBackendAdvisorAdvance({
+                fromStage: 3,
+                payload: v.payload,
+                effectiveChatId: advisorChatId,
+                initialProblemText: finalProblem || null,
+              });
 
-              // ✅ Un solo mensaje natural (sin duplicados)
-              await appendAssistant(
-                "✅ Listo, cerramos la lluvia de ideas y pasamos a **Etapa 4 (Ishikawa)**.\n\n" +
-                (initialProblemText.trim()
-                  ? `🎯 **Problema (cabeza):** ${initialProblemText.trim()}\n\n` +
-                    "Respóndeme **OK** si así queda bien, o escríbelo en 1 línea si quieres ajustarlo.\n\n" +
-                    "Luego me dices **una causa** y la vamos bajando con **porqués** (causa → subcausa → raíz)."
-                  : "Escríbeme el **problema principal** en **1 línea** (la cabeza del Ishikawa).\n\n" +
-                    "Después me dices **una causa** y la vamos bajando con **porqués**."
-                )
-              );
+              if (!moved) {
+                await appendAssistant(
+                  "✅ Etapa 3 validada, pero no pude preparar automáticamente Ishikawa. Recarga el chat para continuar."
+                );
+              }
 
               return;
             }
@@ -4748,28 +5057,20 @@ export default function ChatPage() {
               return;
             }
 
-            await appendAssistant(
-              "✅ **Etapa 2 (FODA) validada**. Pasamos a la **Etapa 3: Lluvia de ideas (causas)**.\n\n" +
-              "✅ Primero elige tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
-              "👉 Escribe por ejemplo: **FO** y dime por qué en 1–2 líneas."
-            );
+            const moved = await applyBackendAdvisorAdvance({
+              fromStage: 2,
+              payload: v.payload,
+              effectiveChatId: advisorChatId,
+            });
 
-            const resBS = await getBrainstormState();
-            const exists = resBS.ok && resBS.payload?.exists;
-
-            if (!exists) {
-              const initial: BrainstormState = { strategy: null, problem: null, ideas: [], minIdeas: 10 };
-              setBrainstormState(initial);
-              await saveBrainstormState(initial, effectiveChatId);
-            } else {
-              const existing = (resBS.payload?.state ?? null) as BrainstormState | null;
-              if (existing) setBrainstormState(existing);
+            if (!moved) {
+              await appendAssistant(
+                "✅ FODA validado, pero no pude preparar automáticamente la Etapa 3. Recarga el chat para continuar."
+              );
             }
 
-            setFodaState(null);
-            await clearStageState(2, effectiveChatId);
-
             return;
+
           }
         }
 
@@ -4804,65 +5105,27 @@ export default function ChatPage() {
           if (completed) {
             const v = await validateFoda();
 
-            if (!v?.ok) {
-              // Si no valida, NO avanzamos. Pedimos completar lo faltante.
-              const msg =
-                v?.payload?.message ??
-                "⚠️ Aún no puedo validar el FODA. Revisa que haya 3 puntos en cada cuadrante y sustento en O/A.";
-              await appendAssistant(msg);
-              return;
-            }
+          if (!v?.ok) {
+            const msg =
+              v?.payload?.message ??
+              "⚠️ Aún no puedo validar el FODA. Revisa que haya 3 puntos en cada cuadrante y sustento en O/A.";
+            await appendAssistant(msg);
+            return;
+          }
 
+          const moved = await applyBackendAdvisorAdvance({
+            fromStage: 2,
+            payload: v.payload,
+            effectiveChatId: advisorChatId,
+          });
+
+          if (!moved) {
             await appendAssistant(
-              "✅ **Etapa 2 (FODA) validada**.\n\n" +
-              "Ahora pasamos automáticamente a la **Etapa 3: Lluvia de ideas (causas)**.\n\n" +
-              "✅ Primero elige tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
-              "👉 Escribe por ejemplo: **FO** y dime por qué en 1–2 líneas."
+              "✅ FODA validado, pero no pude preparar automáticamente la Etapa 3. Recarga el chat para continuar."
             );
+          }
 
-            // Iniciar o retomar Brainstorm
-            const resBS = await getBrainstormState();
-            const exists = resBS.ok && resBS.payload?.exists;
-
-            if (!exists) {
-              const initial: BrainstormState = {
-                strategy: null,
-                problem: null,
-                ideas: [],
-                minIdeas: 10,
-              };
-
-              setBrainstormState(initial);
-              await saveBrainstormState(initial, effectiveChatId);
-
-              setFodaState(null);
-              await clearStageState(2, effectiveChatId);
-
-              await appendAssistant(
-                "✅ Antes de definir la problemática, dime tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
-                "👉 Escribe por ejemplo: **FO** y dime por qué en 1–2 líneas."
-              );
-
-              return;
-            }
-
-            const existing = (resBS.payload?.state ?? null) as BrainstormState | null;
-            if (existing) {
-              setBrainstormState(existing);
-              const n = Array.isArray(existing.ideas) ? existing.ideas.length : 0;
-
-              setFodaState(null);
-              await clearStageState(2, effectiveChatId);
-
-              await appendAssistant(
-                `📌 Retomemos tu **Etapa 3 (Lluvia de ideas)**.\n\n` +
-                  `Problema: ${existing.problem?.text ? `**${existing.problem.text}**` : "**(aún no definido)**"}\n` +
-                  `Ideas registradas: **${n}**.\n\n` +
-                  "👉 Continúa con la siguiente causa."
-              );
-
-              return;
-            }
+          return;
           }
 
           return; // importante: ya atendimos FODA
@@ -4936,28 +5199,21 @@ export default function ChatPage() {
             return;
           }
 
-          // Si escribe "ok / listo / vamos" iniciar FODA (Etapa 2)
           if (isReadyIntent(text)) {
             setAwaitingStage1Start(clientId, false);
 
-            const initial: FodaState = {
-              currentQuadrant: "F",
-              items: {
-                F: [],
-                D: [],
-                O: [],
-                A: [],
-              },
-            };
+            const products = Array.isArray(ctx.contextJson?.products)
+              ? ctx.contextJson.products.filter(Boolean)
+              : [];
+            const autoLine = products.length === 1 ? String(products[0]) : undefined;
 
-            setFodaState(initial);
-            await saveFodaState(initial, effectiveChatId);
+            setProdDraft({ line: autoLine, required_costs: 3 });
+            setProdStep(1);
 
-            await appendAssistant(
-              "Perfecto 👍 Iniciamos **Etapa 2: Análisis FODA**.\n\n" +
-              "Empezamos con **Fortalezas (internas)**.\n\n" +
-              "Dime una fortaleza real del proceso o área que analizas."
-            );
+            setMessages((prev) => [
+              ...prev,
+              createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
+            ]);
             return;
           }
 
@@ -5034,35 +5290,51 @@ export default function ChatPage() {
               return;
             }
 
+
+
             const validated = await validateProductivity(payload.period_key);
-            if (!validated.ok) {
-              const issues = validated?.data?.details?.issues;
-              const score = validated?.data?.details?.score;
+              if (!validated.ok) {
+                const issues = validated?.details?.issues;
+                const score = validated?.details?.score;
+
+                await appendAssistant(
+                  "⚠️ Aún no está listo para validar.\n" +
+                    (Array.isArray(issues) ? `\nProblemas:\n- ${issues.join("\n- ")}` : "") +
+                    (score
+                      ? `\n\nRúbrica:\n- coherencia: ${score.coherence}\n- tipo: ${score.type_choice}\n- claridad: ${score.clarity}\n- total: ${score.total}`
+                      : "") +
+                    "\n\nCorrige eso y me lo envías de nuevo 🙂"
+                );
+                return;
+              }
+
+              const initial: FodaState = {
+                currentQuadrant: "F",
+                items: {
+                  F: [],
+                  D: [],
+                  O: [],
+                  A: [],
+                },
+              };
+
+              await clearProductivityState();
+
+              setProdStep(0);
+              setProdDraft({});
+
+              setFodaState(initial);
+              await saveFodaState(initial, effectiveChatId);
 
               await appendAssistant(
-                "⚠️ Aún no está listo para validar.\n" +
-                  (Array.isArray(issues) ? `\nProblemas:\n- ${issues.join("\n- ")}` : "") +
-                  (score
-                    ? `\n\nRúbrica:\n- coherencia: ${score.coherence}\n- tipo: ${score.type_choice}\n- claridad: ${score.clarity}\n- total: ${score.total}`
-                    : "") +
-                  "\n\nCorrige eso y me lo envías de nuevo 🙂"
+                "✅ **Etapa 1 (Productividad) validada**.\n\n" +
+                  "Ahora pasamos a la **Etapa 2: Análisis FODA**.\n\n" +
+                  "Empezamos con **Fortalezas (internas)**.\n\n" +
+                  "Dime una fortaleza real del proceso o área que analizas."
               );
+
               return;
-            }
 
-            const score = validated?.data?.score;
-
-            await appendAssistant(
-              "✅ **Reporte de Productividad validado**\n\n" +
-                "Cumple coherencia y claridad de datos.\n" +
-                "\n👉 Ahora sí puedes continuar con el Diagnóstico (Etapa 2)."
-            );
-
-            await clearProductivityState();
-
-            setProdStep(0);
-            setProdDraft({});
-            return;
           }
 
           return; // importante: ya atendimos el mensaje

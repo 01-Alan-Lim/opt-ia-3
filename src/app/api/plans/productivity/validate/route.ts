@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -269,5 +270,19 @@ export async function POST(req: Request) {
       return err(500, "DB_ERROR", `DB error (insert evaluation): ${insEvalErr.message}`);
     }
 
-  return ok(updated);
+    const next = await advancePlanStage({
+      userId: authed.userId,
+      chatId: row.chat_id ?? null,
+      fromStage: STAGE,
+    });
+
+    return NextResponse.json(
+      {
+        ok: true,
+        valid: true,
+        ...updated,
+        next,
+      },
+      { status: 200 }
+    );
 }

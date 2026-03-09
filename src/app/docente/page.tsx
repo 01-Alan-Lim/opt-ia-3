@@ -101,25 +101,34 @@ function Icon({
   }
 
 
-  if (name === "approvals") {
-    return (
-      <svg className={`${cls} ${nudge("approvals")}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-          d="M9 12l2 2 4-5"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M7 3h10a2 2 0 0 1 2 2v16l-3-2-3 2-3-2-3 2V5a2 2 0 0 1 2-2Z"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
+    if (name === "approvals") {
+      return (
+        <svg className={`${cls} ${nudge("approvals")}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect
+            x="5"
+            y="4"
+            width="14"
+            height="16"
+            rx="2.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M8.5 9.5h7"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          <path
+            d="M8.5 14l2 2 5-5"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      );
+    }
 
   if (name === "dashboard") {
     return (

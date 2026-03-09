@@ -3,9 +3,11 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
 import { assertJsonSizeOrFail } from "@/lib/api/payloadLimit";
+import { mergeStageState, normalizeStageState } from "@/lib/plan/stageState";
 
 export const runtime = "nodejs";
 
@@ -47,6 +49,11 @@ async function assertChatOwner(userId: string, chatId: string) {
 export async function GET(req: NextRequest) {
   try {
     const user = await requireUser(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
 
     const parsed = GetQuerySchema.safeParse(
       Object.fromEntries(new URL(req.url).searchParams)
@@ -114,11 +121,30 @@ export async function GET(req: NextRequest) {
       return failResponse("INTERNAL", "No se pudo leer el estado de la etapa.", 500);
     }
 
-    return ok({ exists: !!data, row: data });
+    if (!data) {
+      return ok({ exists: false, row: null });
+    }
+
+    const normalizedRow = {
+      ...data,
+      state_json: data.state_json ? normalizeStageState(stage, data.state_json) : null,
+    };
+
+    return ok({ exists: true, row: normalizedRow });
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return failResponse("UNAUTHORIZED", "No autenticado", 401);
     }
+
+    if (err instanceof z.ZodError) {
+      return failResponse(
+        "BAD_REQUEST",
+        "El estado guardado de la etapa tiene una estructura inválida.",
+        400,
+        err.flatten()
+      );
+    }
+
     return failResponse("INTERNAL", "Error interno", 500);
   }
 }
@@ -126,6 +152,11 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
 
     const raw = await req.json().catch(() => null);
     const parsed = UpsertBodySchema.safeParse(raw);
@@ -140,15 +171,6 @@ export async function POST(req: NextRequest) {
 
     const { chatId, stage, stateJson } = parsed.data;
 
-    const tooLarge = assertJsonSizeOrFail({
-      value: stateJson,
-      maxBytes: 180_000,
-      message:
-        "Tu avance en esta etapa creció demasiado para guardarse de una sola vez. " +
-        "Te pediremos abrir un nuevo chat, pero mantendremos tu progreso.",
-    });
-    if (tooLarge) return tooLarge;
-
     const access = await assertChatOwner(user.userId, chatId);
     if (!access.ok) {
       return failResponse(
@@ -158,6 +180,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const existing = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json")
+      .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
+      .eq("stage", stage)
+      .maybeSingle();
+
+    if (existing.error) {
+      return failResponse("INTERNAL", "No se pudo leer el estado actual de la etapa.", 500);
+    }
+
+    const mergedState = mergeStageState(stage, existing.data?.state_json ?? null, stateJson);
+
+    const tooLarge = assertJsonSizeOrFail({
+      value: mergedState,
+      maxBytes: 180_000,
+      message:
+        "Tu avance en esta etapa creció demasiado para guardarse de una sola vez. " +
+        "Te pediremos abrir un nuevo chat, pero mantendremos tu progreso.",
+    });
+    if (tooLarge) return tooLarge;
+
     const { data, error } = await supabaseServer
       .from("plan_stage_states")
       .upsert(
@@ -165,7 +210,7 @@ export async function POST(req: NextRequest) {
           user_id: user.userId,
           chat_id: chatId,
           stage,
-          state_json: stateJson,
+          state_json: mergedState,
         },
         { onConflict: "user_id,chat_id,stage" }
       )
@@ -176,11 +221,26 @@ export async function POST(req: NextRequest) {
       return failResponse("INTERNAL", "No se pudo guardar el estado de la etapa.", 500);
     }
 
-    return ok({ row: data });
+    return ok({
+      row: {
+        ...data,
+        state_json: data.state_json ? normalizeStageState(stage, data.state_json) : null,
+      },
+    });
   } catch (err: unknown) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return failResponse("UNAUTHORIZED", "No autenticado", 401);
     }
+
+    if (err instanceof z.ZodError) {
+      return failResponse(
+        "BAD_REQUEST",
+        "El estado recibido para la etapa tiene una estructura inválida.",
+        400,
+        err.flatten()
+      );
+    }
+
     return failResponse("INTERNAL", "Error interno", 500);
   }
 }
@@ -188,6 +248,11 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const user = await requireUser(req);
+
+    const gate = await assertChatAccess(req);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
 
     const raw = await req.json().catch(() => null);
     const parsed = DeleteBodySchema.safeParse(raw);

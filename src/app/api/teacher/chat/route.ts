@@ -34,6 +34,12 @@ type TeacherChatContext = {
   pendingCandidates?: Array<{ user_id: string; label: string }>;
 };
 
+type TeacherChatRuntimeContext = TeacherChatContext & {
+  __llm_term?: string | null;
+  __llm_wantsChange?: boolean;
+  __llm_stage?: number | null;
+};
+
 
 type ProfileStudent = {
   user_id: string;
@@ -81,15 +87,24 @@ function extractSearchTerm(message: string): string | null {
 }
 
 function cleanupTerm(term: string): string {
-  // Quitar signos y extremos raros
   let t = term
     .replace(/[¿?¡!.,;:"'()[\]{}]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  // Quitar muletillas comunes al inicio (para que no busque "va alan")
+  // Limpia muletillas y frases de seguimiento típicas del docente
   t = t.replace(
-    /^(?:el|la|los|las|un|una|de|del|al|a|por|para|sobre|acerca|dime|mu[eé]strame|quiero|necesito|por favor)\s+/i,
+    /^(?:si|sí|ok|okay|dale|bien|perfecto|entonces|por favor|pf|mmm|mm|eh|bueno)\s+/i,
+    ""
+  );
+
+  t = t.replace(
+    /^(?:el|la|los|las|un|una|de|del|al|a|por|para|sobre|acerca|dime|mu[eé]strame|quiero|necesito)\s+/i,
+    ""
+  );
+
+  t = t.replace(
+    /^(?:revisa|revisar|revisemos|veamos|ver|buscar|busca|consulta|consultar|cambiar|cambia)\s+(?:a|al|de)?\s*/i,
     ""
   );
 
@@ -1199,7 +1214,7 @@ export async function POST(req: Request) {
     const message = parsed.data.message.trim();
     const incomingActiveId = parsed.data.context?.activeStudentId ?? null;
 
-    let ctx: TeacherChatContext = {
+    let ctx: TeacherChatRuntimeContext = {
         activeStudentId: incomingActiveId,
         activeStudentLabel: parsed.data.context?.activeStudentLabel ?? null,
         pendingCandidates: parsed.data.context?.pendingCandidates ?? undefined,
@@ -1237,45 +1252,63 @@ export async function POST(req: Request) {
         else ctx.activeStudentId = null;
     }
 
-    // 1) Intent rápido por regex (para comandos cortos)
-    let intent = detectIntent(message);
 
-    // 2) Router con Gemini (para que el chat docente "entienda" preguntas naturales)
-    //    Solo evitamos LLM en comandos MUY cortos y obvios para mantenerlo rápido.
+
+
+    let intent = detectIntent(message);
+    let routed: TeacherRouter | null = null;
+
     const trimmed = message.trim();
     const isExplicitShortCommand =
       trimmed.length <= 40 &&
       /^(top\s*10|top10|ranking|alertas?|uso|actividad|interacciones?|mensajes?|chats?|horas?|etapas?)\b/i.test(trimmed);
 
-    // Por defecto, el chat docente debería comportarse como "IA" -> intentamos rutear con LLM.
     if (!isExplicitShortCommand) {
-      const routed = await routeWithGemini({
+      routed = await routeWithGemini({
         message,
         ctx,
       });
 
-      // mapeo de acción LLM a intent existente
-      if (routed.action === "switch_student") {
-        // ✅ estas 2 claves SÍ las lees más abajo
-        (ctx as any).__llm_term = routed.term ?? null;
-        (ctx as any).__llm_wantsChange = true;
+      if (routed.needs_clarification && routed.clarification_question) {
+        return ok({
+          reply: routed.clarification_question,
+          context: ctx,
+        });
+      }
 
-        // el intent puede quedarse report, porque luego resolverás estudiante
+      if (routed.term) {
+        ctx.__llm_term = routed.term;
+      }
+
+      if (routed.action === "switch_student") {
+        ctx.__llm_wantsChange = true;
+        intent = "report";
+      } else if (routed.action === "stage_analysis") {
+        ctx.__llm_stage = routed.stage ?? null;
+        intent = "stage_analysis";
+
+      } else if (routed.action === "hours") {
+        intent = "hours";
+      } else if (routed.action === "stages") {
+        intent = "stages";
+      } else if (routed.action === "interactions") {
+        intent = "interactions";
+      } else if (routed.action === "usage") {
+        intent = "usage";
+      } else if (routed.action === "progress") {
+        intent = "progress";
+      } else if (routed.action === "top10") {
+        intent = "top10";
+      } else if (routed.action === "alerts") {
+        intent = "alerts";
+      } else if (routed.action === "report") {
         intent = "report";
       }
-      
-      else if (routed.action === "stage_analysis") {
-        (ctx as any).__llm_stage = routed.stage ?? null;
-        intent = "stage_analysis";
-      } else if (routed.action === "hours") intent = "hours";
-      else if (routed.action === "stages") intent = "stages";
-      else if (routed.action === "interactions") intent = "interactions";
-      else if (routed.action === "usage") intent = "usage";
-      else if (routed.action === "progress") intent = "progress";
-      else if (routed.action === "top10") intent = "top10";
-      else if (routed.action === "alerts") intent = "alerts";
-      else if (routed.action === "report") intent = "report";
     }
+
+
+
+
 
     // ✅ GLOBAL: top10/alertas sin estudiante en foco
     if (intent === "top10") {
@@ -1298,14 +1331,20 @@ export async function POST(req: Request) {
       return ok({ reply, context: ctx });
     }
 
-    const llmTerm = (ctx as any).__llm_term as string | null | undefined;
-    const llmWantsChange = (ctx as any).__llm_wantsChange as boolean | undefined;
 
-    const term = llmTerm ? llmTerm : extractSearchTerm(message);
+
+    const llmTerm = ctx.__llm_term ?? null;
+
+    const llmWantsChange = ctx.__llm_wantsChange ?? false;
+
+    const extractedTerm = extractSearchTerm(message);
+    const term = llmTerm && llmTerm.trim().length > 0 ? llmTerm.trim() : extractedTerm;
 
     const wantsChange =
       Boolean(llmWantsChange) ||
-      /(?:cambiar|otro|nueva persona|nuevo estudiante)/i.test(message);
+      /(?:cambiar|cambia|otro|otra|nueva persona|nuevo estudiante|buscar|busca|revisa|revisemos|veamos)/i.test(message);
+
+
 
     // 2) Si no hay estudiante activo o el docente quiere cambiar → resolver estudiante
     if (!activeStudent || wantsChange) {
@@ -1375,7 +1414,7 @@ export async function POST(req: Request) {
 
     // ✅ Análisis académico de etapa (requiere estudiante en foco)
     if (activeStudent && intent === "stage_analysis") {
-    const llmStage = (ctx as any).__llm_stage as number | null | undefined;
+     const llmStage = ctx.__llm_stage ?? null;
     const stageN = llmStage ?? detectStageNumber(message);
 
     if (!stageN) {

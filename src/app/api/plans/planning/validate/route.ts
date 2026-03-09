@@ -8,6 +8,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
 export const runtime = "nodejs";
 
@@ -332,6 +333,12 @@ ${JSON.stringify(finalPayload, null, 2)}
       }
     }
 
+    const next = await advancePlanStage({
+      userId: user.userId,
+      chatId: chatId,
+      fromStage: STAGE,
+    });
+
     return NextResponse.json(
       {
         ok: true,
@@ -342,7 +349,10 @@ ${JSON.stringify(finalPayload, null, 2)}
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
         ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
-        next: { stage: 9, hint: "En Etapa 9 el estudiante reporta avance y opcionalmente sube un archivo." },
+        next: {
+          ...next,
+          hint: "En Etapa 9 el estudiante reporta avance y opcionalmente sube un archivo.",
+        },
       },
       { status: 200 }
     );

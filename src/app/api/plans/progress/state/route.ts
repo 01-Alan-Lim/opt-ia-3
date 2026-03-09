@@ -1,9 +1,12 @@
-// src/app/api/plans/progress/state/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// src/app/api/plans/improvement/state/route.ts
+import { NextRequest } from "next/server";
 import { z } from "zod";
+
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { ok, failResponse } from "@/lib/api/response";
+import { mergeStageState, normalizeStageState } from "@/lib/plan/stageState";
 
 export const runtime = "nodejs";
 
@@ -18,8 +21,20 @@ const UpsertBodySchema = z.object({
   stateJson: z.record(z.string(), z.unknown()),
 });
 
-function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+async function assertChatOwner(userId: string, chatId: string) {
+  const { data: chatRow, error: chatErr } = await supabaseServer
+    .from("chats")
+    .select("id, client_id")
+    .eq("id", chatId)
+    .single();
+
+  if (chatErr || !chatRow) {
+    return { ok: false as const, status: 404, message: "Chat no encontrado." };
+  }
+  if (chatRow.client_id !== userId) {
+    return { ok: false as const, status: 403, message: "No tienes acceso a este chat." };
+  }
+  return { ok: true as const };
 }
 
 export async function GET(req: NextRequest) {
@@ -27,14 +42,23 @@ export async function GET(req: NextRequest) {
     const user = await requireUser(req);
 
     const gate = await assertChatAccess(req);
-    if (!gate.ok) return fail(403, gate.reason, gate.message);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
 
-    const parsed = GetQuerySchema.safeParse(Object.fromEntries(new URL(req.url).searchParams));
+    const parsed = GetQuerySchema.safeParse(
+      Object.fromEntries(new URL(req.url).searchParams)
+    );
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
+      return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.", 400);
     }
 
     const { chatId } = parsed.data;
+
+    const access = await assertChatOwner(user.userId, chatId);
+    if (!access.ok) {
+      return failResponse(access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message, access.status);
+    }
 
     const { data, error } = await supabaseServer
       .from("plan_stage_states")
@@ -44,13 +68,28 @@ export async function GET(req: NextRequest) {
       .eq("stage", STAGE)
       .maybeSingle();
 
-    if (error) return fail(500, "DB_ERROR", "No se pudo leer el estado de Etapa 9.", error);
+    if (error) {
+      return failResponse("INTERNAL", "No se pudo leer el estado de la Etapa 9.", 500);
+    }
 
-    return NextResponse.json({ ok: true, data: { exists: !!data, row: data ?? null } });
-  } catch (e: unknown) {
-    const msg = (e as any)?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    return ok({
+      exists: !!data,
+      row: data
+        ? {
+            ...data,
+            state_json: data.state_json ? normalizeStageState(STAGE, data.state_json) : null,
+          }
+        : null,
+    });
+  } catch (err: unknown) {
+    const e = err as { message?: string };
+    if (e?.message === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "No autenticado", 401);
+    }
+    if (err instanceof z.ZodError) {
+      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 9.", 400, err.flatten());
+    }
+    return failResponse("INTERNAL", "Error interno", 500);
   }
 }
 
@@ -59,15 +98,36 @@ export async function POST(req: NextRequest) {
     const user = await requireUser(req);
 
     const gate = await assertChatAccess(req);
-    if (!gate.ok) return fail(403, gate.reason, gate.message);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
 
     const raw = await req.json().catch(() => null);
     const parsed = UpsertBodySchema.safeParse(raw);
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+      return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.", 400);
     }
 
     const { chatId, stateJson } = parsed.data;
+
+    const access = await assertChatOwner(user.userId, chatId);
+    if (!access.ok) {
+      return failResponse(access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message, access.status);
+    }
+
+    const existing = await supabaseServer
+      .from("plan_stage_states")
+      .select("state_json")
+      .eq("user_id", user.userId)
+      .eq("chat_id", chatId)
+      .eq("stage", STAGE)
+      .maybeSingle();
+
+    if (existing.error) {
+      return failResponse("INTERNAL", "No se pudo leer el estado actual de la Etapa 9.", 500);
+    }
+
+    const mergedState = mergeStageState(STAGE, existing.data?.state_json ?? null, stateJson);
 
     const { data, error } = await supabaseServer
       .from("plan_stage_states")
@@ -76,19 +136,31 @@ export async function POST(req: NextRequest) {
           user_id: user.userId,
           chat_id: chatId,
           stage: STAGE,
-          state_json: stateJson,
+          state_json: mergedState,
         },
         { onConflict: "user_id,chat_id,stage" }
       )
       .select("id, user_id, chat_id, stage, state_json, updated_at")
       .single();
 
-    if (error || !data) return fail(500, "DB_ERROR", "No se pudo guardar estado de Etapa 9.", error);
+    if (error || !data) {
+      return failResponse("INTERNAL", "No se pudo guardar el estado de la Etapa 9.", 500);
+    }
 
-    return NextResponse.json({ ok: true, data: { row: data } });
-  } catch (e: unknown) {
-    const msg = (e as any)?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    return ok({
+      row: {
+        ...data,
+        state_json: data.state_json ? normalizeStageState(STAGE, data.state_json) : null,
+      },
+    });
+  } catch (err: unknown) {
+    const e = err as { message?: string };
+    if (e?.message === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "No autenticado", 401);
+    }
+    if (err instanceof z.ZodError) {
+      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 9.", 400, err.flatten());
+    }
+    return failResponse("INTERNAL", "Error interno", 500);
   }
 }
