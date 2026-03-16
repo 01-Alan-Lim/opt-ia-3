@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
@@ -47,28 +48,7 @@ type StageSnapshot = {
   payload: any;
 };
 
-async function loadLatestValidated(
-  userId: string,
-  chatId: string,
-  stage: number,
-  artifactType: string
-): Promise<StageSnapshot | null> {
-  const { data, error } = await supabaseServer
-    .from("plan_stage_artifacts")
-    .select("stage, artifact_type, payload, updated_at")
-    .eq("user_id", userId)
-    .eq("chat_id", chatId)
-    .eq("stage", stage)
-    .eq("artifact_type", artifactType)
-    .eq("period_key", PERIOD_KEY)
-    .eq("status", "validated")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
 
-  if (error || !data) return null;
-  return data as any;
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -90,9 +70,28 @@ export async function POST(req: NextRequest) {
 
     const { chatId, fileName, storagePath, extractedText, versionNumber, recentHistory } = parsed.data;
 
-    // Gate: requiere que exista Etapa 9 validada (reporte de avances)
-    // Nota: si por algún motivo Etapa 9 aún no existe en tu proyecto, devuelve error claro.
-    const stage9 = await loadLatestValidated(user.userId, chatId, 9, "progress_final");
+        // Gate: requiere que exista Etapa 9 validada (reporte de avances)
+    const stage9Result = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 9,
+      artifactType: "progress_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    if (!stage9Result.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "DB_ERROR",
+          message: "No se pudo leer Etapa 9 (Reporte de avances) validada.",
+          detail: stage9Result.error,
+        },
+        { status: 500 }
+      );
+    }
+
+    const stage9 = stage9Result.row;
     if (!stage9?.payload) {
       return NextResponse.json(
         {
@@ -104,23 +103,81 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Etapas previas que vamos a cruzar (si alguna falta, no inventamos: se incluye null y la IA debe ser conservadora)
-    const ish = await loadLatestValidated(user.userId, chatId, 4, "ishikawa_final");
-    const pareto = await loadLatestValidated(user.userId, chatId, 5, "pareto_final");
-    const objectives = await loadLatestValidated(user.userId, chatId, 6, "objectives_final");
-    const improvement = await loadLatestValidated(user.userId, chatId, 7, "improvement_final");
-    const planning = await loadLatestValidated(user.userId, chatId, 8, "planning_final");
+    const ishResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 4,
+      artifactType: "ishikawa_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    const paretoResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 5,
+      artifactType: "pareto_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    const objectivesResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 6,
+      artifactType: "objectives_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    const improvementResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 7,
+      artifactType: "improvement_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    const planningResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 8,
+      artifactType: "planning_final",
+      periodKey: PERIOD_KEY,
+    });
+
+    const ish = ishResult.ok ? ishResult.row : null;
+    const pareto = paretoResult.ok ? paretoResult.row : null;
+    const objectives = objectivesResult.ok ? objectivesResult.row : null;
+    const improvement = improvementResult.ok ? improvementResult.row : null;
+    const planning = planningResult.ok ? planningResult.row : null;
 
     // Timeline de etapas (solo validadas) para “continuidad/proceso”
-    const { data: timelineRows } = await supabaseServer
+        const timelineChatIds = Array.from(
+      new Set(
+        [
+          ish?.chat_id,
+          pareto?.chat_id,
+          objectives?.chat_id,
+          improvement?.chat_id,
+          planning?.chat_id,
+          stage9?.chat_id,
+        ].filter((value): value is string => typeof value === "string" && value.length > 0)
+      )
+    );
+
+    let timelineQuery = supabaseServer
       .from("plan_stage_artifacts")
-      .select("stage, artifact_type, updated_at")
+      .select("stage, artifact_type, updated_at, chat_id")
       .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
       .eq("period_key", PERIOD_KEY)
       .eq("status", "validated")
-      .in("stage", [4, 5, 6, 7, 8, 9])
-      .order("updated_at", { ascending: true });
+      .in("stage", [4, 5, 6, 7, 8, 9]);
+
+    if (timelineChatIds.length > 0) {
+      timelineQuery = timelineQuery.in("chat_id", timelineChatIds);
+    }
+
+    const { data: timelineRows } = await timelineQuery.order("updated_at", {
+      ascending: true,
+    });
 
     const timeline = (timelineRows ?? []).map((r: any) => ({
       stage: r.stage,
@@ -176,20 +233,27 @@ REGLAS:
 - Máximo 2 versiones: si es versión 2, será la definitiva aunque tenga fallas.
 - Si es versión 1 y hay problemas importantes, se pide corrección (subir versión 2).
 - NO exigir evidencias extra ni archivos adicionales.
-- NO acusar plagio: solo describir señales (concentración temporal, inconsistencias) y recomendar justificar o corregir.
+- NO acusar plagio: solo describir señales de concentración temporal, vacíos metodológicos o inconsistencias y recomendar justificar o corregir.
+- Sé estricto con la nota: no otorgues puntajes altos por simple buena redacción si hay incoherencias metodológicas.
+- Un documento puede estar bien redactado y aun así recibir nota media si no coincide con lo validado antes.
+- Penaliza con claridad cuando haya cambios no justificados entre Pareto, Objetivos, Plan de Mejora, Planificación, Avance y documento final.
 
 RÚBRICA (0-100) — 4 ítems:
 1) Coherencia metodológica del documento (30%)
-   - diagnóstico → causas → objetivos → propuesta → implementación
+   - diagnóstico -> causas -> objetivos -> propuesta -> implementación
    - sin saltos lógicos
-2) Consistencia con lo validado en el Asesor (25%)
+   - penaliza fuerte si el documento cambia de enfoque sin explicación
+2) Consistencia con lo validado en el Asesor (30%)
    - coherencia con Pareto/Objetivos/Plan/Planificación/Avance
    - cambios deben ser justificables
-3) Proceso y continuidad de trabajo (30%)
+   - si el documento contradice lo validado, baja la nota aunque el texto esté bien escrito
+3) Proceso y continuidad de trabajo (25%)
    - señales temporales de etapas + horas
    - coherencia entre “lo que dice el documento” y “lo que registró”
+   - penaliza concentración excesiva del trabajo al final si el documento presume un proceso largo no respaldado
 4) Calidad técnica y redacción (15%)
-   - claridad, estructura, redacción técnica (sin relleno genérico)
+   - claridad, estructura, redacción técnica
+   - no premies redacción bonita si el contenido metodológico es débil
 
 Devuelve SOLO JSON:
 {
@@ -202,7 +266,7 @@ Devuelve SOLO JSON:
     "plan_implementacion": "string|null",
     "conclusiones": "string|null"
   },
-  "evaluation": {
+    "evaluation": {
     "total_score": number (0-100),
     "total_label": "Deficiente" | "Regular" | "Adecuado" | "Bien",
     "detail": {
@@ -214,12 +278,21 @@ Devuelve SOLO JSON:
     "signals": {
       "inconsistencias_detectadas": ["string"],
       "cambios_importantes": ["string"],
-      "continuidad_observada": "string"
+      "continuidad_observada": "string",
+      "secciones_debiles": ["string"],
+      "justificaciones_faltantes": ["string"]
     },
     "mejoras": ["string","string","string"],
     "needs_resubmission": boolean
   }
 }
+
+CRITERIOS DE SEVERIDAD:
+- "Bien" solo si el documento es consistentemente sólido y alineado con lo trabajado antes.
+- "Adecuado" si cumple razonablemente pero aún tiene vacíos o ajustes importantes.
+- "Regular" si hay incoherencias metodológicas, cambios poco justificados o proceso débil.
+- "Deficiente" si el documento no sostiene la lógica del proyecto aunque tenga buena forma.
+- No entregues 95+ salvo que la coherencia metodológica, la consistencia con el asesor y la continuidad del proceso sean realmente fuertes.
 
 ENTRADAS:
 - Versión del documento: ${versionNumber}

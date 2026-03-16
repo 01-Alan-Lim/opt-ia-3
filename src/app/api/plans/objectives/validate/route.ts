@@ -34,6 +34,68 @@ function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
 }
 
+
+function normalizeText(input: string) {
+  return String(input ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const raw = String(value ?? "").trim();
+    const key = normalizeText(raw);
+    if (!raw || !key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(raw);
+  }
+
+  return out;
+}
+
+function looksTooGenericObjective(text: string): boolean {
+  const t = normalizeText(text);
+
+  const genericPatterns = [
+    "mejorar la productividad",
+    "optimizar el proceso",
+    "mejorar el proceso",
+    "aumentar la eficiencia",
+    "mejorar la eficiencia",
+    "reducir problemas",
+    "mejorar el area",
+  ];
+
+  return genericPatterns.some((pattern) => t === pattern || t.startsWith(pattern));
+}
+
+function looksLikeOnlyActivity(text: string): boolean {
+  const t = normalizeText(text);
+
+  const activityStarters = [
+    "capacitar",
+    "realizar capacitacion",
+    "hacer capacitacion",
+    "implementar capacitacion",
+    "elaborar",
+    "hacer",
+    "crear",
+    "diseñar",
+    "desarrollar",
+  ];
+
+  return activityStarters.some((pattern) => t.startsWith(pattern));
+}
+
+
+
 function extractJsonSafe(text: string) {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
   try {
@@ -120,7 +182,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const specificObjectives = asStringArray(s?.specificObjectives);
+    const specificObjectives = uniqueStrings(asStringArray(s?.specificObjectives));
+
     if (specificObjectives.length < 3) {
       return NextResponse.json({
         ok: true,
@@ -129,7 +192,38 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const linkedCriticalRoots = asStringArray(s?.linkedCriticalRoots);
+    const tooShortSpecifics = specificObjectives.filter((item) => item.trim().length < 12);
+    if (tooShortSpecifics.length > 0) {
+      return NextResponse.json({
+        ok: true,
+        valid: false,
+        message: "Hay objetivos específicos demasiado cortos o incompletos. Redáctalos con más claridad.",
+        detail: { tooShortSpecifics },
+      });
+    }
+
+    const genericSpecifics = specificObjectives.filter((item) => looksTooGenericObjective(item));
+    if (genericSpecifics.length > 0) {
+      return NextResponse.json({
+        ok: true,
+        valid: false,
+        message: "Algunos objetivos específicos siguen siendo demasiado genéricos. Deben indicar con mayor precisión qué se va a mejorar.",
+        detail: { genericSpecifics },
+      });
+    }
+
+    const activitySpecifics = specificObjectives.filter((item) => looksLikeOnlyActivity(item));
+    if (activitySpecifics.length > 0) {
+      return NextResponse.json({
+        ok: true,
+        valid: false,
+        message: "Algunos objetivos específicos están redactados como actividades y no como resultados esperados.",
+        detail: { activitySpecifics },
+      });
+    }
+
+    const linkedCriticalRoots = uniqueStrings(asStringArray(s?.linkedCriticalRoots));
+
     if (linkedCriticalRoots.length < 1) {
       return NextResponse.json({
         ok: true,
@@ -138,8 +232,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const officialSet = new Set(criticalRootsOfficial);
-    const invalidLinked = linkedCriticalRoots.filter((r) => !officialSet.has(r));
+    const officialSet = new Set(criticalRootsOfficial.map((r) => normalizeText(r)));
+    const invalidLinked = linkedCriticalRoots.filter((r) => !officialSet.has(normalizeText(r)));
+
     if (invalidLinked.length > 0) {
       return NextResponse.json({
         ok: true,
@@ -152,8 +247,8 @@ export async function POST(req: NextRequest) {
     // 4) Payload final (se guarda siempre que pase el mínimo)
     const finalPayload = {
       generalObjective,
-      specificObjectives,
-      linkedCriticalRoots,
+      specificObjectives: uniqueStrings(specificObjectives),
+      linkedCriticalRoots: uniqueStrings(linkedCriticalRoots),
       validatedAt: new Date().toISOString(),
       fromPareto: {
         criticalRootsCount: criticalRootsOfficial.length,

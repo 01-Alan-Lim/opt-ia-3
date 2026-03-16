@@ -8,6 +8,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { extractJsonSafe } from "@/lib/llm/extractJson";
 import {
   loadLatestStageStateByChat,
   loadLatestValidatedArtifact,
@@ -26,6 +27,29 @@ const BodySchema = z.object({
   chatId: z.string().uuid(),
 });
 
+
+const ScoreNumberSchema = z
+  .coerce.number()
+  .finite("Debe ser un número válido");
+
+const ScorePercentSchema = z
+  .coerce.number()
+  .finite("Debe ser un número válido")
+  .min(0)
+  .max(100);
+
+const ImprovementEvaluationSchema = z.object({
+  total_score: ScorePercentSchema,
+  total_label: z.enum(["Deficiente", "Regular", "Adecuado", "Bien"]),
+  detail: z.object({
+    coherencia_trazabilidad: ScorePercentSchema,
+    impacto_factibilidad: ScorePercentSchema,
+    medicion_control: ScorePercentSchema,
+  }),
+  feedback: z.string().trim().min(1),
+  mejoras: z.array(z.string().trim().min(1)).min(1),
+});
+
 function fail(status: number, code: string, message: string, detail?: unknown) {
   return NextResponse.json({ ok: false, code, message, detail }, { status });
 }
@@ -38,19 +62,6 @@ function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
 }
 
-function extractJsonSafe(text: string) {
-  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {}
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
-  }
-}
 
 type Initiative = {
   id?: string;
@@ -351,16 +362,46 @@ ${JSON.stringify(
 )}
 `;
 
-    let evaluation: any = null;
+    let evaluation: z.infer<typeof ImprovementEvaluationSchema> | null = null;
     let evalWarning: { warning: string; raw?: string } | null = null;
 
     try {
       const llmRes = await model.generateContent(prompt);
       const llmText = llmRes.response.text();
-      evaluation = extractJsonSafe(llmText);
-      if (!evaluation || typeof evaluation.total_score !== "number") {
-        evalWarning = { warning: "Etapa 7 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+
+      const parsedEvaluation = extractJsonSafe(llmText);
+      if (!parsedEvaluation) {
+        evalWarning = {
+          warning: "Etapa 7 validada, pero la IA no devolvió un JSON válido.",
+          raw: llmText,
+        };
         evaluation = null;
+      } else {
+        const normalizedEvaluation =
+          typeof parsedEvaluation === "object" && parsedEvaluation !== null
+            ? {
+                ...parsedEvaluation,
+                feedback:
+                  typeof (parsedEvaluation as Record<string, unknown>).feedback === "string"
+                    ? (parsedEvaluation as Record<string, unknown>).feedback
+                    : "",
+                mejoras: Array.isArray((parsedEvaluation as Record<string, unknown>).mejoras)
+                  ? (parsedEvaluation as Record<string, unknown>).mejoras
+                  : [],
+              }
+            : parsedEvaluation;
+
+        const evaluationParse = ImprovementEvaluationSchema.safeParse(normalizedEvaluation);
+
+        if (!evaluationParse.success) {
+          evalWarning = {
+            warning: "Etapa 7 validada, pero la IA devolvió JSON con estructura inválida.",
+            raw: llmText,
+          };
+          evaluation = null;
+        } else {
+          evaluation = evaluationParse.data;
+        }
       }
     } catch {
       evalWarning = { warning: "Etapa 7 validada, pero falló la evaluación IA." };

@@ -29,6 +29,34 @@ function ceil20Percent(n: number) {
   return Math.max(1, Math.ceil(n * 0.2));
 }
 
+function normalizeText(input: string) {
+  return String(input ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/^[-*•\d.)\s]+/g, "")
+    .replace(/[.,;:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of input) {
+    const raw = String(item ?? "").trim();
+    const normalized = normalizeText(raw);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(raw);
+  }
+
+  return out;
+}
+
 function extractJsonSafe(text: string) {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
   try {
@@ -174,7 +202,7 @@ export async function POST(req: NextRequest) {
     
 
     // 3) Validaciones Pareto (MVP)
-    const selectedRoots: string[] = Array.isArray(s?.selectedRoots) ? s.selectedRoots.map((x: any) => String(x).trim()).filter(Boolean) : [];
+    const selectedRoots = normalizeStringArray(s?.selectedRoots);
     const minSelected = typeof s?.minSelected === "number" ? s.minSelected : 10;
     const maxSelected = typeof s?.maxSelected === "number" ? s.maxSelected : 15;
 
@@ -187,8 +215,8 @@ export async function POST(req: NextRequest) {
     }
 
     // asegurar que selectedRoots exista dentro de rootsOfficial
-    const rootsSet = new Set(rootsOfficial);
-    const invalidSelected = selectedRoots.filter((r) => !rootsSet.has(r));
+    const rootsSet = new Set(rootsOfficial.map((r) => normalizeText(r)));
+    const invalidSelected = selectedRoots.filter((r) => !rootsSet.has(normalizeText(r)));
     if (invalidSelected.length > 0) {
       return NextResponse.json({
         ok: true,
@@ -224,9 +252,7 @@ export async function POST(req: NextRequest) {
     }
 
     // criticalRoots (top 20% devuelto por el estudiante tras Excel)
-    const criticalRoots: string[] = Array.isArray(s?.criticalRoots)
-      ? s.criticalRoots.map((x: any) => String(x).trim()).filter(Boolean)
-      : [];
+    const criticalRoots = normalizeStringArray(s?.criticalRoots);
 
     const minCritical = ceil20Percent(selectedRoots.length);
     if (criticalRoots.length < minCritical) {
@@ -237,8 +263,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const selectedSet = new Set(selectedRoots);
-    const invalidCritical = criticalRoots.filter((r) => !selectedSet.has(r));
+    const selectedSet = new Set(selectedRoots.map((r) => normalizeText(r)));
+    const invalidCritical = criticalRoots.filter((r) => !selectedSet.has(normalizeText(r)));
     if (invalidCritical.length > 0) {
       return NextResponse.json({
         ok: true,

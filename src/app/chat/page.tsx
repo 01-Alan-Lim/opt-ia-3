@@ -594,6 +594,93 @@ export default function ChatPage() {
     return textOk && pctOk;
   }
 
+  function normalizeClosureText(text: string) {
+  return String(text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeObjectivesClosureRequest(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    normalized.includes("ya termine mis objetivos") ||
+    normalized.includes("ya termine los objetivos") ||
+    normalized.includes("ya tengo mis objetivos completos") ||
+    normalized.includes("ya tengo los objetivos completos") ||
+    normalized.includes("mis objetivos ya estan listos") ||
+    normalized.includes("los objetivos ya estan listos") ||
+    normalized.includes("revisa mis objetivos") ||
+    normalized.includes("revisa los objetivos") ||
+    normalized.includes("puedes revisar mis objetivos") ||
+    normalized.includes("puedes validar mis objetivos") ||
+    normalized.includes("podemos validar objetivos") ||
+    normalized.includes("valida mis objetivos") ||
+    normalized.includes("valida los objetivos") ||
+    normalized.includes("podemos cerrar objetivos") ||
+    normalized.includes("cierra la etapa de objetivos") ||
+    normalized.includes("pasemos a la etapa 7")
+  );
+}
+
+function looksLikeImprovementClosureRequest(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    normalized.includes("revisa mi plan de mejora") ||
+    normalized.includes("revisa el plan de mejora") ||
+    normalized.includes("puedes revisar mi plan de mejora") ||
+    normalized.includes("puedes validar mi plan de mejora") ||
+    normalized.includes("valida mi plan de mejora") ||
+    normalized.includes("valida el plan de mejora") ||
+    normalized.includes("mi plan de mejora ya esta listo") ||
+    normalized.includes("el plan de mejora ya esta listo") ||
+    normalized.includes("podemos cerrar la etapa 7") ||
+    normalized.includes("cierra la etapa 7") ||
+    normalized.includes("pasemos a la etapa 8")
+  );
+}
+
+function looksLikePlanningClosureRequest(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    normalized.includes("revisa mi planificacion") ||
+    normalized.includes("revisa la planificacion") ||
+    normalized.includes("puedes revisar mi planificacion") ||
+    normalized.includes("puedes validar mi planificacion") ||
+    normalized.includes("valida mi planificacion") ||
+    normalized.includes("valida la planificacion") ||
+    normalized.includes("mi planificacion ya esta lista") ||
+    normalized.includes("la planificacion ya esta lista") ||
+    normalized.includes("podemos cerrar la etapa 8") ||
+    normalized.includes("cierra la etapa 8") ||
+    normalized.includes("pasemos a la etapa 9")
+  );
+}
+
+function looksLikeProgressClosureRequest(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    normalized.includes("revisa mi reporte de avances") ||
+    normalized.includes("revisa el reporte de avances") ||
+    normalized.includes("puedes revisar mi reporte") ||
+    normalized.includes("puedes validar mi reporte") ||
+    normalized.includes("valida mi reporte de avances") ||
+    normalized.includes("valida el reporte de avances") ||
+    normalized.includes("mi reporte ya esta listo") ||
+    normalized.includes("el reporte ya esta listo") ||
+    normalized.includes("podemos cerrar la etapa 9") ||
+    normalized.includes("cierra la etapa 9") ||
+    normalized.includes("pasemos a la etapa 10")
+  );
+}
+
   // ================================
   // ETAPA 10: Documento final (Word/PDF) - 2 versiones máximo
   // ================================
@@ -3344,6 +3431,7 @@ export default function ChatPage() {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({
+        chatId: chatIdRef.current ?? null,
         studentMessage: input.studentMessage,
         paretoState: normalizeParetoStateClient(input.paretoState),
         caseContext: input.caseContext ?? null,
@@ -3792,7 +3880,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 10 (Documento final)**.\n\n" +
         "👉 Continúa con tu documento, sube la versión correspondiente o hazme consultas para mejorarlo.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3807,7 +3895,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 9 (Reporte de avances)**.\n\n" +
         "👉 Continúa registrando avances, evidencias y resultados parciales o finales.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3822,7 +3910,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 8 (Planificación / Cronograma)**.\n\n" +
         "👉 Continúa armando el cronograma, responsables, recursos y tiempos.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3837,7 +3925,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
         "👉 Continúa estructurando la propuesta de mejora.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3852,7 +3940,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
         "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3869,7 +3957,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 5 (Pareto)**.\n\n" +
         "👉 Continúa priorizando tus causas y, cuando corresponda, compárteme las causas críticas.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3893,7 +3981,7 @@ export default function ChatPage() {
         (problemText ? `- Problema principal: **${problemText}**\n\n` : "") +
         "👉 Continúa completando causas, subcausas y profundizando con los 5 porqués donde haga falta.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3915,7 +4003,7 @@ export default function ChatPage() {
         `- Ideas registradas: **${nIdeas}**\n\n` +
         "👉 Continúa aportando ideas claras y concretas relacionadas con el problema.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3931,7 +4019,7 @@ export default function ChatPage() {
           "Estabas en **Etapa 2 (FODA)**.\n\n" +
           "👉 Continúa desarrollando fortalezas, debilidades, oportunidades y amenazas con enfoque en el caso.";
 
-        setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+        setMessages([createMessage("assistant", msg)]);
         await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
         return true;
       }
@@ -3942,7 +4030,7 @@ export default function ChatPage() {
         "Ahora corresponde continuar con la **Etapa 2 (FODA)**.\n\n" +
         "👉 Empecemos por lo más fácil: dime una **fortaleza interna** de la empresa o del proceso analizado.";
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3970,7 +4058,7 @@ export default function ChatPage() {
         "Estabas en **Etapa 1 (Productividad)**.\n\n" +
         promptProd(nextProdStep, ctx.contextJson ?? {}, prodState.prodDraft ?? {});
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -3996,7 +4084,7 @@ export default function ChatPage() {
 
       const msg = `${greet}\n\n${promptForStep(step)}`;
 
-      setMessages((prev) => [...prev, createMessage("assistant", msg)]);
+      setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
@@ -4004,9 +4092,13 @@ export default function ChatPage() {
     return false;
   }
 
-    type ValidationPayloadLike = {
+  type ValidationPayloadLike = {
     next?: { toStage?: number | null; hint?: string | null } | null;
     roots?: string[] | null;
+    final?: {
+      criticalRoots?: string[] | null;
+      selectedRoots?: string[] | null;
+    } | null;
   };
 
   function readNextStageFromValidation(
@@ -4023,6 +4115,26 @@ export default function ChatPage() {
       raw === 10
       ? raw
       : null;
+  }
+
+  function readCriticalRootsFromValidation(
+    payload: ValidationPayloadLike | null | undefined
+  ): string[] {
+    const raw = payload?.final?.criticalRoots;
+    if (!Array.isArray(raw)) return [];
+
+    const out: string[] = [];
+    const seen = new Set<string>();
+
+    for (const item of raw) {
+      const text = String(item ?? "").trim();
+      const key = text.toLowerCase();
+      if (!text || seen.has(key)) continue;
+      seen.add(key);
+      out.push(text);
+    }
+
+    return out;
   }
 
   async function applyBackendAdvisorAdvance(args: {
@@ -4140,10 +4252,12 @@ export default function ChatPage() {
     }
 
     if (fromStage === 5 && toStage === 6) {
+      const criticalRoots = readCriticalRootsFromValidation(payload);
+
       const initialObjectives: ObjectivesState = {
         generalObjective: "",
         specificObjectives: [],
-        linkedCriticalRoots: [],
+        linkedCriticalRoots: criticalRoots,
         step: "general",
       };
 
@@ -4153,11 +4267,17 @@ export default function ChatPage() {
       setParetoState(null);
       await clearStageState(5, effectiveChatId);
 
+      const rootsText =
+        criticalRoots.length > 0
+          ? `Estas son las causas críticas que quedaron priorizadas:\n- ${criticalRoots.join("\n- ")}\n\n`
+          : "";
+
       await appendAssistant(
         "✅ **Etapa 5 (Pareto) finalizada**.\n\n" +
           "Ahora iniciamos la **Etapa 6: Objetivos del Plan de Mejora**.\n\n" +
-          "👉 Primero redactemos el **Objetivo General** en una sola oración:\n" +
-          "¿Qué vas a lograr atacando esas causas críticas?"
+          rootsText +
+          "👉 Empecemos por el **objetivo general**.\n" +
+          "Redáctalo en una sola oración indicando qué vas a mejorar al atacar esas causas críticas."
       );
 
       return true;
@@ -4405,9 +4525,11 @@ export default function ChatPage() {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant(
-              "⚠️ No pude procesar tu reporte. Cuéntame brevemente qué lograste implementar hasta hoy."
-            );
+            const backendMsg =
+              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
+                ? `⚠️ ${assistant.payload.message}`
+                : "⚠️ No pude procesar tu reporte. Cuéntame brevemente qué lograste implementar hasta hoy.";
+            await appendAssistant(backendMsg);
             return;
           }
 
@@ -4419,6 +4541,10 @@ export default function ChatPage() {
           await appendAssistant(assistant.payload.assistantMessage);
 
           if (nextState.step === "review" && isProgressReadyForValidation(nextState)) {
+            if (!looksLikeProgressClosureRequest(text)) {
+              return;
+            }
+
             const v = await validateProgress(effectiveChatId);
 
             if (!v.ok) {
@@ -4438,7 +4564,12 @@ export default function ChatPage() {
                   "✅ La Etapa 9 quedó validada, pero no pude preparar automáticamente la Etapa 10. Recarga el chat y retomamos."
                 );
               }
+              return;
             }
+
+            await appendAssistant(
+              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 9 antes de cerrarla."}`
+            );
           }
 
           return;
@@ -4456,9 +4587,11 @@ export default function ChatPage() {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant(
-              "⚠️ No pude procesar tu Planificación. Dime en 1 línea: ¿cuántas semanas te quedan para aplicar la mejora (aprox.)?"
-            );
+            const backendMsg =
+              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
+                ? `⚠️ ${assistant.payload.message}`
+                : "⚠️ No pude procesar tu Planificación. Dime en 1 línea: ¿cuántas semanas te quedan para aplicar la mejora (aprox.)?";
+            await appendAssistant(backendMsg);
             return;
           }
 
@@ -4470,9 +4603,11 @@ export default function ChatPage() {
           await appendAssistant(assistant.payload.assistantMessage);
 
 
-
-
           if (nextState.step === "review" && isPlanningReadyForValidation(nextState)) {
+            if (!looksLikePlanningClosureRequest(text)) {
+              return;
+            }
+
             const v = await validatePlanning(effectiveChatId);
 
             if (!v.ok) {
@@ -4517,7 +4652,11 @@ export default function ChatPage() {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant("⚠️ No pude procesar tu Plan de Mejora. ¿Me resumes en 1–2 líneas qué mejora quieres implementar o qué duda tienes?");
+            const backendMsg =
+              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
+                ? `⚠️ ${assistant.payload.message}`
+                : "⚠️ No pude procesar tu Plan de Mejora. ¿Me resumes en 1–2 líneas qué mejora quieres implementar o qué duda tienes?";
+            await appendAssistant(backendMsg);
             return;
           }
 
@@ -4528,8 +4667,13 @@ export default function ChatPage() {
 
           await appendAssistant(assistant.payload.assistantMessage);
 
-          // Cierre: si llega a review y está listo, validamos Etapa 7
+                    // Solo validamos Etapa 7 cuando ya está en review
+          // y el estudiante pide explícitamente revisar/cerrar su plan.
           if (nextState.step === "review" && isImprovementReadyForValidation(nextState)) {
+            if (!looksLikeImprovementClosureRequest(text)) {
+              return;
+            }
+
             const v = await validateImprovement(effectiveChatId);
 
             if (!v.ok) {
@@ -4550,8 +4694,12 @@ export default function ChatPage() {
                   "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
                 );
               }
-
+              return;
             }
+
+            await appendAssistant(
+              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 7 antes de cerrarla."}`
+            );
           }
 
           return;
@@ -4600,8 +4748,13 @@ export default function ChatPage() {
 
           await appendAssistant(assistant.payload.assistantMessage);
 
-          // Si llega a review, intentamos validar y cerrar la etapa 6
+          // Solo validamos Etapa 6 cuando el estado ya está en review
+          // y el estudiante lo pide explícitamente.
           if (nextState.step === "review" && isObjectivesReadyForValidation(nextState)) {
+            if (!looksLikeObjectivesClosureRequest(text)) {
+              return;
+            }
+
             const v = await validateObjectives(effectiveChatId);
             if (!v.ok) {
               const msg = v.payload?.message ?? "No se pudo cerrar Etapa 6 (Objetivos).";
@@ -4621,7 +4774,12 @@ export default function ChatPage() {
                   "✅ La Etapa 6 quedó validada, pero no pude preparar automáticamente la Etapa 7. Recarga el chat y retomamos."
                 );
               }
+              return;
             }
+
+            await appendAssistant(
+              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 6 antes de cerrarla."}`
+            );
           }
           return;
         }

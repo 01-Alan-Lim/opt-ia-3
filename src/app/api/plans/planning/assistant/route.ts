@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
@@ -108,25 +109,28 @@ export async function POST(req: NextRequest) {
     const { chatId, studentMessage, planningState, caseContext, recentHistory } = parsed.data;
 
     // 1) Leer Plan de Mejora final validado (Etapa 7)
-    const { data: improvementFinal, error: impErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 7)
-      .eq("artifact_type", "improvement_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const improvementResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 7,
+      artifactType: "improvement_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (impErr) {
+    if (!improvementResult.ok) {
       return NextResponse.json(
-        { ok: false, code: "DB_ERROR", message: "No se pudo leer Plan de Mejora final (Etapa 7).", detail: impErr },
+        {
+          ok: false,
+          code: "DB_ERROR",
+          message: "No se pudo leer Plan de Mejora final (Etapa 7).",
+          detail: improvementResult.error,
+        },
         { status: 500 }
       );
     }
+
+    const improvementFinal = improvementResult.row;
+
     if (!improvementFinal?.payload) {
       return NextResponse.json(
         {
@@ -162,9 +166,13 @@ OBJETIVO:
 - Conversación fluida (no formulario, no A/B). Máximo 1-2 preguntas por turno.
 
 REGLAS:
-- Si el estudiante no sabe semanas/fecha, menciona el **corte del curso** si está disponible.
-- Si el tiempo real es corto, ayuda a **recortar alcance**: prioriza piloto + medición mínima.
-- Cada iniciativa debe quedar con: actividades base, hito(s), evidencia y medición mínima.
+- Si el estudiante no sabe semanas o fecha, menciona el **corte del curso** si está disponible.
+- Si el tiempo real es corto, ayuda a **recortar alcance**: prioriza piloto + medición mínima + ajuste básico.
+- No intentes meter todo si no cabe. Señala con claridad qué sí entra en el tiempo y qué quedaría fuera.
+- Construye una secuencia lógica: preparar -> implementar/pilotear -> medir -> ajustar/cerrar.
+- Cada iniciativa debe quedar con: actividades base, hito(s) y medición mínima.
+- Si el plan del estudiante es demasiado ambicioso, conviértelo en una versión mínima viable sin perder coherencia metodológica.
+- Prioriza hitos críticos y evita cronogramas “bonitos” pero poco ejecutables.
 - Al final, entrega un cronograma por semanas.
 
 DATOS DISPONIBLES:
@@ -226,6 +234,9 @@ DEVUELVE SOLO JSON:
 
 NOTA:
 - No inventes datos sensibles. Si faltan, pregunta.
+- No cierres automáticamente la etapa solo porque ya exista un cronograma razonable.
+- Si detectas que la planificación no cabe en el tiempo, dilo con claridad y ajusta el alcance.
+- Si la planificación ya está bastante completa, resume lo acordado, explica por qué el cronograma sí es realista y pide confirmación antes de dejar la etapa lista para validación.
 `;
 
     const result = await model.generateContent(prompt);

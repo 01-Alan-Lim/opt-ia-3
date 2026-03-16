@@ -158,10 +158,18 @@ export async function POST(req: NextRequest) {
     // - Si es v2 => SIEMPRE cierra (definitiva aunque esté mal)
     // - Si es v1 => cierra solo si NO requiere resubmission y score/label son razonables
     const isV2 = versionNumber === 2;
+    const inconsistencyCount = Array.isArray(evaluation?.signals?.inconsistencias_detectadas)
+      ? evaluation.signals.inconsistencias_detectadas.length
+      : 0;
+
     const v1CanClose =
       versionNumber === 1 &&
       !needsResubmission &&
-      (totalLabel === "Adecuado" || totalLabel === "Bien" || (typeof totalScore === "number" && totalScore >= 80));
+      inconsistencyCount === 0 &&
+      (
+        totalLabel === "Bien" ||
+        (totalLabel === "Adecuado" && typeof totalScore === "number" && totalScore >= 85)
+      );
 
     const shouldClose = isV2 || v1CanClose;
 

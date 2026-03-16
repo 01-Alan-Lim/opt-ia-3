@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
@@ -68,25 +69,28 @@ export async function POST(req: NextRequest) {
     const { chatId, studentMessage, progressState, recentHistory } = parsed.data;
 
     // Requiere Etapa 8 validada para comparar
-    const { data: planningFinal, error: planErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 8)
-      .eq("artifact_type", "planning_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const planningResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 8,
+      artifactType: "planning_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (planErr) {
+    if (!planningResult.ok) {
       return NextResponse.json(
-        { ok: false, code: "DB_ERROR", message: "No se pudo leer Planificación final (Etapa 8).", detail: planErr },
+        {
+          ok: false,
+          code: "DB_ERROR",
+          message: "No se pudo leer Planificación final (Etapa 8).",
+          detail: planningResult.error,
+        },
         { status: 500 }
       );
     }
+
+    const planningFinal = planningResult.row;
+
     if (!planningFinal?.payload) {
       return NextResponse.json(
         {
@@ -107,17 +111,22 @@ Debe ser una conversación fluida, NO robótica.
 OBJETIVO:
 - El estudiante reporta en texto qué logró implementar vs lo planificado (Etapa 8).
 - Tu tarea es:
-  1) Entender el avance (qué se hizo y qué falta)
-  2) Estimar un porcentaje de avance (0-100) coherente con lo reportado
-  3) Generar un resumen corto (1-3 líneas)
-  4) (Opcional) pedir una sola aclaración si el reporte es muy vago.
+  1) Entender el avance real (qué se hizo, qué no se hizo y qué falta)
+  2) Contrastar el reporte contra la planificación base, especialmente hitos, semanas y mediciones
+  3) Estimar un porcentaje de avance (0-100) coherente y conservador
+  4) Generar un resumen corto (1-3 líneas)
+  5) Si hay desviaciones importantes, pedir una sola aclaración breve o ayudar a justificar el cambio
 
 REGLAS:
 - NO pidas subir archivos.
 - NO exijas evidencia.
 - "Medición/verificación" es solo textual (ej: "lo verificaré con tiempos / conteo / revisión supervisor").
 - Máximo 1 pregunta por turno.
-- Si el estudiante ya fue claro, cierra con confirmación.
+- Compara siempre lo reportado con lo planificado en Etapa 8.
+- Si el estudiante ejecutó menos de lo planeado, no lo castigues automáticamente: ayúdalo a explicar el desvío con claridad.
+- Si el porcentaje reportado es demasiado alto para lo descrito, ajústalo de forma conservadora.
+- Si el estudiante ya fue claro, resume su avance, menciona qué quedó pendiente y pide confirmación antes de dejar la etapa lista para validación.
+- No cierres automáticamente la etapa solo porque el reporte parezca suficiente.
 
 PLANIFICACIÓN BASE (Etapa 8 validada):
 ${JSON.stringify(planningFinal.payload, null, 2)}

@@ -3,6 +3,18 @@ import { supabaseServer } from "@/lib/supabaseServer";
 
 type JsonMap = Record<string, unknown>;
 
+function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") 
+    .replace(/^-+/g, "")
+    .replace(/[•\-]/g, "")
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export type ValidatedArtifactRow = {
   payload: JsonMap | null;
   chat_id: string | null;

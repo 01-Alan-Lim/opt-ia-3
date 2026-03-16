@@ -6,7 +6,9 @@ import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { extractJsonSafe } from "@/lib/llm/extractJson";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -46,24 +48,148 @@ const BodySchema = z.object({
   recentHistory: z.string().optional(),
 });
 
-function extractJsonSafe(text: string) {
-  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // ignore
-  }
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
-  }
-}
+const ImprovementInitiativeSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  linkedRoot: z.string().nullable(),
+  linkedObjective: z.string().nullable(),
+  measurement: z.object({
+    indicator: z.string().nullable(),
+    kpi: z.string().nullable(),
+    target: z.string().nullable(),
+  }),
+  feasibility: z.object({
+    estimatedWeeks: z.number().nullable(),
+    notes: z.string().nullable(),
+  }),
+});
+
+const ImprovementStateSchema = z.object({
+  stageIntroDone: z.boolean(),
+  step: z.enum(["discover", "build", "refine", "review"]),
+  focus: z.object({
+    chosenRoot: z.string().nullable(),
+    chosenObjective: z.string().nullable(),
+  }),
+  initiatives: z.array(ImprovementInitiativeSchema),
+  lastSummary: z.string().nullable(),
+});
+
+const ImprovementAssistantResponseSchema = z.object({
+  assistantMessage: z.string().min(1),
+  updates: z.object({
+    nextState: ImprovementStateSchema,
+    action: z.enum([
+      "init",
+      "add_initiative",
+      "refine_initiative",
+      "ask_clarify",
+      "summarize",
+      "redirect",
+      "ready_to_validate",
+    ]),
+  }),
+});
+
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+}
+
+function asNullableString(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+}
+
+function asNullableWeeks(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+
+  const num = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(num)) return null;
+  if (num <= 0) return null;
+  if (num > 52) return null;
+
+  return num;
+}
+
+function normalizeImprovementAssistantResponse(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+
+  const root = input as Record<string, unknown>;
+  const updates =
+    root.updates && typeof root.updates === "object"
+      ? (root.updates as Record<string, unknown>)
+      : null;
+
+  const nextState =
+    updates?.nextState && typeof updates.nextState === "object"
+      ? (updates.nextState as Record<string, unknown>)
+      : null;
+
+  const initiativesRaw = Array.isArray(nextState?.initiatives) ? nextState.initiatives : [];
+
+  const initiatives = initiativesRaw.map((item) => {
+    const row = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const measurement =
+      row.measurement && typeof row.measurement === "object"
+        ? (row.measurement as Record<string, unknown>)
+        : {};
+    const feasibility =
+      row.feasibility && typeof row.feasibility === "object"
+        ? (row.feasibility as Record<string, unknown>)
+        : {};
+
+    return {
+      id: String(row.id ?? "").trim(),
+      title: String(row.title ?? "").trim(),
+      description: String(row.description ?? "").trim(),
+      linkedRoot: asNullableString(row.linkedRoot),
+      linkedObjective: asNullableString(row.linkedObjective),
+      measurement: {
+        indicator: asNullableString(measurement.indicator),
+        kpi: asNullableString(measurement.kpi),
+        target: asNullableString(measurement.target),
+      },
+      feasibility: {
+        estimatedWeeks: asNullableWeeks(feasibility.estimatedWeeks),
+        notes: asNullableString(feasibility.notes),
+      },
+    };
+  });
+
+  return {
+    ...root,
+    assistantMessage: String(root.assistantMessage ?? "").trim(),
+    updates: updates
+      ? {
+          ...updates,
+          nextState: nextState
+            ? {
+                ...nextState,
+                stageIntroDone: Boolean(nextState.stageIntroDone),
+                step: String(nextState.step ?? "").trim(),
+                focus:
+                  nextState.focus && typeof nextState.focus === "object"
+                    ? {
+                        chosenRoot: asNullableString(
+                          (nextState.focus as Record<string, unknown>).chosenRoot
+                        ),
+                        chosenObjective: asNullableString(
+                          (nextState.focus as Record<string, unknown>).chosenObjective
+                        ),
+                      }
+                    : {
+                        chosenRoot: null,
+                        chosenObjective: null,
+                      },
+                initiatives,
+                lastSummary: asNullableString(nextState.lastSummary),
+              }
+            : nextState,
+        }
+      : root.updates,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -95,85 +221,74 @@ export async function POST(req: NextRequest) {
 
     const PERIOD_KEY = getPeriodKeyLaPaz();
 
-    // 1) Leer Pareto final validado (Etapa 5) para raíces críticas
-    const { data: paretoFinal, error: paretoErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 5)
-      .eq("artifact_type", "pareto_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // 1) Leer Pareto final validado (Etapa 5) para causas críticas oficiales
+    const paretoResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 5,
+      artifactType: "pareto_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (paretoErr) {
+    if (!paretoResult.ok) {
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Pareto final (Etapa 5).",
-          detail: paretoErr,
+          detail: paretoResult.error,
         },
         { status: 500 }
       );
     }
 
-    const paretoPayload = (paretoFinal as { payload?: unknown } | null)?.payload as
-      | { criticalRoots?: unknown }
-      | undefined;
-    const criticalRoots = asStringArray(paretoPayload?.criticalRoots);
+    const paretoFinal = paretoResult.row;
+    const paretoPayload = (paretoFinal?.payload ?? {}) as { criticalRoots?: unknown };
+    const criticalRoots = asStringArray(paretoPayload.criticalRoots);
 
     if (criticalRoots.length === 0) {
       return NextResponse.json(
         {
           ok: false,
           code: "BAD_REQUEST",
-          message: "Para iniciar Etapa 7 necesitas Pareto final validado con causas críticas (top 20%).",
+          message:
+            "Para iniciar Etapa 7 necesitas Pareto final validado con causas críticas (top 20%).",
         },
         { status: 400 }
       );
     }
 
     // 2) Leer Objectives final validado (Etapa 6)
-    const { data: objectivesFinal, error: objErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 6)
-      .eq("artifact_type", "objectives_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const objectivesResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 6,
+      artifactType: "objectives_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (objErr) {
+    if (!objectivesResult.ok) {
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Objectives final (Etapa 6).",
-          detail: objErr,
+          detail: objectivesResult.error,
         },
         { status: 500 }
       );
     }
 
-    const objectivesPayload = (objectivesFinal as { payload?: unknown } | null)?.payload as
-      | {
-          generalObjective?: unknown;
-          specificObjectives?: unknown;
-          linkedCriticalRoots?: unknown;
-        }
-      | undefined;
+    const objectivesFinal = objectivesResult.row;
+    const objectivesPayload = (objectivesFinal?.payload ?? {}) as {
+      generalObjective?: unknown;
+      specificObjectives?: unknown;
+      linkedCriticalRoots?: unknown;
+    };
 
-    const generalObjective = String(objectivesPayload?.generalObjective ?? "").trim();
-    const specificObjectives = asStringArray(objectivesPayload?.specificObjectives);
-    const linkedCriticalRoots = asStringArray(objectivesPayload?.linkedCriticalRoots);
+    const generalObjective = String(objectivesPayload.generalObjective ?? "").trim();
+    const specificObjectives = asStringArray(objectivesPayload.specificObjectives);
+    const linkedCriticalRoots = asStringArray(objectivesPayload.linkedCriticalRoots);
 
     if (!generalObjective || specificObjectives.length < 1 || linkedCriticalRoots.length < 1) {
       return NextResponse.json(
@@ -198,17 +313,22 @@ OBJETIVO DE LA ETAPA 7:
 - Conversación FLUIDA (tipo docente), NO formulario.
 
 REGLAS:
-- NO uses opciones tipo “A/B”. Interpreta lo que el estudiante escribe.
-- Si el estudiante ya tiene una idea, ayúdalo a pulirla y a vincularla a una causa crítica y un objetivo específico.
-- Si no tiene idea o duda, propón 1-2 ideas de alto impacto (pero viables en el tiempo) basadas en el contexto.
+- NO uses opciones tipo “A/B”. Interpreta lo que el estudiante escribe y responde como un docente asesor.
+- Si el estudiante ya tiene una idea, ayúdalo a pulirla y a vincularla a una causa crítica y a un objetivo específico.
+- Si no tiene idea o duda, propón 1-2 ideas de alto impacto, pero solo si son realmente viables en el tiempo de práctica.
+- Evalúa siempre si la propuesta ataca la causa o solo el síntoma. Si ataca solo el síntoma, corrígelo con claridad.
+- Si la propuesta del estudiante es demasiado grande, costosa o poco ejecutable para el tiempo disponible, dilo explícitamente y recorta el alcance.
+- Prioriza mejoras tipo piloto ejecutable, estandarización operativa, control simple, seguimiento mínimo y ajuste práctico.
 - Evita soluciones triviales tipo “solo checklist”. Una iniciativa debe ser un pequeño paquete (2-4 componentes) como:
   - estandarizar (SOP/método),
   - control simple (registro/seguimiento),
   - micro-capacitación puntual,
   - piloto y ajuste.
-- KPI NO es obligatorio. Si no hay KPI, usa indicador/criterio cualitativo y enseña cómo medir si el estudiante pregunta.
+- KPI NO es obligatorio. Si no hay KPI, usa indicador o criterio cualitativo y enseña cómo medirlo si el estudiante pregunta.
 - Haz preguntas cortas y concretas (1 o 2 máximo por turno).
 - Mantén tono breve, humano y útil.
+- No des por cerrada la etapa solo porque ya exista un borrador coherente.
+- Si ya hay un plan suficientemente armado, primero resume lo construido, explica por qué esa mejora sí conviene y pide confirmación antes de cerrar Etapa 7.
 
 CAUSAS CRÍTICAS (Pareto Etapa 5, top 20%):
 ${JSON.stringify(criticalRoots, null, 2)}
@@ -229,6 +349,9 @@ ${String(recentHistory ?? "")}
 
 MENSAJE DEL ESTUDIANTE:
 "${studentMessage}"
+
+- Devuelve SOLO JSON crudo.
+- NO envuelvas el JSON entre comillas, NO uses markdown, NO uses bloques \`\`\`json.
 
 DEVUELVE SOLO JSON con este formato:
 {
@@ -256,23 +379,43 @@ DEVUELVE SOLO JSON con este formato:
 }
 
 CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
-- Vincular iniciativas a una causa crítica (preferentemente) y a un objetivo específico.
-- Mantener viabilidad (estimación total ~4-6 semanas).
+- Vincular cada iniciativa a una causa crítica y a un objetivo específico siempre que sea posible.
+- Favorecer 1 o 2 iniciativas bien ejecutables antes que muchas iniciativas débiles.
+- Penalizar ideas demasiado grandes para el tiempo de práctica.
+- Si hay varias opciones, prioriza la que tenga mejor trazabilidad con causas críticas, objetivos y viabilidad operativa.
+- Si una idea es atractiva pero poco ejecutable, explícalo y propone una versión mínima viable.
+- Mantener viabilidad total aproximada de 4 a 6 semanas.
 - Al final, cuando haya un plan coherente, ofrecer cerrar Etapa 7 y pasar a Etapa 8 (Planificación).
 `;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
-    const json = extractJsonSafe(text);
+    const parsedJson = extractJsonSafe(text);
 
-    if (!json?.assistantMessage || !json?.updates?.nextState) {
+    if (!parsedJson) {
       return NextResponse.json(
         { ok: false, code: "INTERNAL", message: "LLM no devolvió JSON válido", raw: text },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ ok: true, data: json }, { status: 200 });
+    const normalizedJson = normalizeImprovementAssistantResponse(parsedJson);
+    const responseParse = ImprovementAssistantResponseSchema.safeParse(normalizedJson);
+
+    if (!responseParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "LLM devolvió JSON, pero no con la estructura esperada en Etapa 7.",
+          detail: responseParse.error.flatten(),
+          raw: text,
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true, data: responseParse.data }, { status: 200 });
   } catch (e: unknown) {
     const err = e as { message?: string };
     const msg = err?.message ?? "INTERNAL";
