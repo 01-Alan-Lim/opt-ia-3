@@ -5,14 +5,31 @@ type WeeklyHourRow = {
   hours: number | null
 }
 
+export function getStudentDisplayName(student: {
+  first_name: string | null
+  last_name: string | null
+  email: string | null
+}) {
+  const fullName = [student.first_name, student.last_name]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .trim()
+
+  if (fullName) return fullName
+  return student.email ?? "Sin nombre"
+}
+
 export async function findStudentsByTerm(term: string): Promise<ProfileStudent[]> {
   const cleanTerm = term.trim()
   const supabase = supabaseServer
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, ru, full_name, email")
-    .or(`full_name.ilike.%${cleanTerm}%,email.ilike.%${cleanTerm}%,ru.ilike.%${cleanTerm}%`)
+    .select("user_id, ru, first_name, last_name, email")
+    .eq("role", "student")
+    .or(
+      `ru.ilike.%${cleanTerm}%,first_name.ilike.%${cleanTerm}%,last_name.ilike.%${cleanTerm}%,email.ilike.%${cleanTerm}%`
+    )
     .limit(5)
 
   if (error) {
@@ -27,8 +44,9 @@ export async function loadStudentById(userId: string): Promise<ProfileStudent | 
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, ru, full_name, email")
-    .eq("id", userId)
+    .select("user_id, ru, first_name, last_name, email")
+    .eq("user_id", userId)
+    .eq("role", "student")
     .maybeSingle()
 
   if (error) {
@@ -92,8 +110,9 @@ export async function getStudentsUsingAgent() {
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, ru, full_name, email")
-    .order("full_name", { ascending: true })
+    .select("user_id, ru, first_name, last_name, email")
+    .eq("role", "student")
+    .order("created_at", { ascending: false })
 
   if (error) {
     throw error
@@ -104,13 +123,14 @@ export async function getStudentsUsingAgent() {
   const rows = await Promise.all(
     students.map(async (student) => {
       const [chats, messages, hours] = await Promise.all([
-        getChatsCount(student.id),
-        getMessagesCount(student.id),
-        getHoursTotal(student.id),
+        getChatsCount(student.user_id),
+        getMessagesCount(student.user_id),
+        getHoursTotal(student.user_id),
       ])
 
       return {
         ...student,
+        displayName: getStudentDisplayName(student),
         chats,
         messages,
         hours,

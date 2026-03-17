@@ -972,6 +972,23 @@ function looksLikeProgressClosureRequest(text: string) {
     return looksLikeQuestion && mediumSignals;
   }
 
+  type AdvisorRuntimeStage = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null;
+
+  const [activeAdvisorStage, setActiveAdvisorStage] = useState<AdvisorRuntimeStage>(null);
+
+  function clearAdvisorStageStatesLocal() {
+    setFodaState(null);
+    setBrainstormState(null);
+    setIshikawaState(null);
+    setIshikawaClosePending(false);
+    setParetoState(null);
+    setObjectivesState(null);
+    setImprovementState(null);
+    setPlanningState(null);
+    setProgressState(null);
+    setFinalDocState(null);
+  }
+
 
   const [fodaState, setFodaState] = useState<FodaState | null>(null);
   const [brainstormState, setBrainstormState] = useState<BrainstormState | null>(null);
@@ -1449,6 +1466,29 @@ function looksLikeProgressClosureRequest(text: string) {
     };
   }, [ready, authenticated, mode, advisorRefreshNonce]); // ⚠️ Intencional: no depende de chatId para evitar loops
 
+  // -----------------------------
+
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    if (mode !== "plan_mejora") return;
+
+    let active = true;
+
+    (async () => {
+      const stage = await refreshActiveAdvisorStage();
+      if (!active) return;
+
+      if (stage == null) {
+        setActiveAdvisorStage(0);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, mode, advisorRefreshNonce, chatId]);
+
+
 
   // -----------------------------
   // 2.x Cargar estado FODA (Etapa 2)
@@ -1464,9 +1504,10 @@ function looksLikeProgressClosureRequest(text: string) {
       if (!active) return;
       if (!res.ok) return;
 
-      // res.payload = { ok, exists, state }
       if (res.payload?.exists && res.payload?.state) {
         setFodaState(res.payload.state);
+      } else {
+        setFodaState(null);
       }
     })();
 
@@ -1506,25 +1547,27 @@ function looksLikeProgressClosureRequest(text: string) {
   useEffect(() => {
     if (!ready || !authenticated) return;
     if (mode !== "plan_mejora") return;
+    if (!chatId) {
+      setIshikawaState(null);
+      setIshikawaClosePending(false);
+      return;
+    }
 
     let active = true;
 
     (async () => {
-      const res = await getIshikawaState();
+      const res = await getIshikawaState({ chatId });
       if (!active) return;
       if (!res.ok) return;
 
       if (res.payload?.exists && res.payload?.state) {
         const st = res.payload.state as IshikawaState;
         setIshikawaState(st);
-
-        // ✅ si el estado ya está listo, mantenemos el “pending”
         setIshikawaClosePending(isIshikawaReadyToClose(st));
       } else {
         setIshikawaState(null);
         setIshikawaClosePending(false);
       }
-
     })();
 
     return () => {
@@ -2580,6 +2623,19 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok: isOk, payload };
   }
 
+  async function refreshActiveAdvisorStage() {
+    const resolved = await getActiveAdvisorStage();
+
+    if (resolved.ok && resolved.payload?.found) {
+      const stage = resolved.payload.stage as AdvisorRuntimeStage;
+      setActiveAdvisorStage(stage);
+      return stage;
+    }
+
+    setActiveAdvisorStage(0);
+    return 0 as AdvisorRuntimeStage;
+  }
+
 
   async function getAuthHeaders(): Promise<Record<string, string>> {
     if (accessToken) return { Authorization: `Bearer ${accessToken}` };
@@ -3323,13 +3379,18 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok, payload: json };
   }
 
-  async function getIshikawaState(opts?: { ignoreChatId?: boolean }) {
+  async function getIshikawaState(args?: { chatId?: string | null }) {
     const authHeaders = await getAuthHeaders();
+    const effectiveChatId = args?.chatId ?? chatIdRef.current ?? null;
 
-    const effectiveChatId = opts?.ignoreChatId ? null : chatIdRef.current;
+    if (!effectiveChatId) {
+      return {
+        ok: true,
+        payload: { exists: false, state: null, row: null },
+      };
+    }
 
-    // ✅ chatId es opcional. Si existe, lo enviamos (mejor match). Si no, el backend hace fallback al último estado del periodo.
-    const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
+    const qs = `?chatId=${encodeURIComponent(effectiveChatId)}`;
 
     const res = await fetch(`/api/plans/ishikawa/state${qs}`, {
       headers: { ...authHeaders },
@@ -3906,8 +3967,11 @@ function looksLikeProgressClosureRequest(text: string) {
       return false;
     }
 
-    const stage = resolved.payload.stage as number;
+    const stage = resolved.payload.stage as AdvisorRuntimeStage;
     const stateJson = (resolved.payload.stateJson ?? null) as Record<string, unknown> | null;
+
+    clearAdvisorStageStatesLocal();
+    setActiveAdvisorStage(stage);
 
     if (stage === 10 && stateJson) {
       const final10 = stateJson as FinalDocState;
@@ -4197,10 +4261,11 @@ function looksLikeProgressClosureRequest(text: string) {
         minIdeas: 10,
       };
 
+      clearAdvisorStageStatesLocal();
       setBrainstormState(initial);
+      setActiveAdvisorStage(3);
       await saveBrainstormState(initial, effectiveChatId);
 
-      setFodaState(null);
       await clearStageState(2, effectiveChatId);
 
       await appendAssistant(
@@ -4232,11 +4297,12 @@ function looksLikeProgressClosureRequest(text: string) {
         cursor: null,
       };
 
+      clearAdvisorStageStatesLocal();
       setBrainstormClosePending(false);
       setIshikawaState(initialIshikawa);
+      setActiveAdvisorStage(4);
       await saveIshikawaState(initialIshikawa, effectiveChatId);
 
-      setBrainstormState(null);
       await clearStageState(3, effectiveChatId);
 
       await appendAssistant(
@@ -4270,11 +4336,12 @@ function looksLikeProgressClosureRequest(text: string) {
         step: "select_roots",
       };
 
+      clearAdvisorStageStatesLocal();
       setIshikawaClosePending(false);
       setParetoState(initialPareto);
+      setActiveAdvisorStage(5);
       await saveParetoState(initialPareto, effectiveChatId);
 
-      setIshikawaState(null);
       await clearStageState(4, effectiveChatId);
 
       const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
@@ -4300,10 +4367,11 @@ function looksLikeProgressClosureRequest(text: string) {
         step: "general",
       };
 
+      clearAdvisorStageStatesLocal();
       setObjectivesState(initialObjectives);
+      setActiveAdvisorStage(6);
       await saveObjectivesState(initialObjectives, effectiveChatId);
 
-      setParetoState(null);
       await clearStageState(5, effectiveChatId);
 
       const rootsText =
@@ -4331,10 +4399,11 @@ function looksLikeProgressClosureRequest(text: string) {
         lastSummary: null,
       };
 
+      clearAdvisorStageStatesLocal();
       setImprovementState(initialImprovement);
+      setActiveAdvisorStage(7);
       await saveImprovementState(initialImprovement, effectiveChatId);
 
-      setObjectivesState(null);
       await clearStageState(6, effectiveChatId);
 
       await appendAssistant(
@@ -4364,11 +4433,12 @@ function looksLikeProgressClosureRequest(text: string) {
         lastSummary: null,
       };
 
-      setImprovementState(null);
-      await clearStageState(7, effectiveChatId);
-
+      clearAdvisorStageStatesLocal();
       setPlanningState(initialPlanning);
+      setActiveAdvisorStage(8);
       await savePlanningState(initialPlanning, effectiveChatId);
+
+      await clearStageState(7, effectiveChatId);
 
       await appendAssistant(
         "✅ **Etapa 7 (Plan de Mejora) finalizada**.\n\n" +
@@ -4388,11 +4458,12 @@ function looksLikeProgressClosureRequest(text: string) {
         updatedAtLocal: null,
       };
 
-      setPlanningState(null);
-      await clearStageState(8, effectiveChatId);
-
+      clearAdvisorStageStatesLocal();
       setProgressState(initialProgress);
+      setActiveAdvisorStage(9);
       await saveProgressState(initialProgress, effectiveChatId);
+
+      await clearStageState(8, effectiveChatId);
 
       const hint =
         typeof payload?.next?.hint === "string" && payload.next.hint.trim().length > 0
@@ -4427,11 +4498,12 @@ function looksLikeProgressClosureRequest(text: string) {
         },
       };
 
-      setProgressState(null);
-      await clearStageState(9, effectiveChatId);
-
+      clearAdvisorStageStatesLocal();
       setFinalDocState(initialFinalDoc);
+      setActiveAdvisorStage(10);
       await saveFinalDocState(initialFinalDoc, effectiveChatId);
+
+      await clearStageState(9, effectiveChatId);
 
       await appendAssistant(
         "✅ **Etapa 9 (Reporte de avances) finalizada.**\n\n" +
@@ -4557,7 +4629,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 9: Reporte de avances (fluido con assistant)
         // ================================
-        if (progressState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 9 && progressState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callProgressAssistant({
             studentMessage: text,
             progressState,
@@ -4618,7 +4690,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 8: Planificación (fluido con assistant)
         // ================================
-        if (planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 8 && planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const wantsToClosePlanning =
             looksLikePlanningClosureRequest(text) || isShortAffirmativeReply(text);
 
@@ -4690,7 +4762,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 7: Plan de mejora (fluido con assistant)
         // ================================
-        if (improvementState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 7 && improvementState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callImprovementAssistant({
             studentMessage: text,
             improvementState,
@@ -4755,7 +4827,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 6: Objetivos (en progreso)
         // ================================
-        if (objectivesState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 6 && objectivesState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callObjectivesAssistant({
             studentMessage: text,
             objectivesState,
@@ -4835,7 +4907,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ETAPA 5: Pareto (en progreso)
         // ================================
 
-        if (paretoState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 5 && paretoState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callParetoAssistant({
             studentMessage: text,
             paretoState,
@@ -4919,12 +4991,20 @@ function looksLikeProgressClosureRequest(text: string) {
         // ETAPA 4: Ishikawa (fluido con assistant)
         // ================================
 
-        let effectiveIshikawaState: IshikawaState | null = ishikawaState;
+        let effectiveIshikawaState: IshikawaState | null =
+         activeAdvisorStage === 4 ? ishikawaState : null;
 
         // ✅ Si el usuario viene de "Nuevo chat" y el state aún no cargó en React,
         // lo buscamos directo del backend (chatId opcional, fallback por periodo).
-        if (!effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const resIsh = await getIshikawaState({ ignoreChatId: true });
+        if (
+          !effectiveIshikawaState &&
+          activeAdvisorStage === 4 &&
+          ctx.ok &&
+          ctx.status === "confirmed" &&
+          diagUnlocked &&
+          effectiveChatId
+        ) {
+          const resIsh = await getIshikawaState({ chatId: effectiveChatId });
           const exists = resIsh.ok && resIsh.payload?.exists && resIsh.payload?.state;
 
           if (exists) {
@@ -4941,7 +5021,7 @@ function looksLikeProgressClosureRequest(text: string) {
           }
         }        
 
-        if (effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 4 && effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const ishikawaState = effectiveIshikawaState;
           // 1) Si aún no hay problema, el primer mensaje del estudiante se toma como problema (1 línea)
           const problemText =
@@ -4955,10 +5035,12 @@ function looksLikeProgressClosureRequest(text: string) {
             // ✅ Si ya hay conversación, NO asumas que estamos empezando Ishikawa.
             // Probablemente llegó un ishikawaState desfasado/vacío (race).
             if (hasConversation) {
-              const resIshFresh = await getIshikawaState({ ignoreChatId: false });
-              const freshState = resIshFresh.ok && resIshFresh.payload?.exists && resIshFresh.payload?.state
-                ? (resIshFresh.payload.state as IshikawaState)
-                : null;
+            const resIshFresh = await getIshikawaState({
+              chatId: effectiveChatId ?? chatIdRef.current ?? null,
+            });
+            const freshState = resIshFresh.ok && resIshFresh.payload?.exists && resIshFresh.payload?.state
+              ? (resIshFresh.payload.state as IshikawaState)
+              : null;
 
               if (freshState) {
                 setIshikawaState(freshState);
@@ -5102,7 +5184,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ETAPA 3: Lluvia de ideas (en progreso)
         // ================================
 
-        if (brainstormState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 3 && brainstormState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const readyToClose = isBrainstormReadyToClose(brainstormState);
           const isNewIdea = looksLikeNewCause(text);
 
@@ -5197,7 +5279,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 3: Enganche inicial (si no existe estado)
         // ================================
-        if (ctx.ok && ctx.status === "confirmed" && isStage1Validated && !brainstormState) {
+        if (activeAdvisorStage === 3 && ctx.ok && ctx.status === "confirmed" && isStage1Validated && !brainstormState) {
           // Si el usuario escribe "etapa 3" o "lluvia" o "ideas", iniciamos.
           const t = text.toLowerCase();
           const wantsE3 = t.includes("etapa 3") || t.includes("lluvia") || t.includes("ideas") || t.includes("brainstorm");
@@ -5248,6 +5330,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
         // ✅ Atajo: si FODA ya está completo y el usuario dice "ok/qué sigue" → validar y pasar a Etapa 3
         if (
+          activeAdvisorStage === 2 &&
           fodaState &&
           ctx.ok &&
           ctx.status === "confirmed" &&
@@ -5291,7 +5374,7 @@ function looksLikeProgressClosureRequest(text: string) {
         }
 
         // ETAPA 2: FODA en progreso (con IA)
-        if (fodaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+        if (activeAdvisorStage === 2 && fodaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callFodaAssistant({
             studentMessage: text,
             fodaState,

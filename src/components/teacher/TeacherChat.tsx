@@ -42,7 +42,7 @@ export function TeacherChat() {
       id: uid(),
       role: "assistant",
       content:
-        "Hola Inge 👋 Este es el Chat Docente. Pídeme un reporte de un estudiante por RU, email o nombre.",
+      "Hola Inge 👋 Este es el Chat Docente. Puedes pedirme reportes por estudiante, horas registradas, actividad del agente o un resumen general del grupo. También puedes escribir de forma natural, por ejemplo: “¿quiénes están usando más el agente?”",
     },
   ]);
   const [input, setInput] = useState("");
@@ -92,7 +92,7 @@ export function TeacherChat() {
         id: uid(),
         role: "assistant",
         content:
-          "Hola Inge 👋 Chat reiniciado. Puedes pedirme un reporte por RU, nombre o email, o también un resumen general de uso del agente.",
+        "Hola Inge 👋 Chat reiniciado. Puedo ayudarte con reportes por estudiante, uso general del agente, horas registradas o actividad del grupo. Si quieres, empieza con un RU, un nombre o una pregunta abierta.",
       },
     ]);
   }

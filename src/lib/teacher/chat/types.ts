@@ -44,9 +44,10 @@ export const TeacherRouterSchema = z.object({
 })
 
 export type ProfileStudent = {
-  id: string
+  user_id: string
   ru: string | null
-  full_name: string | null
+  first_name: string | null
+  last_name: string | null
   email: string | null
 }
 
