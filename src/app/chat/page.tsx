@@ -678,6 +678,30 @@ function looksLikePlanningClosureRequest(text: string) {
   );
 }
 
+function isShortAffirmativeReply(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    normalized === "si" ||
+    normalized === "sí" ||
+    normalized === "ok" ||
+    normalized === "okay" ||
+    normalized === "okey" ||
+    normalized === "confirmo" ||
+    normalized === "si confirmo" ||
+    normalized === "sí confirmo" ||
+    normalized === "de acuerdo" ||
+    normalized === "esta bien" ||
+    normalized === "está bien" ||
+    normalized === "correcto" ||
+    normalized === "listo" ||
+    normalized === "dale" ||
+    normalized === "vamos" ||
+    normalized === "continuemos" ||
+    normalized === "sigamos"
+  );
+}
+
 function looksLikeProgressClosureRequest(text: string) {
   const normalized = normalizeClosureText(text);
 
@@ -4594,6 +4618,48 @@ function looksLikeProgressClosureRequest(text: string) {
         // ETAPA 8: Planificación (fluido con assistant)
         // ================================
         if (planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+          const wantsToClosePlanning =
+            looksLikePlanningClosureRequest(text) || isShortAffirmativeReply(text);
+
+          // 1) Si el estudiante ya está confirmando cierre, validar ANTES de llamar al assistant
+          if (wantsToClosePlanning) {
+            const v = await validatePlanning(effectiveChatId);
+
+            if (!v.ok) {
+              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
+              await appendAssistant(`⚠️ ${msg}`);
+              return;
+            }
+
+            if (!v.payload?.valid) {
+              const msg =
+                v.payload?.message ??
+                "La Etapa 8 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 9.";
+
+              await appendAssistant(
+                "Aún no podemos cerrar la **Etapa 8 (Planificación)**.\n\n" +
+                  `⚠️ ${msg}\n\n` +
+                  "Cuando quieras, te ayudo a completar exactamente lo que falta."
+              );
+              return;
+            }
+
+            const moved = await applyBackendAdvisorAdvance({
+              fromStage: 8,
+              payload: v.payload,
+              effectiveChatId: advisorChatId,
+            });
+
+            if (!moved) {
+              await appendAssistant(
+                "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
+              );
+            }
+
+            return;
+          }
+
+          // 2) Si no está cerrando, recién conversamos con el assistant
           const assistant = await callPlanningAssistant({
             studentMessage: text,
             planningState,
@@ -4616,41 +4682,6 @@ function looksLikeProgressClosureRequest(text: string) {
           await savePlanningState(nextState, effectiveChatId);
 
           await appendAssistant(assistant.payload.assistantMessage);
-
-
-          const wantsToClosePlanning = looksLikePlanningClosureRequest(text);
-
-          if (wantsToClosePlanning) {
-            const v = await validatePlanning(effectiveChatId);
-
-            if (!v.ok) {
-              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            if (!v.payload?.valid) {
-              const msg =
-                v.payload?.message ??
-                "La Etapa 8 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 9.";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            const moved = await applyBackendAdvisorAdvance({
-              fromStage: 8,
-              payload: v.payload,
-              effectiveChatId: advisorChatId,
-            });
-
-            if (!moved) {
-              await appendAssistant(
-                "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
-              );
-            }
-
-            return;
-          }
 
           return;
         }

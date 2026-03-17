@@ -86,3 +86,66 @@ export async function getHoursTotal(userId: string): Promise<number> {
     return sum + (row.hours ?? 0)
   }, 0)
 }
+
+export async function getStudentsUsingAgent() {
+  const supabase = supabaseServer
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, ru, full_name, email")
+    .order("full_name", { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  const students = (data ?? []) as ProfileStudent[]
+
+  const rows = await Promise.all(
+    students.map(async (student) => {
+      const [chats, messages, hours] = await Promise.all([
+        getChatsCount(student.id),
+        getMessagesCount(student.id),
+        getHoursTotal(student.id),
+      ])
+
+      return {
+        ...student,
+        chats,
+        messages,
+        hours,
+      }
+    })
+  )
+
+  return rows.filter((row) => row.chats > 0 || row.messages > 0 || row.hours > 0)
+}
+
+export async function getTopStudentsByMessages(limit = 5) {
+  const rows = await getStudentsUsingAgent()
+
+  return rows
+    .sort((a, b) => {
+      if (b.messages !== a.messages) return b.messages - a.messages
+      if (b.chats !== a.chats) return b.chats - a.chats
+      return b.hours - a.hours
+    })
+    .slice(0, limit)
+}
+
+export async function getUsageSnapshot() {
+  const rows = await getStudentsUsingAgent()
+
+  const totalStudents = rows.length
+  const totalChats = rows.reduce((sum, row) => sum + row.chats, 0)
+  const totalMessages = rows.reduce((sum, row) => sum + row.messages, 0)
+  const totalHours = rows.reduce((sum, row) => sum + row.hours, 0)
+
+  return {
+    totalStudents,
+    totalChats,
+    totalMessages,
+    totalHours,
+    students: rows,
+  }
+}

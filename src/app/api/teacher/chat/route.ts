@@ -43,7 +43,10 @@ export async function POST(req: NextRequest) {
 
     const result = await runTeacherChatAgent(message, context ?? {})
 
-    return ok(result)
+    return ok({
+      reply: result.message,
+      context: result.context,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : "UNKNOWN"
 

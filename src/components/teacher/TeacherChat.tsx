@@ -10,9 +10,10 @@ type TeacherChatMsg = {
 };
 
 type TeacherChatContext = {
-  activeStudentId: string | null;
-  activeStudentLabel: string | null;
-  pendingCandidates?: Array<{ user_id: string; label: string }>;
+  studentId?: string;
+  studentName?: string;
+  ru?: string;
+  stage?: number;
 };
 
 type ApiOk = {
@@ -47,10 +48,7 @@ export function TeacherChat() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ctx, setCtx] = useState<TeacherChatContext>({
-    activeStudentId: null,
-    activeStudentLabel: null,
-  });
+  const [ctx, setCtx] = useState<TeacherChatContext>({});
 
   const authHeaders = useMemo<HeadersInit>(() => {
     const h: HeadersInit = { "Content-Type": "application/json" };
@@ -86,14 +84,15 @@ export function TeacherChat() {
   }, [messages.length]);
 
   function resetChat() {
-    setCtx({ activeStudentId: null, activeStudentLabel: null, pendingCandidates: [] });
+    setCtx({});
     setError(null);
     setInput("");
     setMessages([
       {
         id: uid(),
         role: "assistant",
-        content: "Hola Inge 👋 Chat reiniciado. Pídeme un reporte por RU, email o nombre.",
+        content:
+          "Hola Inge 👋 Chat reiniciado. Puedes pedirme un reporte por RU, nombre o email, o también un resumen general de uso del agente.",
       },
     ]);
   }
@@ -121,11 +120,15 @@ export function TeacherChat() {
       if (!json) throw new Error("Respuesta inválida del servidor.");
       if (!json.ok) throw new Error(json.message || "Error del servidor.");
 
-      setCtx(json.data.context);
+      setCtx(json.data.context ?? {});
 
       setMessages((prev) => [
         ...prev,
-        { id: uid(), role: "assistant", content: json.data.reply },
+        {
+          id: uid(),
+          role: "assistant",
+          content: json.data.reply ?? "No pude generar una respuesta.",
+        },
       ]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Error";
@@ -167,11 +170,11 @@ export function TeacherChat() {
         <div className="min-w-0">
           <div className="text-sm font-semibold text-slate-100 tracking-wide">Chat Docente</div>
           <div className="text-[12px] text-slate-400 truncate">
-            {ctx.activeStudentId ? (
+            {ctx.studentId ? (
               <>
                 En foco:{" "}
                 <span className="text-slate-200">
-                  {ctx.activeStudentLabel ?? ctx.activeStudentId}
+                  {ctx.studentName ?? ctx.ru ?? ctx.studentId}
                 </span>
               </>
             ) : (
