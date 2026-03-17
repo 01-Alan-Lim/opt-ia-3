@@ -18,37 +18,54 @@ export const runtime = "nodejs";
 const STAGE = 8;
 const PERIOD_KEY = getPeriodKeyLaPaz();
 
-type PlanningMilestone = {
-  id: string;
-  title: string;
-  week: number | null; // 1..N
-  deliverable: string | null;
-};
+const PlanningMilestoneSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  week: z.number().int().positive().nullable(),
+  deliverable: z.string().nullable(),
+});
 
-type PlanningWeekItem = {
-  week: number;
-  focus: string; // resumen de la semana
-  tasks: string[];
-  evidence: string | null;
-  measurement: string | null;
-};
+const PlanningWeekItemSchema = z.object({
+  week: z.number().int().positive(),
+  focus: z.string().min(1),
+  tasks: z.array(z.string().min(1)).default([]),
+  evidence: z.string().nullable(),
+  measurement: z.string().nullable(),
+});
 
-export type PlanningState = {
-  stageIntroDone: boolean;
-  step: "time_window" | "breakdown" | "schedule" | "review";
-  time: {
-    studentWeeks: number | null;
-    courseCutoffDate: string | null; // ISO date, opcional (desde contexto del curso)
-    effectiveWeeks: number | null; // calculado (si hay cutoff)
-    notes: string | null;
-  };
-  plan: {
-    weekly: PlanningWeekItem[];
-    milestones: PlanningMilestone[];
-    risks: string[]; // opcional, simple
-  };
-  lastSummary: string | null;
-};
+const PlanningStateSchema = z.object({
+  stageIntroDone: z.boolean(),
+  step: z.enum(["time_window", "breakdown", "schedule", "review"]),
+  time: z.object({
+    studentWeeks: z.number().int().positive().nullable(),
+    courseCutoffDate: z.string().nullable(),
+    effectiveWeeks: z.number().int().positive().nullable(),
+    notes: z.string().nullable(),
+  }),
+  plan: z.object({
+    weekly: z.array(PlanningWeekItemSchema).default([]),
+    milestones: z.array(PlanningMilestoneSchema).default([]),
+    risks: z.array(z.string().min(1)).default([]),
+  }),
+  lastSummary: z.string().nullable(),
+});
+
+type PlanningState = z.infer<typeof PlanningStateSchema>;
+
+const PlanningAssistantResponseSchema = z.object({
+  assistantMessage: z.string().min(1),
+  updates: z.object({
+    nextState: PlanningStateSchema,
+    action: z.enum([
+      "init",
+      "ask_time",
+      "propose_schedule",
+      "refine_schedule",
+      "summarize",
+      "ready_to_validate",
+    ]),
+  }),
+});
 
 const BodySchema = z.object({
   chatId: z.string().uuid(),
@@ -58,31 +75,137 @@ const BodySchema = z.object({
   recentHistory: z.string().optional(),
 });
 
-// intenta extraer JSON del LLM
-function extractJsonSafe(text: string) {
+function extractJsonSafe(text: string): unknown | null {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
   try {
     return JSON.parse(cleaned);
   } catch {}
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+
+  const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    try {
+      return JSON.parse(objectMatch[0]);
+    } catch {}
   }
+
+  return null;
 }
 
-function asString(v: unknown): string {
-  return String(v ?? "").trim();
+function asString(value: unknown): string {
+  return String(value ?? "").trim();
 }
 
 function parseCourseCutoffDate(ctx: Record<string, unknown> | undefined): string | null {
-  // No inventamos de dónde sale; solo aceptamos si el contexto ya lo trae.
-  const v = ctx?.courseCutoffDate;
-  const s = asString(v);
-  if (!s) return null;
-  return s;
+  const value = ctx?.courseCutoffDate;
+  const parsed = asString(value);
+  return parsed || null;
+}
+
+function normalizePlanningState(input: PlanningState): PlanningState {
+  const weekly = [...input.plan.weekly]
+    .map((item) => ({
+      ...item,
+      tasks: item.tasks.filter((task) => task.trim().length > 0),
+      focus: item.focus.trim(),
+      evidence: item.evidence?.trim() || null,
+      measurement: item.measurement?.trim() || null,
+    }))
+    .filter((item) => item.focus.length > 0)
+    .sort((a, b) => a.week - b.week);
+
+  const milestones = input.plan.milestones.map((item) => ({
+    ...item,
+    id: item.id.trim(),
+    title: item.title.trim(),
+    deliverable: item.deliverable?.trim() || null,
+  }));
+
+  const risks = input.plan.risks
+    .map((risk) => risk.trim())
+    .filter((risk) => risk.length > 0);
+
+  return {
+    ...input,
+    time: {
+      ...input.time,
+      notes: input.time.notes?.trim() || null,
+    },
+    plan: {
+      weekly,
+      milestones,
+      risks,
+    },
+    lastSummary: input.lastSummary?.trim() || null,
+  };
+}
+
+async function generatePlanningJson(prompt: string) {
+  const model = getGeminiModel();
+
+  const first = await model.generateContent(prompt);
+  const firstText = first.response.text();
+  const firstJson = extractJsonSafe(firstText);
+
+  if (firstJson) {
+    return { json: firstJson, raw: firstText };
+  }
+
+  const repairPrompt = `
+Convierte la siguiente respuesta a JSON válido, sin agregar explicaciones.
+
+Debes devolver SOLO JSON crudo con este formato exacto:
+{
+  "assistantMessage": "string",
+  "updates": {
+    "nextState": {
+      "stageIntroDone": boolean,
+      "step": "time_window" | "breakdown" | "schedule" | "review",
+      "time": {
+        "studentWeeks": number | null,
+        "courseCutoffDate": "string | null",
+        "effectiveWeeks": number | null,
+        "notes": "string | null"
+      },
+      "plan": {
+        "weekly": [
+          {
+            "week": number,
+            "focus": "string",
+            "tasks": ["string"],
+            "evidence": "string | null",
+            "measurement": "string | null"
+          }
+        ],
+        "milestones": [
+          {
+            "id": "string",
+            "title": "string",
+            "week": number | null,
+            "deliverable": "string | null"
+          }
+        ],
+        "risks": ["string"]
+      },
+      "lastSummary": "string | null"
+    },
+    "action": "init" | "ask_time" | "propose_schedule" | "refine_schedule" | "summarize" | "ready_to_validate"
+  }
+}
+
+RESPUESTA ORIGINAL A CONVERTIR:
+${firstText}
+`;
+
+  const repaired = await model.generateContent(repairPrompt);
+  const repairedText = repaired.response.text();
+  const repairedJson = extractJsonSafe(repairedText);
+
+  return {
+    json: repairedJson,
+    raw: firstText,
+    repairedRaw: repairedText,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -99,6 +222,7 @@ export async function POST(req: NextRequest) {
 
     const raw = await req.json().catch(() => null);
     const parsed = BodySchema.safeParse(raw);
+
     if (!parsed.success) {
       return NextResponse.json(
         {
@@ -112,6 +236,21 @@ export async function POST(req: NextRequest) {
 
     const { chatId, studentMessage, planningState, caseContext, recentHistory } = parsed.data;
 
+    const planningStateParse = PlanningStateSchema.safeParse(planningState);
+    if (!planningStateParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: "planningState inválido.",
+          detail: planningStateParse.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const currentPlanningState = planningStateParse.data;
+
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
       .select("first_name,last_name,email")
@@ -120,7 +259,11 @@ export async function POST(req: NextRequest) {
 
     if (profileError) {
       return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "No se pudo leer el perfil del estudiante.",
+        },
         { status: 500 }
       );
     }
@@ -131,7 +274,6 @@ export async function POST(req: NextRequest) {
       email: profile?.email ?? user.email ?? null,
     });
 
-    // 1) Leer Plan de Mejora final validado (Etapa 7)
     const improvementResult = await loadLatestValidatedArtifact({
       userId: user.userId,
       preferredChatId: chatId,
@@ -165,90 +307,90 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const improvementPayload = improvementFinal.payload as any;
+    const improvementPayload = improvementFinal.payload as Record<string, unknown>;
+    const initiativesRaw = improvementPayload?.initiatives;
+    const initiatives = Array.isArray(initiativesRaw) ? initiativesRaw : [];
 
-    const initiatives = Array.isArray(improvementPayload?.initiatives) ? improvementPayload.initiatives : [];
     if (initiatives.length < 1) {
       return NextResponse.json(
-        { ok: false, code: "BAD_REQUEST", message: "El Plan de Mejora (Etapa 7) no tiene iniciativas." },
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: "El Plan de Mejora (Etapa 7) no tiene iniciativas.",
+        },
         { status: 400 }
       );
     }
 
-    // corte del curso si viene en contexto
     const courseCutoffDate = parseCourseCutoffDate(caseContext);
 
-    const model = getGeminiModel();
-
     const prompt = `
-Eres un DOCENTE asesor (Ingeniería Industrial). Estás guiando la **Etapa 8: Planificación**.
+Eres un DOCENTE asesor de Ingeniería Industrial. Estás guiando la Etapa 8: Planificación.
+
 FORMA DE RESPONDER:
-- Habla de forma natural, cercana y académica, como un docente asesor real.
-- No suenes robótico ni excesivamente solemne.
+- Habla de forma natural, cercana y académica.
+- No suenes robótico.
 - Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
 - No uses apellido ni nombre completo.
 - No repitas el nombre en todos los mensajes.
 - Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
-- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
+- No reveles nombres reales de empresas o personas. Si aparecen, reemplázalos por "la empresa".
 
 FORMATO DEL MENSAJE:
 - Escribe en párrafos cortos y claros.
 - Separa ideas distintas con una línea en blanco.
 - Evita bloques largos de texto continuo.
-- Usa viñetas o numeración solo cuando realmente ayuden a ordenar pasos, semanas, ajustes, criterios, causas o elementos pendientes.
-- No conviertas todo en lista; si basta con 1 o 2 párrafos, responde así.
+- Usa viñetas o numeración solo cuando ayuden a ordenar semanas, tareas, responsables, recursos, riesgos o elementos pendientes.
+- No conviertas todo en lista.
 - Si haces una pregunta final, colócala en un párrafo aparte.
-- Puedes usar un emoji discreto solo cuando aporte cercanía o claridad, no en todos los mensajes.
-- El mensaje debe verse bien en chat: legible, espaciado y fácil de seguir.
-
-FORMATO DEL MENSAJE:
-- Escribe en párrafos cortos y claros.
-- Separa ideas distintas con una línea en blanco.
-- Evita bloques largos de texto continuo.
-- Usa viñetas o numeración solo cuando realmente ayuden a ordenar semanas, tareas, ajustes o elementos pendientes.
-- No conviertas todo en lista; si basta con 1 o 2 párrafos, responde así.
-- Si estás resumiendo un cronograma, una validación o varios elementos, sí puedes usar listas breves.
-- Si haces una pregunta final, colócala en un párrafo aparte.
-- Puedes usar un emoji discreto solo cuando aporte cercanía o claridad, no en todos los mensajes.
-- El mensaje debe verse bien en chat: legible, espaciado y fácil de seguir.
+- El mensaje debe verse legible en chat.
 
 OBJETIVO:
-- Convertir el Plan de Mejora (Etapa 7) en un **cronograma por semanas** (mini-Gantt textual).
-- Debe ser realista según el tiempo disponible.
-- Conversación fluida (no formulario, no A/B). Máximo 1-2 preguntas por turno.
+- Convertir el Plan de Mejora validado en un cronograma realista por semanas.
+- Ajustar alcance si el tiempo es corto.
+- Mantener una conversación fluida.
+- Máximo 1 o 2 preguntas por turno.
 
 REGLAS:
-- Si el estudiante no sabe semanas o fecha, menciona el **corte del curso** si está disponible.
-- Si el tiempo real es corto, ayuda a **recortar alcance**: prioriza piloto + medición mínima + ajuste básico.
-- No intentes meter todo si no cabe. Señala con claridad qué sí entra en el tiempo y qué quedaría fuera.
-- Construye una secuencia lógica: preparar -> implementar/pilotear -> medir -> ajustar/cerrar.
-- Cada iniciativa debe quedar con: actividades base, hito(s) y medición mínima.
-- Si el plan del estudiante es demasiado ambicioso, conviértelo en una versión mínima viable sin perder coherencia metodológica.
-- Prioriza hitos críticos y evita cronogramas “bonitos” pero poco ejecutables.
-- Al final, entrega un cronograma por semanas.
+- Si el estudiante escribe algo corto como "continuemos", "cómo avanzamos", "sigamos" o parecido, no lo bloquees.
+- En ese caso, retoma la etapa según el estado actual y guía el siguiente paso útil.
+- Si faltan semanas o ventana de tiempo, pide solo ese dato.
+- Si el tiempo real es corto, recorta alcance y prioriza piloto + medición mínima + ajuste básico.
+- No intentes meter todo si no cabe.
+- Construye secuencia lógica: preparar -> implementar/pilotear -> medir -> ajustar/cerrar.
+- Cada iniciativa debe quedar con actividades base, hito(s) y medición mínima.
+- No cierres automáticamente la etapa solo porque el cronograma parezca razonable.
+- Si el cronograma ya está bastante completo, resume lo acordado y pide confirmación antes de dejar la etapa lista para validación.
 
 DATOS DISPONIBLES:
-- Corte del curso (si existe): ${JSON.stringify(courseCutoffDate)}
+- Corte del curso: ${JSON.stringify(courseCutoffDate)}
 - Plan de Mejora validado (Etapa 7):
 ${JSON.stringify(
   {
-    generalObjective: improvementPayload?.generalObjective ?? null,
-    linkedCriticalRoots: improvementPayload?.linkedCriticalRoots ?? null,
-    initiatives: initiatives.map((i: any) => ({
-      title: i?.title ?? null,
-      description: i?.description ?? null,
-      linkedObjective: i?.linkedObjective ?? null,
-      linkedRoot: i?.linkedRoot ?? null,
-      measurement: i?.measurement ?? null,
-      feasibility: i?.feasibility ?? null,
-    })),
+    generalObjective: improvementPayload.generalObjective ?? null,
+    linkedCriticalRoots: improvementPayload.linkedCriticalRoots ?? null,
+    initiatives: initiatives.map((initiative) => {
+      const item =
+        typeof initiative === "object" && initiative !== null
+          ? (initiative as Record<string, unknown>)
+          : {};
+
+      return {
+        title: item.title ?? null,
+        description: item.description ?? null,
+        linkedObjective: item.linkedObjective ?? null,
+        linkedRoot: item.linkedRoot ?? null,
+        measurement: item.measurement ?? null,
+        feasibility: item.feasibility ?? null,
+      };
+    }),
   },
   null,
   2
 )}
 
 ESTADO ACTUAL (Etapa 8):
-${JSON.stringify(planningState, null, 2)}
+${JSON.stringify(currentPlanningState, null, 2)}
 
 HISTORIAL RECIENTE:
 ${String(recentHistory ?? "")}
@@ -256,7 +398,14 @@ ${String(recentHistory ?? "")}
 MENSAJE DEL ESTUDIANTE:
 "${studentMessage}"
 
-DEVUELVE SOLO JSON:
+IMPORTANTE:
+- Devuelve SOLO JSON crudo.
+- NO uses markdown.
+- NO uses bloques \`\`\`.
+- NO agregues texto antes ni después del JSON.
+- NO expliques que vas a responder en JSON.
+
+DEVUELVE SOLO JSON con este formato exacto:
 {
   "assistantMessage": "string",
   "updates": {
@@ -271,10 +420,21 @@ DEVUELVE SOLO JSON:
       },
       "plan": {
         "weekly": [
-          { "week": number, "focus": "string", "tasks": ["string"], "evidence": "string | null", "measurement": "string | null" }
+          {
+            "week": number,
+            "focus": "string",
+            "tasks": ["string"],
+            "evidence": "string | null",
+            "measurement": "string | null"
+          }
         ],
         "milestones": [
-          { "id": "string", "title": "string", "week": number | null, "deliverable": "string | null" }
+          {
+            "id": "string",
+            "title": "string",
+            "week": number | null,
+            "deliverable": "string | null"
+          }
         ],
         "risks": ["string"]
       },
@@ -283,45 +443,54 @@ DEVUELVE SOLO JSON:
     "action": "init" | "ask_time" | "propose_schedule" | "refine_schedule" | "summarize" | "ready_to_validate"
   }
 }
-
-NOTA:
-- No inventes datos sensibles. Si faltan, pregunta.
-- No cierres automáticamente la etapa solo porque ya exista un cronograma razonable.
-- Si detectas que la planificación no cabe en el tiempo, dilo con claridad y ajusta el alcance.
-- Si la planificación ya está bastante completa, resume lo acordado, explica por qué el cronograma sí es realista y pide confirmación antes de dejar la etapa lista para validación.
-- Cuando resumas algo extenso, no lo pongas en un solo bloque compacto: sepáralo en 2 o 3 párrafos.
-- Cuando enumeres semanas, actividades, responsables, recursos o faltantes, usa listas breves.
-- Evita respuestas visualmente “apachurradas”.
 `;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const json = extractJsonSafe(text);
+    const llmResult = await generatePlanningJson(prompt);
 
-    if (!json?.assistantMessage || !json?.updates?.nextState) {
+    if (!llmResult.json) {
       return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "LLM no devolvió JSON válido", raw: text },
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "LLM no devolvió JSON válido.",
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
+        },
         { status: 500 }
       );
     }
 
-    // fuerza courseCutoffDate en state si viene del contexto (para consistencia)
-    try {
-      const next = json.updates.nextState as any;
-      if (courseCutoffDate) {
-        next.time = next.time ?? {};
-        next.time.courseCutoffDate = courseCutoffDate;
-      }
-    } catch {}
+    const responseParse = PlanningAssistantResponseSchema.safeParse(llmResult.json);
+    if (!responseParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "El assistant devolvió JSON, pero no con la estructura esperada en Etapa 8.",
+          detail: responseParse.error.flatten(),
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
+        },
+        { status: 500 }
+      );
+    }
 
-    json.assistantMessage = sanitizeStudentPlaceholder(
-      String(json.assistantMessage ?? ""),
+    const responseData = responseParse.data;
+
+    if (courseCutoffDate) {
+      responseData.updates.nextState.time.courseCutoffDate = courseCutoffDate;
+    }
+
+    responseData.updates.nextState = normalizePlanningState(responseData.updates.nextState);
+
+    responseData.assistantMessage = sanitizeStudentPlaceholder(
+      responseData.assistantMessage,
       preferredFirstName
     );
 
-    return NextResponse.json({ ok: true, data: json }, { status: 200 });
-  } catch (e: unknown) {
-    const err = e as { message?: string };
+    return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
+  } catch (error: unknown) {
+    const err = error as { message?: string };
     const msg = err?.message ?? "INTERNAL";
 
     if (msg === "UNAUTHORIZED") {
@@ -330,6 +499,7 @@ NOTA:
         { status: 401 }
       );
     }
+
     if (msg === "FORBIDDEN_DOMAIN") {
       return NextResponse.json(
         { ok: false, code: "FORBIDDEN_DOMAIN", message: "Dominio no permitido." },
