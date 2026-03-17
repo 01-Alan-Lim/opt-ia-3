@@ -1,6 +1,7 @@
 // src/app/api/plans/progress/assistant/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
@@ -14,17 +15,26 @@ import {
 
 export const runtime = "nodejs";
 
-const STAGE = 9;
 const PERIOD_KEY = getPeriodKeyLaPaz();
 
-type ProgressState = {
-  step: "intro" | "report" | "clarify" | "review";
-  reportText: string | null;
-  progressPercent: number | null; // 0-100
-  measurementNote: string | null; // textual (cómo verificó/medirá)
-  summary: string | null;
-  updatedAtLocal: string | null;
-};
+const ProgressStateSchema = z.object({
+  step: z.enum(["intro", "report", "clarify", "review"]),
+  reportText: z.string().nullable(),
+  progressPercent: z.number().min(0).max(100).nullable(),
+  measurementNote: z.string().nullable(),
+  summary: z.string().nullable(),
+  updatedAtLocal: z.string().nullable(),
+});
+
+type ProgressState = z.infer<typeof ProgressStateSchema>;
+
+const ProgressAssistantResponseSchema = z.object({
+  assistantMessage: z.string().min(1),
+  updates: z.object({
+    nextState: ProgressStateSchema,
+    action: z.enum(["ask_report", "ask_clarify", "summarize", "ready_to_validate"]),
+  }),
+});
 
 const BodySchema = z.object({
   chatId: z.string().uuid(),
@@ -33,23 +43,129 @@ const BodySchema = z.object({
   recentHistory: z.string().optional(),
 });
 
-function extractJsonSafe(text: string) {
+function extractJsonSafe(text: string): unknown | null {
   const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
   try {
     return JSON.parse(cleaned);
   } catch {}
+
   const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch {}
+  }
+
+  return null;
+}
+
+function clampPercent(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function trimOrNull(value: string | null | undefined): string | null {
+  const parsed = String(value ?? "").trim();
+  return parsed.length > 0 ? parsed : null;
+}
+
+function normalizeProgressState(input: ProgressState): ProgressState {
+  return {
+    step: input.step,
+    reportText: trimOrNull(input.reportText),
+    progressPercent: clampPercent(input.progressPercent),
+    measurementNote: trimOrNull(input.measurementNote),
+    summary: trimOrNull(input.summary),
+    updatedAtLocal: trimOrNull(input.updatedAtLocal),
+  };
+}
+
+function normalizeStudentMessage(text: string): string {
+  return String(text ?? "").trim().replace(/\s+/g, " ");
+}
+
+function isGenericContinuationMessage(text: string): boolean {
+  const normalized = normalizeStudentMessage(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  return (
+    normalized === "ok" ||
+    normalized === "si" ||
+    normalized === "sí" ||
+    normalized === "listo" ||
+    normalized === "dale" ||
+    normalized === "sigamos" ||
+    normalized === "continuemos" ||
+    normalized === "que sigue" ||
+    normalized === "qué sigue" ||
+    normalized === "como avanzamos" ||
+    normalized === "cómo avanzamos"
+  );
+}
+
+function mergeReportText(current: string | null, studentMessage: string, next: string | null): string | null {
+  const nextText = trimOrNull(next);
+  if (nextText) return nextText;
+
+  const currentText = trimOrNull(current);
+  const studentText = trimOrNull(studentMessage);
+
+  if (!studentText || isGenericContinuationMessage(studentText)) {
+    return currentText;
+  }
+
+  if (!currentText) return studentText;
+  if (currentText.includes(studentText)) return currentText;
+
+  return `${currentText}\n${studentText}`;
+}
+
+async function generateProgressJson(prompt: string) {
+  const model = getGeminiModel();
+
+  const first = await model.generateContent(prompt);
+  const firstText = first.response.text();
+  const firstJson = extractJsonSafe(firstText);
+
+  if (firstJson) {
+    return { json: firstJson, raw: firstText };
+  }
+
+  const repairPrompt = `
+Convierte la siguiente respuesta a JSON válido, sin agregar explicaciones.
+
+Devuelve SOLO JSON crudo con este formato exacto:
+{
+  "assistantMessage": "string",
+  "updates": {
+    "nextState": {
+      "step": "intro" | "report" | "clarify" | "review",
+      "reportText": "string | null",
+      "progressPercent": number | null,
+      "measurementNote": "string | null",
+      "summary": "string | null",
+      "updatedAtLocal": "string | null"
+    },
+    "action": "ask_report" | "ask_clarify" | "summarize" | "ready_to_validate"
   }
 }
 
-function clampPercent(n: number) {
-  if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(100, Math.round(n)));
+RESPUESTA ORIGINAL A CONVERTIR:
+${firstText}
+`;
+
+  const repaired = await model.generateContent(repairPrompt);
+  const repairedText = repaired.response.text();
+  const repairedJson = extractJsonSafe(repairedText);
+
+  return {
+    json: repairedJson,
+    raw: firstText,
+    repairedRaw: repairedText,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -58,19 +174,42 @@ export async function POST(req: NextRequest) {
 
     const gate = await assertChatAccess(req);
     if (!gate.ok) {
-      return NextResponse.json({ ok: false, code: gate.reason, message: gate.message }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, code: gate.reason, message: gate.message },
+        { status: 403 }
+      );
     }
 
     const raw = await req.json().catch(() => null);
     const parsed = BodySchema.safeParse(raw);
+
     if (!parsed.success) {
       return NextResponse.json(
-        { ok: false, code: "BAD_REQUEST", message: parsed.error.issues[0]?.message ?? "Body inválido." },
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: parsed.error.issues[0]?.message ?? "Body inválido.",
+        },
         { status: 400 }
       );
     }
 
     const { chatId, studentMessage, progressState, recentHistory } = parsed.data;
+
+    const progressStateParse = ProgressStateSchema.safeParse(progressState);
+    if (!progressStateParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: "progressState inválido.",
+          detail: progressStateParse.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const currentProgressState = normalizeProgressState(progressStateParse.data);
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
@@ -91,7 +230,6 @@ export async function POST(req: NextRequest) {
       email: profile?.email ?? user.email ?? null,
     });
 
-    // Requiere Etapa 8 validada para comparar
     const planningResult = await loadLatestValidatedArtifact({
       userId: user.userId,
       preferredChatId: chatId,
@@ -125,10 +263,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = getGeminiModel();
+    const normalizedStudentMessage = normalizeStudentMessage(studentMessage);
+    const accumulatedReportText = mergeReportText(
+      currentProgressState.reportText,
+      normalizedStudentMessage,
+      null
+    );
 
-        const prompt = `
-Eres un docente asesor de Ingeniería Industrial y estás guiando la **Etapa 9: Reporte de avances**.
+    const prompt = `
+Eres un docente asesor de Ingeniería Industrial y estás guiando la Etapa 9: Reporte de avances.
 
 FORMA DE RESPONDER:
 - Habla de forma natural, cercana y académica.
@@ -139,54 +282,59 @@ FORMA DE RESPONDER:
 - Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
 - No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
 
-REGLA CRÍTICA DE ESTA ETAPA:
-- La Etapa 9 NO es para volver a planificar.
-- La Etapa 9 NO es para explicar otra vez el cronograma.
-- La Etapa 9 NO es para listar tareas nuevas por semana.
-- La Etapa 9 NO es para decir "ahora debes hacer esto, esto y esto" como si recién empezara la ejecución.
-- La Etapa 9 es únicamente para que el estudiante **reporte qué logró ejecutar realmente** respecto a lo planificado en la Etapa 8.
-
-OBJETIVO:
-- El estudiante reporta en texto qué logró implementar vs lo planificado en la Etapa 8.
-- Tu tarea es:
-  1) Entender el avance real: qué sí hizo, qué no hizo y qué quedó pendiente
-  2) Contrastar el reporte contra la planificación base, especialmente hitos, semanas y mediciones
-  3) Estimar un porcentaje de avance (0-100) coherente y conservador
-  4) Generar un resumen corto (1-3 líneas)
-  5) Si hay desviaciones importantes, pedir una sola aclaración breve o ayudar a justificar el cambio
+OBJETIVO REAL DE ESTA ETAPA:
+- Esta etapa NO planifica.
+- Esta etapa NO redefine el cronograma.
+- Esta etapa SOLO recopila lo que el estudiante realmente ejecutó.
+- Debes cruzar lo reportado con la planificación validada de Etapa 8.
+- Debes identificar:
+  1) qué sí se ejecutó,
+  2) qué quedó pendiente,
+  3) si hubo desviaciones,
+  4) cuánto avance realista lleva,
+  5) cómo se verificó o verificará ese avance.
 
 COMPORTAMIENTO OBLIGATORIO:
-- Si el estado actual está vacío o recién inicia la etapa, debes pedir un **reporte real de avance**.
-- Si el estudiante pregunta algo como "¿qué sigue?" o "¿qué se debe hacer?", no vuelvas a planificar tareas:
-  debes explicarle brevemente que en esta etapa corresponde **contar lo que ya ejecutó** frente al cronograma.
-- Si el estudiante ya reportó actividades realizadas, contrástalas con la planificación y avanza el estado.
-- Si el estudiante ejecutó menos de lo planeado, no lo castigues automáticamente: ayúdalo a explicar el desvío con claridad.
-- Si el porcentaje reportado es demasiado alto para lo descrito, ajústalo de forma conservadora.
-- Si el estudiante ya fue claro, resume su avance, menciona qué quedó pendiente y pide confirmación antes de dejar la etapa lista para validación.
-- No cierres automáticamente la etapa solo porque el reporte parezca suficiente.
+- Si el estudiante da un reporte corto pero útil, como "solo pude realizar la capacitación", DEBES procesarlo.
+- No respondas que "no pudiste procesar" salvo que falte completamente contenido.
+- Si el mensaje del estudiante aporta avance real, intégralo al reporte acumulado.
+- Si falta detalle, haz SOLO una pregunta breve y puntual.
+- Si el estudiante aún no dio porcentaje, puedes proponer uno conservador según lo descrito.
+- Si el estudiante ya dio avance suficiente, resume, contrasta contra el plan y deja el estado en "review".
+- No cierres automáticamente la etapa.
+- No pidas archivos.
+- No pidas tablas largas.
+- No exijas evidencia documental.
 
-REGLAS:
-- NO pidas subir archivos.
-- NO exijas evidencia documental.
-- NO pidas tablas ni formatos extensos.
-- "Medición/verificación" es solo textual (ej: "lo verificaré con tiempos / conteo / revisión del supervisor").
+CRITERIO PEDAGÓGICO:
+- Debes sonar como una IA útil y natural, no como plantilla rígida.
+- Debes responder con fluidez.
+- Debes ayudar al estudiante a completar el reporte paso a paso.
 - Máximo 1 pregunta por turno.
-- Compara siempre lo reportado con lo planificado en Etapa 8.
-- Si necesitas aclaración, haz solo una pregunta breve.
 
-PLANIFICACIÓN BASE (Etapa 8 validada):
+PLANIFICACIÓN BASE VALIDADA (ETAPA 8):
 ${JSON.stringify(planningFinal.payload, null, 2)}
 
-ESTADO ACTUAL (Etapa 9):
-${JSON.stringify(progressState, null, 2)}
+ESTADO ACTUAL DE ETAPA 9:
+${JSON.stringify(currentProgressState, null, 2)}
+
+REPORTE ACUMULADO HASTA AHORA:
+${JSON.stringify(accumulatedReportText, null, 2)}
 
 HISTORIAL RECIENTE:
 ${String(recentHistory ?? "")}
 
-MENSAJE DEL ESTUDIANTE:
-"${studentMessage}"
+ÚLTIMO MENSAJE DEL ESTUDIANTE:
+"${normalizedStudentMessage}"
 
-DEVUELVE SOLO JSON:
+IMPORTANTE:
+- Devuelve SOLO JSON crudo.
+- NO uses markdown.
+- NO uses bloques \`\`\`.
+- NO agregues texto antes ni después del JSON.
+- NO expliques que responderás en JSON.
+
+DEVUELVE SOLO JSON con este formato exacto:
 {
   "assistantMessage": "string",
   "updates": {
@@ -203,39 +351,79 @@ DEVUELVE SOLO JSON:
 }
 `;
 
-    const res = await model.generateContent(prompt);
-    const text = res.response.text();
-    const json = extractJsonSafe(text);
+    const llmResult = await generateProgressJson(prompt);
 
-    if (!json?.assistantMessage || !json?.updates?.nextState) {
+    if (!llmResult.json) {
       return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "LLM no devolvió JSON válido.", raw: text },
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "LLM no devolvió JSON válido.",
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
+        },
         { status: 500 }
       );
     }
 
-    // Sanitizar porcentaje si viene
-    try {
-      const next = json.updates.nextState as any;
-      if (typeof next?.progressPercent === "number") {
-        next.progressPercent = clampPercent(next.progressPercent);
-      }
-    } catch {}
+    const responseParse = ProgressAssistantResponseSchema.safeParse(llmResult.json);
+    if (!responseParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "El assistant devolvió JSON, pero no con la estructura esperada en Etapa 9.",
+          detail: responseParse.error.flatten(),
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
+        },
+        { status: 500 }
+      );
+    }
 
-    json.assistantMessage = sanitizeStudentPlaceholder(
-      String(json.assistantMessage ?? ""),
+    const responseData = responseParse.data;
+    const normalizedNextState = normalizeProgressState(responseData.updates.nextState);
+
+    normalizedNextState.reportText = mergeReportText(
+      currentProgressState.reportText,
+      normalizedStudentMessage,
+      normalizedNextState.reportText
+    );
+
+    normalizedNextState.progressPercent = clampPercent(normalizedNextState.progressPercent);
+
+    if (!normalizedNextState.updatedAtLocal) {
+      normalizedNextState.updatedAtLocal = new Date().toISOString();
+    }
+
+    responseData.updates.nextState = normalizedNextState;
+    responseData.assistantMessage = sanitizeStudentPlaceholder(
+      responseData.assistantMessage,
       preferredFirstName
     );
 
-    return NextResponse.json({ ok: true, data: json }, { status: 200 });
-  } catch (e: unknown) {
-    const msg = (e as any)?.message ?? "INTERNAL";
+    return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
+  } catch (error: unknown) {
+    const err = error as { message?: string };
+    const msg = err?.message ?? "INTERNAL";
+
     if (msg === "UNAUTHORIZED") {
-      return NextResponse.json({ ok: false, code: "UNAUTHORIZED", message: "Sesión inválida o ausente." }, { status: 401 });
+      return NextResponse.json(
+        { ok: false, code: "UNAUTHORIZED", message: "Sesión inválida o ausente." },
+        { status: 401 }
+      );
     }
+
     if (msg === "FORBIDDEN_DOMAIN") {
-      return NextResponse.json({ ok: false, code: "FORBIDDEN_DOMAIN", message: "Dominio no permitido." }, { status: 403 });
+      return NextResponse.json(
+        { ok: false, code: "FORBIDDEN_DOMAIN", message: "Dominio no permitido." },
+        { status: 403 }
+      );
     }
-    return NextResponse.json({ ok: false, code: "INTERNAL", message: "Error interno.", detail: msg }, { status: 500 });
+
+    return NextResponse.json(
+      { ok: false, code: "INTERNAL", message: "Error interno.", detail: msg },
+      { status: 500 }
+    );
   }
 }
