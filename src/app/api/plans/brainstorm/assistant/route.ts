@@ -3,6 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 type BrainstormIdea = { text: string };
 type BrainstormState = {
@@ -27,7 +32,7 @@ function extractJsonSafe(text: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    await requireUser(req);
+    const user = await requireUser(req);
 
     const gate = await assertChatAccess(req);
     if (!gate.ok) {
@@ -53,10 +58,39 @@ export async function POST(req: NextRequest) {
     const fodaSummary = body.fodaSummary ?? null;
     const recentHistory = String(body.recentHistory ?? "");
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
     const model = getGeminiModel();
 
     const prompt = `
-Eres un DOCENTE asesor de de la materia de Ingeniería de Métodos (de la carrera de ingeniería industrial) guiando la **Etapa 3: Lluvia de ideas de causas**.
+Eres un DOCENTE asesor de la materia de Ingeniería de Métodos (de la carrera de ingeniería industrial) guiando la **Etapa 3: Lluvia de ideas de causas**.
+
+FORMA DE RESPONDER:
+- Habla de forma natural, cercana y académica.
+- No suenes robótico ni como formulario.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- Haz máximo 1 o 2 preguntas puntuales por turno.
+- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa". 
 
 OBJETIVO:
 1) Confirmar/definir una problemática alcanzable (1 problema principal).
@@ -105,6 +139,11 @@ REGLAS:
     if (!json?.assistantMessage || !json?.updates?.nextState) {
       return NextResponse.json({ ok: false, message: "LLM no devolvió JSON válido", raw: text }, { status: 500 });
     }
+
+    json.assistantMessage = sanitizeStudentPlaceholder(
+      String(json.assistantMessage ?? ""),
+      preferredFirstName
+    );
 
     return NextResponse.json({ ok: true, data: json });
   } catch (e: any) {

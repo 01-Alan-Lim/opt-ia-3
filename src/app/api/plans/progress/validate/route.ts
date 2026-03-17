@@ -8,6 +8,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -61,20 +62,25 @@ export async function POST(req: NextRequest) {
     const { chatId } = parsed.data;
 
     // 1) Requiere Etapa 8 validada (planning_final)
-    const { data: planningFinal, error: planErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 8)
-      .eq("artifact_type", "planning_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const planningResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 8,
+      artifactType: "planning_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (planErr) return fail(500, "DB_ERROR", "No se pudo leer Planificación final (Etapa 8).", planErr);
+    if (!planningResult.ok) {
+      return fail(
+        500,
+        "DB_ERROR",
+        "No se pudo leer Planificación final (Etapa 8).",
+        planningResult.error
+      );
+    }
+
+    const planningFinal = planningResult.row;
+
     if (!planningFinal?.payload) {
       return NextResponse.json({
         ok: true,

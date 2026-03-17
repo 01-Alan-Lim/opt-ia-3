@@ -8,6 +8,10 @@ import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -69,8 +73,31 @@ export async function POST(req: NextRequest) {
     }
 
     const { chatId, fileName, storagePath, extractedText, versionNumber, recentHistory } = parsed.data;
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
 
-        // Gate: requiere que exista Etapa 9 validada (reporte de avances)
+    if (profileError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "No se pudo leer el perfil del estudiante.",
+        },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
+
+    // Gate: requiere que exista Etapa 9 validada (reporte de avances)
     const stage9Result = await loadLatestValidatedArtifact({
       userId: user.userId,
       preferredChatId: chatId,
@@ -222,6 +249,14 @@ export async function POST(req: NextRequest) {
     const prompt = `
 Eres un DOCENTE asesor (Ingeniería Industrial). Estás en la **Etapa 10: Revisión final del documento (Word)**.
 Esto NO es chat largo. Analiza, cruza y devuelve feedback académico.
+FORMA DE RESPONDER:
+- Habla de forma natural, cercana y académica.
+- No suenes robótico.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa". 
 
 OBJETIVO:
 - Leer el documento final (texto extraído).
@@ -341,10 +376,15 @@ ${String(recentHistory ?? "")}
       finalized: false,
     };
 
+
+
     return NextResponse.json(
       {
         ok: true,
-        assistantMessage: json.assistantMessage,
+        assistantMessage: sanitizeStudentPlaceholder(
+          String(json.assistantMessage ?? ""),
+          preferredFirstName
+        ),
         updates: {
           nextState,
           action: (json?.evaluation?.needs_resubmission ? "request_v2" : "ready_to_finalize") as

@@ -7,6 +7,10 @@ import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -68,6 +72,25 @@ export async function POST(req: NextRequest) {
 
     const { chatId, studentMessage, progressState, recentHistory } = parsed.data;
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
     // Requiere Etapa 8 validada para comparar
     const planningResult = await loadLatestValidatedArtifact({
       userId: user.userId,
@@ -106,6 +129,15 @@ export async function POST(req: NextRequest) {
 
     const prompt = `
 Eres un docente asesor (Ingeniería Industrial). Estás guiando la **Etapa 9: Reporte de avances**.
+FORMA DE RESPONDER:
+- Habla de forma natural, cercana y académica.
+- No suenes robótico.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
+
 Debe ser una conversación fluida, NO robótica.
 
 OBJETIVO:
@@ -175,6 +207,11 @@ DEVUELVE SOLO JSON:
         next.progressPercent = clampPercent(next.progressPercent);
       }
     } catch {}
+
+    json.assistantMessage = sanitizeStudentPlaceholder(
+      String(json.assistantMessage ?? ""),
+      preferredFirstName
+    );
 
     return NextResponse.json({ ok: true, data: json }, { status: 200 });
   } catch (e: unknown) {

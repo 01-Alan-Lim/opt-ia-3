@@ -657,9 +657,24 @@ function looksLikePlanningClosureRequest(text: string) {
     normalized.includes("valida la planificacion") ||
     normalized.includes("mi planificacion ya esta lista") ||
     normalized.includes("la planificacion ya esta lista") ||
+    normalized.includes("mi cronograma ya esta listo") ||
+    normalized.includes("el cronograma ya esta listo") ||
     normalized.includes("podemos cerrar la etapa 8") ||
     normalized.includes("cierra la etapa 8") ||
-    normalized.includes("pasemos a la etapa 9")
+    normalized.includes("cerramos la etapa 8") ||
+    normalized.includes("finalizamos la etapa 8") ||
+    normalized.includes("ya cerramos la etapa 8") ||
+    normalized.includes("ya finalizamos la etapa 8") ||
+    normalized.includes("etapa 8 completa") ||
+    normalized.includes("la etapa 8 esta completa") ||
+    normalized.includes("la etapa 8 ya esta lista") ||
+    normalized.includes("pasemos a la etapa 9") ||
+    normalized.includes("pasar a la etapa 9") ||
+    normalized.includes("podemos pasar a la etapa 9") ||
+    normalized.includes("pasemos a la siguiente etapa") ||
+    normalized.includes("podemos pasar a la siguiente etapa") ||
+    normalized.includes("sigamos con la etapa 9") ||
+    normalized.includes("continuemos con la etapa 9")
   );
 }
 
@@ -4603,11 +4618,9 @@ function looksLikeProgressClosureRequest(text: string) {
           await appendAssistant(assistant.payload.assistantMessage);
 
 
-          if (nextState.step === "review" && isPlanningReadyForValidation(nextState)) {
-            if (!looksLikePlanningClosureRequest(text)) {
-              return;
-            }
+          const wantsToClosePlanning = looksLikePlanningClosureRequest(text);
 
+          if (wantsToClosePlanning) {
             const v = await validatePlanning(effectiveChatId);
 
             if (!v.ok) {
@@ -4635,6 +4648,8 @@ function looksLikeProgressClosureRequest(text: string) {
                 "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
               );
             }
+
+            return;
           }
 
           return;

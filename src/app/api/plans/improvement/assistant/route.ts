@@ -9,6 +9,10 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { extractJsonSafe } from "@/lib/llm/extractJson";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -219,6 +223,25 @@ export async function POST(req: NextRequest) {
 
     const { chatId, studentMessage, improvementState, caseContext, recentHistory } = parsed.data;
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
     const PERIOD_KEY = getPeriodKeyLaPaz();
 
     // 1) Leer Pareto final validado (Etapa 5) para causas críticas oficiales
@@ -306,6 +329,14 @@ export async function POST(req: NextRequest) {
     const prompt = `
 Eres un DOCENTE asesor de Ingeniería de Métodos.
 Estás guiando la **Etapa 7: Plan de Mejora**.
+FORMA DE RESPONDER:
+- Habla de forma natural, cercana y académica.
+- No suenes robótico.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
 
 OBJETIVO DE LA ETAPA 7:
 - Construir un Plan de Mejora coherente y ejecutable en ~4 a 6 semanas (1 a 1.5 meses).
@@ -415,7 +446,13 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
       );
     }
 
-    return NextResponse.json({ ok: true, data: responseParse.data }, { status: 200 });
+    const responseData = responseParse.data;
+    responseData.assistantMessage = sanitizeStudentPlaceholder(
+      responseData.assistantMessage,
+      preferredFirstName
+    );
+
+    return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
   } catch (e: unknown) {
     const err = e as { message?: string };
     const msg = err?.message ?? "INTERNAL";

@@ -3,6 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 type FodaQuadrant = "F" | "D" | "O" | "A";
 
@@ -27,7 +32,7 @@ function extractJsonSafe(text: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    await requireUser(req);
+    const user = await requireUser(req);
 
     const gate = await assertChatAccess(req);
     if (!gate.ok) {
@@ -54,10 +59,40 @@ export async function POST(req: NextRequest) {
     const caseContext = body.caseContext ?? {};
     const recentHistory = String(body.recentHistory ?? "");
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
     const model = getGeminiModel();
 
     const prompt = `
 Eres un DOCENTE de Ingeniería Industrial guiando un FODA técnico (Etapa 2).
+
+FORMA DE RESPONDER:
+- Habla de forma natural, cercana y académica.
+- No suenes robótico.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- Haz máximo 1 o 2 preguntas puntuales por turno.
+- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
+
 Tu tarea NO es solo contar puntos. Debes:
 - Evaluar si lo que dice el estudiante es válido para el cuadrante actual.
 - Rechazar o pedir precisión si es ambiguo/genérico.
@@ -110,6 +145,11 @@ REGLAS EXTRA DE AVANCE:
         { status: 500 }
       );
     }
+
+    json.assistantMessage = sanitizeStudentPlaceholder(
+      String(json.assistantMessage ?? ""),
+      preferredFirstName
+    );
 
     return NextResponse.json({ ok: true, data: json });
   } catch (e: any) {

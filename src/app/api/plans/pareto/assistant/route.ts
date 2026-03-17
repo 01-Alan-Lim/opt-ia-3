@@ -7,6 +7,10 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -974,6 +978,24 @@ DEVUELVE SOLO JSON:
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        { ok: false, code: "INTERNAL", message: "No se pudo leer el perfil del estudiante." },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
 
     const gate = await assertChatAccess(req);
     if (!gate.ok) {
@@ -1336,6 +1358,10 @@ REGLAS IMPORTANTES:
 - Responde en español.
 - Sé breve pero inteligente.
 - Prioriza claridad académica antes que formalismo.
+- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No repitas el nombre en todos los mensajes.
+- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
 - No hables como sistema, asistente virtual o bot.
 - No menciones JSON, estados internos, backend o validaciones técnicas.
 - No inventes causas ni datos que no estén en el contexto o estado.
@@ -1398,7 +1424,10 @@ DEVUELVE SOLO JSON:
     return NextResponse.json({
       ok: true,
       data: {
-        assistantMessage: String(json.assistantMessage),
+        assistantMessage: sanitizeStudentPlaceholder(
+          String(json.assistantMessage),
+          preferredFirstName
+        ),
         updates: {
           nextState: nextStateParsed.data,
           action: ["init","select_roots","define_criteria","set_weights","instruct_excel","collect_critical","ask_clarify","redirect","done"].includes(json?.updates?.action)

@@ -3,6 +3,11 @@
 import { ok, failResponse } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { requireUser } from "@/lib/auth/supabase";
+import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -1072,6 +1077,26 @@ export async function POST(req: Request) {
     const authed = await requireUser(req);
     const userId = authed.userId;
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return failResponse(
+        "INTERNAL",
+        "No se pudo leer el perfil del estudiante.",
+        500
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? authed.email ?? null,
+    });
+
     const body = await req.json().catch(() => null);
     const studentMessage = (body?.studentMessage ?? "").toString();
     const ishikawaState = body?.ishikawaState as IshikawaState | null;
@@ -1392,6 +1417,10 @@ export async function POST(req: Request) {
     2) Explica por qué esa causa tiene sentido o qué impacto tiene en el problema (OEE, eficiencia, tiempo muerto, etc.).
     3) Recién después formula el siguiente “¿por qué?”.
     - Usa un tono docente, natural, como en una clase o asesoría, no como formulario.
+    - Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+    - No uses apellido ni nombre completo.
+    - No repitas el nombre en todos los mensajes.
+    - Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
     - Evita repetir títulos, bloques largos o encabezados de etapa si ya estamos trabajando una causa.
 
     Si ya existe al menos una causa principal registrada o el cursor está activo:
@@ -1525,7 +1554,10 @@ Responde SOLO con JSON válido (sin markdown).
     const merged = mergeIshikawaState(ishikawaState, parsed.updates.nextState as IshikawaState);
 
     return ok({
-      assistantMessage: parsed.assistantMessage,
+      assistantMessage: sanitizeStudentPlaceholder(
+        String(parsed.assistantMessage ?? ""),
+        preferredFirstName
+      ),
       updates: { nextState: merged },
     });
 

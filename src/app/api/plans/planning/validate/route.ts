@@ -9,6 +9,7 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -69,20 +70,20 @@ export async function POST(req: NextRequest) {
     const { chatId } = parsed.data;
 
     // 1) Requiere Etapa 7 validada (Plan de Mejora)
-    const { data: improvementFinal, error: impErr } = await supabaseServer
-      .from("plan_stage_artifacts")
-      .select("payload, updated_at")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", 7)
-      .eq("artifact_type", "improvement_final")
-      .eq("period_key", PERIOD_KEY)
-      .eq("status", "validated")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const improvementResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 7,
+      artifactType: "improvement_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    if (impErr) return fail(500, "DB_ERROR", "No se pudo leer Plan de Mejora final (Etapa 7).", impErr);
+    if (!improvementResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer Plan de Mejora final (Etapa 7).", improvementResult.error);
+    }
+
+    const improvementFinal = improvementResult.row;
+
     if (!improvementFinal?.payload) {
       return NextResponse.json({
         ok: true,

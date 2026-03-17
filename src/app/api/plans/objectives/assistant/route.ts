@@ -7,6 +7,11 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -74,6 +79,8 @@ function uniqueStrings(values: string[]): string[] {
 
   return out;
 }
+
+
 
 function keepOnlyOfficialCriticalRoots(
   candidateRoots: string[],
@@ -417,6 +424,31 @@ export async function POST(req: NextRequest) {
       recentHistory = "",
     } = parsed.data;
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "No se pudo leer el perfil del estudiante.",
+          detail: profileError,
+        },
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
+
     const periodKey = getPeriodKeyLaPaz();
 
     const paretoResult = await loadLatestValidatedArtifact({
@@ -471,6 +503,11 @@ TU FORMA DE RESPONDER:
 - Haz máximo 1 o 2 preguntas puntuales.
 - No inventes datos del caso.
 - No reveles nombres reales de empresas o personas.
+- Sabes que estás hablando con un estudiante real, no uses placeholders.
+- Si decides usar su nombre, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No lo menciones en todos los mensajes; úsalo solo de forma ocasional y natural.
+- Nunca uses placeholders como [Nombre del estudiante], [nombre], [student name] ni variantes similares.
 
 OBJETIVO DE LA ETAPA:
 - Formular 1 objetivo general.
@@ -591,7 +628,10 @@ REGLAS DEL JSON:
         action: string;
       };
     } = {
-      assistantMessage: String(json.assistantMessage).trim(),
+      assistantMessage: sanitizeStudentPlaceholder(
+        String(json.assistantMessage).trim(),
+        preferredFirstName
+      ),
       updates: {
         nextState: resolvedNextState,
         action: String(json?.updates?.action ?? "refine"),

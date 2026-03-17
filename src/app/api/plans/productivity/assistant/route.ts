@@ -9,6 +9,11 @@ import { requireUser } from "@/lib/auth/supabase";
 import { ok, fail } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  getPreferredStudentFirstName,
+  sanitizeStudentPlaceholder,
+} from "@/lib/chat/studentIdentity";
 
 export const runtime = "nodejs";
 
@@ -110,11 +115,19 @@ function tryParseJsonLoose(extracted: string): unknown {
   return JSON.parse(cleaned);
 }
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(preferredFirstName: string | null): string {
   return `
 Eres OPT-IA, un asesor académico y práctico para estudiantes de Ingeniería Industrial.
 Tu estilo conversacional debe sentirse como ChatGPT: natural, humano, pedagógico, con ejemplos breves, y preguntas bien guiadas.
 PERO estás operando dentro de un flujo estructurado (Etapa 1: Productividad) y debes actualizar un estado en base de datos.
+
+IDENTIDAD Y TONO
+- Estás hablando con un estudiante real.
+- Si decides usar su nombre, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
+- No uses apellido ni nombre completo.
+- No menciones el nombre en todos los mensajes; úsalo solo de forma ocasional y natural.
+- Nunca uses placeholders como [Nombre del estudiante], [nombre], [student name], [student].
+- Habla como un docente cercano, no como formulario ni bot.
 
 PRIVACIDAD
 - No pidas ni repitas nombres reales de empresas/personas. Si el estudiante los menciona, reemplázalos por "la empresa".
@@ -179,7 +192,7 @@ REGLAS DE patch y addCosts
 
 export async function POST(req: Request) {
   try {
-    await requireUser(req);
+    const user = await requireUser(req);
 
     const gate = await assertChatAccess(req);
     if (!gate.ok) return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
@@ -195,6 +208,25 @@ export async function POST(req: Request) {
 
     const { studentMessage, prodStep, prodDraft, caseContext, recentHistory } = parsed.data;
 
+    const { data: profile, error: profileError } = await supabaseServer
+      .from("profiles")
+      .select("first_name,last_name,email")
+      .eq("user_id", user.userId)
+      .maybeSingle();
+
+    if (profileError) {
+      return NextResponse.json(
+        fail("INTERNAL", "No se pudo leer el perfil del estudiante."),
+        { status: 500 }
+      );
+    }
+
+    const preferredFirstName = getPreferredStudentFirstName({
+      firstName: profile?.first_name ?? null,
+      lastName: profile?.last_name ?? null,
+      email: profile?.email ?? user.email ?? null,
+    });
+
     const requiredCostsRaw = prodDraft["required_costs"];
     const requiredCosts =
     typeof requiredCostsRaw === "number" && Number.isFinite(requiredCostsRaw)
@@ -202,7 +234,10 @@ export async function POST(req: Request) {
         : 4;
 
     const model = getGeminiModel();
-    const system = buildSystemPrompt().replaceAll("REQUIRED_COSTS", String(requiredCosts));
+    const system = buildSystemPrompt(preferredFirstName).replaceAll(
+      "REQUIRED_COSTS",
+      String(requiredCosts)
+    );
 
     const resp = await model.generateContent([
       { text: system },
@@ -248,7 +283,14 @@ export async function POST(req: Request) {
       confidence_extract: out.signals?.confidence_extract ?? 1,
     };
 
-    return ok({ ...out, signals });
+    return ok({
+      ...out,
+      assistantMessage: sanitizeStudentPlaceholder(
+        out.assistantMessage,
+        preferredFirstName
+      ),
+      signals,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "INTERNAL";
     if (msg === "UNAUTHORIZED") {
