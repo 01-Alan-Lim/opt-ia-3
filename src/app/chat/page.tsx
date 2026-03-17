@@ -4380,7 +4380,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (fromStage === 8 && toStage === 9) {
       const initialProgress: ProgressState = {
-        step: "intro",
+        step: "report",
         reportText: null,
         progressPercent: null,
         measurementNote: null,
@@ -4394,10 +4394,6 @@ function looksLikeProgressClosureRequest(text: string) {
       setProgressState(initialProgress);
       await saveProgressState(initialProgress, effectiveChatId);
 
-
-
-      
-
       const hint =
         typeof payload?.next?.hint === "string" && payload.next.hint.trim().length > 0
           ? `\n\n${payload.next.hint.trim()}`
@@ -4406,7 +4402,12 @@ function looksLikeProgressClosureRequest(text: string) {
       await appendAssistant(
         "✅ **Etapa 8 (Planificación) finalizada**.\n\n" +
           "Con esto completaste el **Avance 2**.\n\n" +
-          "Luego sigue el **Avance 3 (Etapa 9)**: ahí reportarás cómo va la implementación y, si ya lo tienes, podrás subir un archivo." +
+          "Ahora iniciamos la **Etapa 9 (Reporte de avances)**.\n\n" +
+          "En esta etapa ya no vamos a planificar nuevas actividades, sino a **reportar lo que realmente lograste ejecutar** respecto a tu cronograma.\n\n" +
+          "Cuéntame brevemente:\n" +
+          "1. Qué actividades sí lograste realizar\n" +
+          "2. Qué quedó pendiente\n" +
+          "3. Si hubo algún ajuste o desvío frente a lo planificado" +
           hint
       );
 

@@ -345,14 +345,14 @@ ${JSON.stringify(finalPayload, null, 2)}
         ok: true,
         valid: true,
         message:
-          "Etapa 8 (Planificación) finalizada. Con esto se completa el Avance 2. Luego sigue el Avance 3 (Etapa 9: reporte/archivo).",
+          "Etapa 8 (Planificación) finalizada. Con esto se completa el Avance 2. Luego sigue el Avance 3: Etapa 9 (Reporte de avances).",
         final: finalPayload,
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
         ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
         next: {
           ...next,
-          hint: "En Etapa 9 el estudiante reporta avance y opcionalmente sube un archivo.",
+          hint: "En Etapa 9 debes reportar qué lograste ejecutar, qué quedó pendiente y si hubo desviaciones respecto al cronograma.",
         },
       },
       { status: 200 }
