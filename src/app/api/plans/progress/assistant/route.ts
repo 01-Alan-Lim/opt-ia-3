@@ -89,21 +89,48 @@ function isGenericContinuationMessage(text: string): boolean {
   const normalized = normalizeStudentMessage(text)
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.,;:!?¡¿()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  return (
-    normalized === "ok" ||
-    normalized === "si" ||
-    normalized === "sí" ||
-    normalized === "listo" ||
-    normalized === "dale" ||
-    normalized === "sigamos" ||
-    normalized === "continuemos" ||
-    normalized === "que sigue" ||
-    normalized === "qué sigue" ||
-    normalized === "como avanzamos" ||
-    normalized === "cómo avanzamos"
-  );
+  const exactMatches = new Set([
+    "ok",
+    "si",
+    "sí",
+    "listo",
+    "dale",
+    "sigamos",
+    "continuemos",
+    "que sigue",
+    "qué sigue",
+    "como avanzamos",
+    "cómo avanzamos",
+    "ok continuemos",
+    "ok sigamos",
+    "ok seguimos",
+    "listo sigamos",
+    "listo continuemos",
+    "dale sigamos",
+    "dale continuemos",
+    "ok ya",
+    "ok entonces",
+    "listo entonces",
+  ]);
+
+  if (exactMatches.has(normalized)) {
+    return true;
+  }
+
+  const starterPatterns = [
+    /^ok\b/,
+    /^listo\b/,
+    /^dale\b/,
+    /^sigamos\b/,
+    /^continuemos\b/,
+  ];
+
+  return starterPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function mergeReportText(current: string | null, studentMessage: string, next: string | null): string | null {
@@ -269,6 +296,36 @@ export async function POST(req: NextRequest) {
       normalizedStudentMessage,
       null
     );
+
+    const hasRealReportText =
+      typeof accumulatedReportText === "string" && accumulatedReportText.trim().length > 0;
+
+    if (!hasRealReportText && isGenericContinuationMessage(normalizedStudentMessage)) {
+      const nextState: ProgressState = normalizeProgressState({
+        ...currentProgressState,
+        step: "report",
+        reportText: null,
+        progressPercent: currentProgressState.progressPercent,
+        measurementNote: currentProgressState.measurementNote,
+        summary: currentProgressState.summary,
+        updatedAtLocal: new Date().toISOString(),
+      });
+
+      return NextResponse.json(
+        {
+          ok: true,
+          data: {
+            assistantMessage:
+              "Perfecto. Ahora sí cuéntame brevemente qué actividades lograste ejecutar hasta hoy respecto a tu cronograma. Puede ser algo simple, por ejemplo: qué sí hiciste, qué quedó pendiente o si hubo algún desvío.",
+            updates: {
+              nextState,
+              action: "ask_report",
+            },
+          },
+        },
+        { status: 200 }
+      );
+    }
 
     const prompt = `
 Eres un docente asesor de Ingeniería Industrial y estás guiando la Etapa 9: Reporte de avances.

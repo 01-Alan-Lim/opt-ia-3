@@ -2628,10 +2628,38 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (resolved.ok && resolved.payload?.found) {
       const stage = resolved.payload.stage as AdvisorRuntimeStage;
+      const stateJson = (resolved.payload.stateJson ?? null) as Record<string, unknown> | null;
+
+      clearAdvisorStageStatesLocal();
       setActiveAdvisorStage(stage);
+
+      if (stage === 10 && stateJson) {
+        setFinalDocState(stateJson as FinalDocState);
+      } else if (stage === 9 && stateJson) {
+        setProgressState(stateJson as ProgressState);
+      } else if (stage === 8 && stateJson) {
+        setPlanningState(stateJson as PlanningState);
+      } else if (stage === 7 && stateJson) {
+        setImprovementState(stateJson as ImprovementState);
+      } else if (stage === 6 && stateJson) {
+        setObjectivesState(stateJson as ObjectivesState);
+      } else if (stage === 5 && stateJson) {
+        const normalizedPareto = normalizeParetoStateClient(stateJson);
+        if (normalizedPareto) {
+          setParetoState(normalizedPareto);
+        }
+      } else if (stage === 4 && stateJson) {
+      setIshikawaState(stateJson as IshikawaState);
+      } else if (stage === 3 && stateJson) {
+        setBrainstormState(stateJson as BrainstormState);
+      } else if (stage === 2 && stateJson) {
+        setFodaState(stateJson as FodaState);
+      }
+
       return stage;
     }
 
+    clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(0);
     return 0 as AdvisorRuntimeStage;
   }
@@ -3835,13 +3863,16 @@ function looksLikeProgressClosureRequest(text: string) {
       body: JSON.stringify({
         chatId: args.effectiveChatId ?? chatIdRef.current,
         studentMessage: args.studentMessage,
-        progressState: args.progressState as any,
+        progressState: args.progressState,
         recentHistory: buildRecentHistoryForAssistant(10),
       }),
     });
 
     const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json };
+    const ok = res.ok && json?.ok !== false;
+    const payload = json?.data ?? json;
+
+    return { ok, payload };
   }
 
   async function validateProgress(effectiveChatId?: string | null) {
