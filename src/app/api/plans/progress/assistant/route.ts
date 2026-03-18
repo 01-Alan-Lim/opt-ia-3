@@ -150,6 +150,31 @@ function mergeReportText(current: string | null, studentMessage: string, next: s
   return `${currentText}\n${studentText}`;
 }
 
+function shortenAssistantMessage(message: string): string {
+  const clean = String(message ?? "").replace(/\s+/g, " ").trim();
+
+  if (clean.length <= 220) {
+    return clean;
+  }
+
+  const sentences = clean
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (sentences.length === 0) {
+    return clean.slice(0, 220).trimEnd() + "...";
+  }
+
+  const firstTwo = sentences.slice(0, 2).join(" ").trim();
+
+  if (firstTwo.length <= 220) {
+    return firstTwo;
+  }
+
+  return firstTwo.slice(0, 220).trimEnd() + "...";
+}
+
 async function generateProgressJson(prompt: string) {
   const model = getGeminiModel();
 
@@ -327,47 +352,56 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const prompt = `
-Eres un docente asesor de Ingeniería Industrial y estás guiando la Etapa 9: Reporte de avances.
+  const prompt = `
+Eres un asistente académico de Ingeniería Industrial y estás guiando la ETAPA 9: REPORTE DE AVANCES.
 
-FORMA DE RESPONDER:
-- Habla de forma natural, cercana y académica.
-- No suenes robótico.
+TU FUNCIÓN EN ESTA ETAPA:
+- Recopilar lo que el estudiante sí ejecutó.
+- Contrastar brevemente contra la planificación validada de Etapa 8.
+- Registrar si el avance es completo, parcial o nulo.
+- Hacer seguimiento breve, no asesoría extensa.
+
+REGLAS ESTRICTAS DE RESPUESTA:
+- Responde de forma natural, breve y fluida.
+- Máximo 2 oraciones cortas.
+- Máximo 1 pregunta por turno.
+- No hagas párrafos largos.
+- No replanifiques.
+- No vuelvas a explicar el cronograma completo.
+- No des recomendaciones extensas.
+- No hagas análisis largos.
+- No pidas tablas, archivos ni evidencias.
 - Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
 - No uses apellido ni nombre completo.
-- No repitas el nombre en todos los mensajes.
-- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
+- No uses placeholders como [nombre], [student], [Nombre del estudiante].
 - No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
 
-OBJETIVO REAL DE ESTA ETAPA:
-- Esta etapa NO planifica.
-- Esta etapa NO redefine el cronograma.
-- Esta etapa SOLO recopila lo que el estudiante realmente ejecutó.
-- Debes cruzar lo reportado con la planificación validada de Etapa 8.
-- Debes identificar:
-  1) qué sí se ejecutó,
-  2) qué quedó pendiente,
-  3) si hubo desviaciones,
-  4) cuánto avance realista lleva,
-  5) cómo se verificó o verificará ese avance.
-
 COMPORTAMIENTO OBLIGATORIO:
-- Si el estudiante da un reporte corto pero útil, como "solo pude realizar la capacitación", DEBES procesarlo.
-- No respondas que "no pudiste procesar" salvo que falte completamente contenido.
-- Si el mensaje del estudiante aporta avance real, intégralo al reporte acumulado.
-- Si falta detalle, haz SOLO una pregunta breve y puntual.
-- Si el estudiante aún no dio porcentaje, puedes proponer uno conservador según lo descrito.
-- Si el estudiante ya dio avance suficiente, resume, contrasta contra el plan y deja el estado en "review".
-- No cierres automáticamente la etapa.
-- No pidas archivos.
-- No pidas tablas largas.
-- No exijas evidencia documental.
+1. Si el estudiante reporta un avance concreto:
+   - Confirma brevemente lo registrado.
+   - Indica si parece avance parcial o pendiente.
+   - Haz solo una pregunta corta si falta un dato.
 
-CRITERIO PEDAGÓGICO:
-- Debes sonar como una IA útil y natural, no como plantilla rígida.
-- Debes responder con fluidez.
-- Debes ayudar al estudiante a completar el reporte paso a paso.
-- Máximo 1 pregunta por turno.
+2. Si el estudiante dice que no avanzó:
+   - Registra que esa actividad sigue pendiente.
+   - Pregunta brevemente por el motivo o bloqueo.
+   - Haz solo una pregunta corta.
+
+3. Si el estudiante da suficiente información:
+   - Indica que el avance ya quedó registrado.
+   - Deja el estado listo para revisión o cierre, sin discurso largo.
+
+4. Si el mensaje del estudiante es corto pero útil, debes procesarlo.
+   Ejemplo:
+   - "solo pude realizar la capacitación"
+   - "no pude avanzar"
+   - "quedó pendiente la medición"
+
+CRITERIO DE TONO:
+- Debes sonar como una IA útil y ágil.
+- No como robot.
+- No como un docente dando una explicación larga.
+- No repitas demasiado lo ya dicho.
 
 PLANIFICACIÓN BASE VALIDADA (ETAPA 8):
 ${JSON.stringify(planningFinal.payload, null, 2)}
@@ -454,10 +488,13 @@ DEVUELVE SOLO JSON con este formato exacto:
     }
 
     responseData.updates.nextState = normalizedNextState;
-    responseData.assistantMessage = sanitizeStudentPlaceholder(
+
+    const sanitizedMessage = sanitizeStudentPlaceholder(
       responseData.assistantMessage,
       preferredFirstName
     );
+
+    responseData.assistantMessage = shortenAssistantMessage(sanitizedMessage);
 
     return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
   } catch (error: unknown) {
