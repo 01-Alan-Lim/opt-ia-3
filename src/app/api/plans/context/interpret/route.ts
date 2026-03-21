@@ -95,16 +95,26 @@ Return ONLY a VALID JSON object with these keys:
 Rules:
 - ${stepDesc}
 - If user greets or small talk, intent=GREETING.
-- If user asks what to answer or asks a question about the wizard, intent=QUESTION.
+- If user asks what to answer, says they do not understand, asks for examples, or asks a question about the wizard, intent=QUESTION.
 - If user says "empezar/iniciar/comenzar", intent=START.
 - If user says they want to change/edit/modify previous answers, intent=EDIT.
 - If user confirms "ok/listo/vamos/si", intent=CONFIRM.
 - Otherwise intent=ANSWER.
 - For intent=ANSWER: extract ONLY the field relevant to the current step. Do NOT hallucinate.
-- If the user message does not clearly provide the needed info for this step:
-    needsClarification=true and provide a short clarificationQuestion in Spanish.
+- If the user message is not semantically compatible with the current step, then:
+  needsClarification=true
+  and provide a short clarificationQuestion in Spanish.
+- Step 1 expects the business sector or rubro. A valid answer is a category such as alimentos, textil, servicios, logística, manufactura, metalmecánica, etc.
+- Step 2 expects the main product(s) or service(s) the student will work with. A valid answer names what the company makes or delivers.
+- Step 3 expects the main working area or process. A valid answer names where the student will focus, such as Producción, Calidad, Logística, Inventarios, Ventas, Mantenimiento, etc.
+- If the user gives a reply that belongs to another step, do not accept it as valid for the current step.
+- If the user mixes useful information with extra context, rescue only the fragment that clearly answers the current step.
+- Do not over-extract. If the answer is ambiguous, partial, or weakly implied, prefer needsClarification=true.
+- If the message mainly expresses confusion, doubt, lack of understanding, or asks for help, mark needsClarification=true and ask a short helpful question in Spanish.
+- Prefer semantic understanding over keyword matching.
+- If the answer includes both a valid field and unrelated commentary, keep only the valid field.
 - If the info is clear:
-    needsClarification=false and set confidence >= 0.7.
+  needsClarification=false and set confidence >= 0.7.
 - Output must be ONLY JSON. No markdown. No commentary.
 
 Example output (valid JSON):

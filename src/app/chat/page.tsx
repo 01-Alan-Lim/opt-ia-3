@@ -27,9 +27,25 @@ type GateReason =
 const GREETING =
   "Hola, soy OPT-IA. Me conecto a Supabase y Google AI para ayudarte con productividad en MyPEs.";
 
-const ADVISOR_GREETING =
-  "¡Hola! 👋 Cuando quieras empezar, necesito 3 datos rápidos para armar el Contexto del Caso.\n\n" +
-  "Escribe: **empezar** o dime directamente el **sector/rubro** (ej: alimentos, textil, servicios).";
+function buildAdvisorGreeting(displayName?: string | null) {
+  const firstName =
+    (displayName ?? "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)[0] ?? "";
+
+  const namePart = firstName ? `, ${firstName}` : "";
+
+  return (
+    `¡Hola${namePart}! 👋 Bienvenido al **Asesor de Plan de Mejora**.\n\n` +
+    "Primero completaremos la **Etapa 0: Contexto del Caso**. " +
+    "Solo te haré **3 preguntas rápidas** para entender tu caso y luego pasaremos a la siguiente etapa.\n\n" +
+    "Responde con calma y en tus propias palabras. " +
+    "Si algo no queda claro, te ayudaré a reformularlo antes de guardarlo.\n\n" +
+    "Puedes escribir **empezar** o responder directamente con el **sector/rubro** de la empresa " +
+    "(por ejemplo: alimentos, textil o servicios)."
+  );
+}
 
 
 function createMessage(role: Message["role"], content: string): Message {
@@ -1444,9 +1460,9 @@ function looksLikeProgressClosureRequest(text: string) {
         const stepToAsk = (next === 0 ? 1 : next) as 1 | 2 | 3;
 
         const intro =
-          stepToAsk === 1
-            ? ADVISOR_GREETING
-            : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
+        stepToAsk === 1
+          ? buildAdvisorGreeting(displayName)
+          : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
 
         const step = ((next === 0 ? 1 : next) as 1 | 2 | 3);
         const greet = advisorResumeGreeting(ctx.contextJson, step);
@@ -2352,13 +2368,85 @@ function looksLikeProgressClosureRequest(text: string) {
   }
 
   function promptForStep(step: 1 | 2 | 3) {
-    if (step === 1)
-      return "1/3) ¿Cuál es el sector o rubro de la empresa? (ej: alimentos, textil, servicios)";
-    if (step === 2)
-      return "2/3) ¿Cuál es el producto o servicio principal? (puedes poner 1–3)";
+    if (step === 1) {
+      return (
+        "🧩 **Pregunta 1 de 3**\n\n" +
+        "¿Cuál es el **sector o rubro** de la empresa?\n" +
+        "Ejemplos: **alimentos, textil, servicios, metalmecánica, logística**."
+      );
+    }
+
+    if (step === 2) {
+      return (
+        "🧩 **Pregunta 2 de 3**\n\n" +
+        "¿Cuál es el **producto o servicio principal** con el que trabajarás?\n" +
+        "Puedes escribir **1 a 3** si corresponde."
+      );
+    }
+
     return (
-      "3/3) ¿En qué área estarás principalmente? (elige 1 o escribe otra)\n" +
-      "- Producción\n- Inventarios/Almacén\n- Logística/Despacho\n- Ventas/Atención al cliente\n- Calidad\n- Mantenimiento\n- Administración/Costos"
+      "🧩 **Pregunta 3 de 3**\n\n" +
+      "¿En qué **área o proceso principal** trabajarás?\n\n" +
+      "Puedes elegir una opción típica o escribirla con tus palabras:\n" +
+      "- Producción\n" +
+      "- Inventarios / Almacén\n" +
+      "- Logística / Despacho\n" +
+      "- Ventas / Atención al cliente\n" +
+      "- Calidad\n" +
+      "- Mantenimiento\n" +
+      "- Administración / Costos"
+    );
+  }
+
+  function buildStage0Welcome(step: 1 | 2 | 3) {
+    if (step === 1) {
+      return (
+        "¡Perfecto! 👌 Empecemos con la **Etapa 0: Contexto del Caso**.\n\n" +
+        "Te haré solo **3 preguntas rápidas**. " +
+        "Con eso dejaré tu caso registrado correctamente y luego seguimos con la siguiente etapa.\n\n" +
+        promptForStep(1)
+      );
+    }
+
+    return (
+      "👌 Retomemos la **Etapa 0** desde donde quedamos.\n\n" +
+      promptForStep(step)
+    );
+  }
+
+  function stage0HelpMessage(step: 1 | 2 | 3) {
+    if (step === 1) {
+      return (
+        "Claro 👍 En esta primera pregunta solo necesito el **sector o rubro de la empresa**, no el producto ni el área.\n\n" +
+        "Ejemplos válidos:\n" +
+        "- alimentos\n" +
+        "- textil\n" +
+        "- servicios\n" +
+        "- metalmecánica\n\n" +
+        promptForStep(1)
+      );
+    }
+
+    if (step === 2) {
+      return (
+        "Aquí necesito el **producto o servicio principal**, no el sector ni el área.\n\n" +
+        "Ejemplos:\n" +
+        "- yogurt\n" +
+        "- pan\n" +
+        "- confección de uniformes\n" +
+        "- servicio de mantenimiento\n\n" +
+        promptForStep(2)
+      );
+    }
+
+    return (
+      "Aquí necesito el **área o proceso principal** donde trabajarás.\n\n" +
+      "Ejemplos:\n" +
+      "- Producción\n" +
+      "- Calidad\n" +
+      "- Logística\n" +
+      "- Inventarios\n\n" +
+      promptForStep(3)
     );
   }
 
@@ -2751,8 +2839,8 @@ function looksLikeProgressClosureRequest(text: string) {
     if (!text) return text;
 
     const patterns = [
-      /^(entendido|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay)\s*,\s*[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+)?[.,:;!\-]*\s*/u,
-      /^(entendido|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay)\s*,\s*/i,
+      /^(entendido|entiendo|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay|claro|listo)\s*,\s*[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+)?[.,:;!\-]*\s*/u,
+      /^(entendido|entiendo|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay|claro|listo)\s*,\s*/i,
     ];
 
     for (const pattern of patterns) {
@@ -2769,24 +2857,28 @@ function looksLikeProgressClosureRequest(text: string) {
   }
 
   function formatAssistantMessageForReadability(message: string): string {
-    let text = String(message ?? "").trim();
+    let text = String(message ?? "")
+      .replace(/\r\n/g, "\n")
+      .trim();
+
     if (!text) return text;
 
-    // 1. Separar oraciones largas en párrafos
-    text = text
-      .replace(/\. (?=[A-ZÁÉÍÓÚÑ])/g, ".\n\n")
-      .replace(/:\s*/g, ":\n");
+    // Separar visualmente encabezados o bloques con emoji si vienen pegados
+    text = text.replace(
+      /([^\n])\n(?=(?:✅|📄|🧩|👉|⚠️|🎯|📌|📊|📝))/g,
+      "$1\n\n"
+    );
 
-    // 2. Convertir enumeraciones tipo "1. ... 2. ..."
-    text = text.replace(/(\d+\.)\s*/g, "\n$1 ");
+    // Dar aire a listas numeradas
+    text = text.replace(/([^\n])\n(?=\d+\.\s)/g, "$1\n\n");
 
-    // 3. Convertir frases tipo "Primero", "Luego", "Finalmente"
-    text = text
-      .replace(/(Primero|En primer lugar)/gi, "\n• Primero")
-      .replace(/(Luego|Después)/gi, "\n• Luego")
-      .replace(/(Finalmente|Por último)/gi, "\n• Finalmente");
+    // Dar aire a bullets
+    text = text.replace(/([^\n])\n(?=(?:-|\*)\s)/g, "$1\n\n");
 
-    // 4. Evitar demasiados saltos
+    // Mejorar el caso específico de Versiones
+    text = text.replace(/\*\*(Versión\s+\d+)\*\*\s*:\s*/gi, "**$1**\n");
+
+    // Evitar demasiados saltos seguidos
     text = text.replace(/\n{3,}/g, "\n\n");
 
     return text.trim();
@@ -3073,6 +3165,270 @@ function looksLikeProgressClosureRequest(text: string) {
     const payload = json?.data ?? json;
 
     return { ok, payload, status: res.status };
+  }
+
+  async function handleStage0DraftFlow(input: {
+    text: string;
+    ctx: PlanContextStatus;
+  }): Promise<boolean> {
+    const { text, ctx } = input;
+    const ctxJson = (ctx.contextJson ?? {}) as Record<string, unknown>;
+
+    const nextStep = getNextStage0StepFromContext(ctxJson);
+    const step = (nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3;
+
+    setStage0Step(step);
+
+    const localIntent = detectStage0Intent(text);
+
+    if (localIntent === "GREETING" || localIntent === "START") {
+      await appendAssistant(buildStage0Welcome(step));
+      return true;
+    }
+
+    if (localIntent === "QUESTION") {
+      await appendAssistant(stage0HelpMessage(step));
+      return true;
+    }
+
+    if (localIntent === "CONFIRM") {
+      await appendAssistant(
+        "Todavía estamos completando la **Etapa 0**.\n\n" +
+          "Primero necesito registrar bien estos datos y luego pasamos a la siguiente etapa.\n\n" +
+          promptForStep(step)
+      );
+      return true;
+    }
+
+    const interpreted = await interpretStage0WithLLM(step, text, ctxJson);
+
+    if (!interpreted.ok || !interpreted.payload) {
+      await appendAssistant(
+        "⚠️ No pude interpretar bien tu respuesta.\n\n" + stage0HelpMessage(step)
+      );
+      return true;
+    }
+
+    const result = interpreted.payload;
+
+    if (
+      typeof result.confidence === "number" &&
+      result.confidence < 0.6 &&
+      !result.needsClarification
+    ) {
+      await appendAssistant(stage0HelpMessage(step));
+      return true;
+    }
+
+    if (interpreted.payload?.confidence !== undefined && interpreted.payload.confidence < 0.6) {
+      await appendAssistant(stage0HelpMessage(step));
+      return true;
+    }
+
+
+    if (result.intent === "GREETING" || result.intent === "START") {
+      await appendAssistant(buildStage0Welcome(step));
+      return true;
+    }
+
+    if (
+      result.intent === "QUESTION" ||
+      result.intent === "EDIT" ||
+      result.needsClarification
+    ) {
+      await appendAssistant(
+        result.clarificationQuestion?.trim() || stage0HelpMessage(step)
+      );
+      return true;
+    }
+
+    if (step === 1) {
+      const sector =
+        typeof result.sector === "string" ? result.sector.trim() : "";
+
+      if (!sector) {
+        await appendAssistant(stage0HelpMessage(1));
+        return true;
+      }
+
+      const assistantMessage =
+        `¡Perfecto! ✅ Ya registré el **sector/rubro**: **${sector}**.\n\n` +
+        promptForStep(2);
+
+      const saved = await savePlanContextDraft(
+        { sector },
+        { userMessage: text, assistantMessage },
+        ctxJson as {
+          sector?: string;
+          products?: string[];
+          process_focus?: string[];
+          stage?: string;
+        }
+      );
+
+      if (!saved.ok) {
+        await appendAssistant("⚠️ No pude guardar el sector en este momento. Intenta otra vez.");
+        return true;
+      }
+
+      setStage0Draft((prev) => ({ ...prev, sector }));
+      setStage0Step(2);
+
+      planContextCacheRef.current = {
+        at: Date.now(),
+        data: {
+          ...ctx,
+          exists: true,
+          status: "draft",
+          chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
+          contextJson: {
+            ...(ctxJson ?? {}),
+            sector,
+          },
+          contextText: ctx.contextText,
+        },
+      };
+
+      await appendAssistant(assistantMessage);
+      return true;
+    }
+
+    if (step === 2) {
+      const rawProducts = Array.isArray(result.products)
+        ? (result.products as unknown[])
+        : [];
+
+      const products: string[] = rawProducts
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0);
+
+      if (!products.length) {
+        await appendAssistant(stage0HelpMessage(2));
+        return true;
+      }
+
+      const assistantMessage =
+        `¡Muy bien! ✅ Ya registré el **producto/servicio principal**: **${products.join(", ")}**.\n\n` +
+        promptForStep(3);
+
+      const saved = await savePlanContextDraft(
+        { products },
+        { userMessage: text, assistantMessage },
+        ctxJson as {
+          sector?: string;
+          products?: string[];
+          process_focus?: string[];
+          stage?: string;
+        }
+      );
+
+      if (!saved.ok) {
+        await appendAssistant("⚠️ No pude guardar el producto/servicio en este momento. Intenta otra vez.");
+        return true;
+      }
+
+      setStage0Draft((prev) => ({ ...prev, products }));
+      setStage0Step(3);
+
+      planContextCacheRef.current = {
+        at: Date.now(),
+        data: {
+          ...ctx,
+          exists: true,
+          status: "draft",
+          chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
+          contextJson: {
+            ...(ctxJson ?? {}),
+            products,
+          },
+          contextText: ctx.contextText,
+        },
+      };
+
+      await appendAssistant(assistantMessage);
+      return true;
+    }
+
+    const rawProcessFocus = Array.isArray(result.process_focus)
+      ? (result.process_focus as unknown[])
+      : [];
+
+    const process_focus: string[] = rawProcessFocus
+      .map((item) => String(item).trim())
+      .filter((item) => item.length > 0);
+    if (!process_focus.length) {
+      await appendAssistant(stage0HelpMessage(3));
+      return true;
+    }
+
+    const draftAssistantMessage =
+      `Excelente ✅ Ya registré el **área/proceso principal**: **${process_focus.join(", ")}**.\n\n` +
+      "Voy a consolidar tu **Contexto del Caso** para dejarlo listo.";
+
+    const saved = await savePlanContextDraft(
+      { process_focus },
+      { userMessage: text, assistantMessage: draftAssistantMessage },
+      ctxJson as {
+        sector?: string;
+        products?: string[];
+        process_focus?: string[];
+        stage?: string;
+      }
+    );
+
+    if (!saved.ok) {
+      await appendAssistant("⚠️ No pude guardar el área/proceso en este momento. Intenta otra vez.");
+      return true;
+    }
+
+    const confirmed = await confirmPlanContext();
+
+    if (!confirmed.ok) {
+      await appendAssistant(
+        confirmed.payload?.message ||
+          "⚠️ Guardé el contexto, pero no pude confirmarlo todavía. Intenta nuevamente."
+      );
+      return true;
+    }
+
+    const finalContext = (confirmed.payload?.contextJson ?? {
+      ...(ctxJson ?? {}),
+      process_focus,
+    }) as Record<string, unknown>;
+
+    planContextCacheRef.current = {
+      at: Date.now(),
+      data: {
+        ...ctx,
+        exists: true,
+        status: "confirmed",
+        chatId: (confirmed.payload?.chatId ?? saved.payload?.chatId ?? ctx.chatId) as string | null,
+        contextJson: finalContext,
+        contextText: (confirmed.payload?.contextText ?? ctx.contextText) as string | null,
+      },
+    };
+
+    setStage0Draft({
+      sector: typeof finalContext?.sector === "string" ? finalContext.sector : undefined,
+      products: Array.isArray(finalContext?.products) ? (finalContext.products as string[]) : undefined,
+      process_focus: Array.isArray(finalContext?.process_focus)
+        ? (finalContext.process_focus as string[])
+        : undefined,
+    });
+    setStage0Step(0);
+    setAwaitingStage1Start(clientId, true);
+
+    await appendAssistant(
+      "✅ **Etapa 0 completada y confirmada.**\n\n" +
+        formatContextSummary(finalContext) +
+        "\n\n" +
+        "Ya quedó registrado el contexto base de tu caso.\n\n" +
+        "👉 Desde aquí podremos continuar con el flujo del asesor de forma más clara.\n\n" +
+        "Responde **ok** si quieres que sigamos con la siguiente etapa.\n" +
+        "O escribe **productividad** si ya tienes datos mensuales."
+    );
+
+    return true;
   }
 
   async function saveProductivity(payload: any, chatId?: string | null) {
@@ -4316,9 +4672,9 @@ function looksLikeProgressClosureRequest(text: string) {
       });
 
       const greet =
-        step === 1
-          ? ADVISOR_GREETING
-          : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
+      step === 1
+        ? buildAdvisorGreeting(displayName)
+        : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
 
       const msg = `${greet}\n\n${promptForStep(step)}`;
 
@@ -4752,9 +5108,17 @@ function looksLikeProgressClosureRequest(text: string) {
         await persistMessageDB({ chatId: advisorChatId, role: "user", content: text });
 
         const ctx = await getPlanContextStatusCached();
-        const confirmedLike = ctx.status === "confirmed" || isContextComplete(ctx.contextJson);
-        const intentC = detectStage0Intent(text);
         const lastReport = await getLastProductivityReportCached();
+        if (ctx.ok && ctx.status !== "confirmed") {
+          const handledStage0 = await handleStage0DraftFlow({
+            text,
+            ctx,
+          });
+
+          if (handledStage0) {
+            return;
+          }
+        }
         const lastStatus = lastReport.ok ? lastReport.payload?.status : null;
         const isStage1Validated = lastStatus === "validated";
 
@@ -5607,13 +5971,11 @@ function looksLikeProgressClosureRequest(text: string) {
 
         // Si está confirmado pero el usuario solo saluda, NO revisamos plan
         if (isGreetingOrSmallTalk(text)) {
-          setMessages((prev) => [
-            ...prev,
-            createMessage(
-              "assistant",
-              "¡Hola! 👋 Ya tengo tu **Contexto del Caso** registrado.\n\n👉 Cuéntame: ¿quieres continuar con el **Diagnóstico (Etapa 1)** o revisar tu **Avance 1**?"
-            ),
-          ]);
+          await appendAssistant(
+            "¡Hola! 👋 Ya tengo registrado tu **Contexto del Caso**.\n\n" +
+              "Podemos continuar con la **Etapa 1: Productividad mensual**.\n\n" +
+              "Si quieres, responde **ok** y empezamos."
+          );
           return;
         }
 
@@ -5627,19 +5989,16 @@ function looksLikeProgressClosureRequest(text: string) {
         if (ctx.ok && ctx.status === "confirmed" && !hasWizard && isAwaitingStage1Start(clientId)) {
           // si el usuario pregunta (no robótico), respondemos y re-preguntamos el paso actual
           if (isProdQuestion(text) && !isReadyIntent(text)) {
-            // Aquí puedes contestar “manual” (sin LLM) o si quieres,
-            // puedes llamar /api/chat para explicación. Por ahora lo dejamos manual:
-            setMessages((prev) => [
-              ...prev,
-              createMessage(
-                "assistant",
-                "Claro 🙂 En esta parte solo validamos **ingresos del mes** y **costos del mes** " +
-                  "para una línea específica (ej: Yogurt). Productividad se puede completar más adelante; ahora podemos continuar con FODA.\n\n" +
-                  "Sigamos:"
-              ),
-              createMessage("assistant", promptProd(1, ctx.contextJson, prodDraft)),
-            ]);
+            await appendAssistant(
+              "Claro 🙂 En esta etapa trabajaremos una **medición básica de productividad mensual**.\n\n" +
+                "Necesito una línea, producto o servicio concreto, junto con **ingresos del mes** y **costos del mes**.\n\n" +
+                "No te preocupes: iremos paso a paso."
+            );
+
+            setActiveAdvisorStage(1);
             setProdStep(1);
+
+            await appendAssistant(promptProd(1, ctx.contextJson, prodDraft));
             return;
           }
 
@@ -5652,13 +6011,14 @@ function looksLikeProgressClosureRequest(text: string) {
               : [];
             const autoLine = products.length === 1 ? String(products[0]) : undefined;
 
+            setActiveAdvisorStage(1);
             setProdDraft({ line: autoLine, required_costs: 3 });
             setProdStep(1);
 
-            setMessages((prev) => [
-              ...prev,
-              createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
-            ]);
+            await appendAssistant(
+              "Perfecto. Empecemos con la **Etapa 1: Productividad mensual**."
+            );
+            await appendAssistant(promptProd(1, ctx.contextJson, { line: autoLine }));
             return;
           }
 
@@ -5670,25 +6030,22 @@ function looksLikeProgressClosureRequest(text: string) {
               : [];
             const autoLine = products.length === 1 ? String(products[0]) : undefined;
 
+            setActiveAdvisorStage(1);
             setProdDraft({ line: autoLine, required_costs: 3 });
             setProdStep(1);
 
-            setMessages((prev) => [
-              ...prev,
-              createMessage("assistant", promptProd(1, ctx.contextJson, { line: autoLine })),
-            ]);
+            await appendAssistant(
+              "Excelente. Continuemos con la **Etapa 1: Productividad mensual**."
+            );
+            await appendAssistant(promptProd(1, ctx.contextJson, { line: autoLine }));
             return;
           }
 
           // si no confirmó, pedimos confirmación para iniciar productividad
-          setMessages((prev) => [
-            ...prev,
-            createMessage(
-              "assistant",
-              "Antes de avanzar necesito tu confirmación para iniciar **Productividad mensual**.\n\n" +
-                "Responde **ok / listo / vamos**."
-            ),
-          ]);
+          await appendAssistant(
+            "Antes de avanzar necesito tu confirmación para iniciar la **Etapa 1: Productividad mensual**.\n\n" +
+              "Cuando quieras, responde **ok**, **listo** o **vamos**."
+          );
           return;
         }
 
@@ -5785,6 +6142,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
               setProdStep(0);
               setProdDraft({});
+              setActiveAdvisorStage(2);
 
               setFodaState(initial);
               await saveFodaState(initial, effectiveChatId);
