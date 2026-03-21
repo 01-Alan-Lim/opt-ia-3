@@ -130,6 +130,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const fodaResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 2,
+      artifactType: "foda_analysis",
+      periodKey: PERIOD_KEY,
+    });
+
+    const brainstormResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 3,
+      artifactType: "brainstorm_ideas",
+      periodKey: PERIOD_KEY,
+    });
+
     const ishResult = await loadLatestValidatedArtifact({
       userId: user.userId,
       preferredChatId: chatId,
@@ -170,6 +186,8 @@ export async function POST(req: NextRequest) {
       periodKey: PERIOD_KEY,
     });
 
+    const foda = fodaResult.ok ? fodaResult.row : null;
+    const brainstorm = brainstormResult.ok ? brainstormResult.row : null;
     const ish = ishResult.ok ? ishResult.row : null;
     const pareto = paretoResult.ok ? paretoResult.row : null;
     const objectives = objectivesResult.ok ? objectivesResult.row : null;
@@ -177,9 +195,11 @@ export async function POST(req: NextRequest) {
     const planning = planningResult.ok ? planningResult.row : null;
 
     // Timeline de etapas (solo validadas) para “continuidad/proceso”
-        const timelineChatIds = Array.from(
+    const timelineChatIds = Array.from(
       new Set(
         [
+          foda?.chat_id,
+          brainstorm?.chat_id,
           ish?.chat_id,
           pareto?.chat_id,
           objectives?.chat_id,
@@ -196,7 +216,7 @@ export async function POST(req: NextRequest) {
       .eq("user_id", user.userId)
       .eq("period_key", PERIOD_KEY)
       .eq("status", "validated")
-      .in("stage", [4, 5, 6, 7, 8, 9]);
+      .in("stage", [2, 3, 4, 5, 6, 7, 8, 9]);
 
     if (timelineChatIds.length > 0) {
       timelineQuery = timelineQuery.in("chat_id", timelineChatIds);
@@ -271,7 +291,7 @@ FORMATO DEL MENSAJE:
 OBJETIVO:
 - Leer el documento final (texto extraído).
 - Extraer secciones clave del formato PAP-PM-01.
-- Cruzar con las etapas validadas (4–9) y con el registro de horas (semanal).
+- Cruzar con las etapas validadas (2–9) y con el registro de horas (semanal).
 - Emitir feedback + calificación estricta (notas variadas, no siempre 100).
 
 REGLAS:
@@ -346,6 +366,8 @@ ENTRADAS:
 ${extractedText}
 
 ETAPAS VALIDADAS (si falta alguna, sé conservador y menciona que no hay evidencia suficiente):
+- FODA (2): ${JSON.stringify(foda?.payload ?? null)}
+- Lluvia de ideas (3): ${JSON.stringify(brainstorm?.payload ?? null)}
 - Ishikawa (4): ${JSON.stringify(ish?.payload ?? null)}
 - Pareto (5): ${JSON.stringify(pareto?.payload ?? null)}
 - Objetivos (6): ${JSON.stringify(objectives?.payload ?? null)}

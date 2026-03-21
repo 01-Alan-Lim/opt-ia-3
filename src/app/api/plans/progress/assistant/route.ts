@@ -175,6 +175,40 @@ function shortenAssistantMessage(message: string): string {
   return firstTwo.slice(0, 220).trimEnd() + "...";
 }
 
+function softenProgressAssistantLead(message: string, preferredFirstName: string | null): string {
+  let text = String(message ?? "").trim();
+
+  const escapedName = String(preferredFirstName ?? "")
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const leadPatterns = [
+    /^entendido,\s*/i,
+    /^registrado,\s*/i,
+    /^perfecto,\s*/i,
+    /^de acuerdo,\s*/i,
+    /^muy bien,\s*/i,
+  ];
+
+  for (const pattern of leadPatterns) {
+    text = text.replace(pattern, "");
+  }
+
+  if (escapedName) {
+    const nameLeadPatterns = [
+      new RegExp(`^${escapedName}[,.:;\\-\\s]+`, "i"),
+      new RegExp(`^(entendido|registrado|perfecto|de acuerdo|muy bien)\\s*,?\\s*${escapedName}[,.:;\\-\\s]+`, "i"),
+    ];
+
+    for (const pattern of nameLeadPatterns) {
+      text = text.replace(pattern, "");
+    }
+  }
+
+  text = text.replace(/^\s+/, "");
+  return text.length > 0 ? text : String(message ?? "").trim();
+}
+
 async function generateProgressJson(prompt: string) {
   const model = getGeminiModel();
 
@@ -494,7 +528,12 @@ DEVUELVE SOLO JSON con este formato exacto:
       preferredFirstName
     );
 
-    responseData.assistantMessage = shortenAssistantMessage(sanitizedMessage);
+    const softenedMessage = softenProgressAssistantLead(
+      sanitizedMessage,
+      preferredFirstName
+    );
+
+    responseData.assistantMessage = shortenAssistantMessage(softenedMessage);
 
     return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
   } catch (error: unknown) {

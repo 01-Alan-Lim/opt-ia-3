@@ -107,24 +107,16 @@ export async function POST(req: NextRequest) {
 
     const s: any = stRow.state_json;
 
-    // 3) Gate mínimo: reporte + porcentaje
+    // 3) Gate mínimo: reporte breve y coherente
     const reportText = String(s?.reportText ?? "").trim();
     const progressPercentRaw = safeNumber(s?.progressPercent);
     const progressPercent = progressPercentRaw === null ? null : clampPercent(progressPercentRaw);
 
-    if (!reportText || reportText.length < 20) {
+    if (!reportText || reportText.length < 12) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Tu reporte está muy corto. Describe en 5–8 líneas qué lograste implementar hasta hoy.",
-      });
-    }
-
-    if (progressPercent === null) {
-      return NextResponse.json({
-        ok: true,
-        valid: false,
-        message: "Falta estimar el porcentaje de avance (0–100) para cerrar Etapa 9.",
+        message: "Tu reporte aún está muy corto. Cuéntame brevemente qué sí hiciste, qué quedó pendiente o qué te bloqueó.",
       });
     }
 
@@ -139,12 +131,13 @@ export async function POST(req: NextRequest) {
 
     const model = getGeminiModel();
     const prompt = `
-Evalúa académicamente la Etapa 9 (Reporte de avances). Debes ser estricto con coherencia y realismo del porcentaje.
+Evalúa académicamente la Etapa 9 (Reporte de avances). Debes ser estricto con la coherencia entre lo reportado y lo planificado.
 
 RÚBRICA (0-100):
 1) Coherencia y avance respecto al plan (70%):
    - El reporte se relaciona con lo planificado (Etapa 8) y se entiende qué se hizo y qué falta.
-   - El porcentaje es razonable respecto a lo descrito (evitar 90-100 sin sustento).
+   - Si hay porcentaje, evalúa si es razonable respecto a lo descrito.
+   - Si no hay porcentaje explícito, NO invalides por eso; evalúa el avance con base en el texto.
 2) Medición / verificación (30%):
    - Menciona cómo verificó o verificará el avance (texto simple).
    - Si aún no midió, lo reconoce y propone verificación mínima.

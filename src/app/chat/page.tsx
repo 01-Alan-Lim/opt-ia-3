@@ -583,15 +583,9 @@ export default function ChatPage() {
 
     const textOk =
       typeof st.reportText === "string" &&
-      st.reportText.trim().length >= 20;
+      st.reportText.trim().length >= 12;
 
-    const pctOk =
-      typeof st.progressPercent === "number" &&
-      Number.isFinite(st.progressPercent) &&
-      st.progressPercent >= 0 &&
-      st.progressPercent <= 100;
-
-    return textOk && pctOk;
+    return textOk;
   }
 
   function normalizeClosureText(text: string) {
@@ -623,7 +617,25 @@ function looksLikeObjectivesClosureRequest(text: string) {
     normalized.includes("valida los objetivos") ||
     normalized.includes("podemos cerrar objetivos") ||
     normalized.includes("cierra la etapa de objetivos") ||
-    normalized.includes("pasemos a la etapa 7")
+    normalized.includes("cerramos la etapa 6") ||
+    normalized.includes("finalizamos la etapa 6") ||
+    normalized.includes("ya cerramos la etapa 6") ||
+    normalized.includes("ya finalizamos la etapa 6") ||
+    normalized.includes("etapa 6 completa") ||
+    normalized.includes("la etapa 6 esta completa") ||
+    normalized.includes("la etapa 6 ya esta lista") ||
+    normalized.includes("pasemos a la etapa 7") ||
+    normalized.includes("pasar a la etapa 7") ||
+    normalized.includes("podemos pasar a la etapa 7") ||
+    normalized.includes("pasemos a la siguiente etapa") ||
+    normalized.includes("podemos pasar a la siguiente etapa") ||
+    normalized.includes("sigamos con la etapa 7") ||
+    normalized.includes("continuemos con la etapa 7") ||
+    normalized === "ok avancemos" ||
+    normalized === "avancemos" ||
+    normalized === "sigamos" ||
+    normalized === "continuemos" ||
+    normalized === "pasemos"
   );
 }
 
@@ -641,7 +653,25 @@ function looksLikeImprovementClosureRequest(text: string) {
     normalized.includes("el plan de mejora ya esta listo") ||
     normalized.includes("podemos cerrar la etapa 7") ||
     normalized.includes("cierra la etapa 7") ||
-    normalized.includes("pasemos a la etapa 8")
+    normalized.includes("cerramos la etapa 7") ||
+    normalized.includes("finalizamos la etapa 7") ||
+    normalized.includes("ya cerramos la etapa 7") ||
+    normalized.includes("ya finalizamos la etapa 7") ||
+    normalized.includes("etapa 7 completa") ||
+    normalized.includes("la etapa 7 esta completa") ||
+    normalized.includes("la etapa 7 ya esta lista") ||
+    normalized.includes("pasemos a la etapa 8") ||
+    normalized.includes("pasar a la etapa 8") ||
+    normalized.includes("podemos pasar a la etapa 8") ||
+    normalized.includes("pasemos a la siguiente etapa") ||
+    normalized.includes("podemos pasar a la siguiente etapa") ||
+    normalized.includes("sigamos con la etapa 8") ||
+    normalized.includes("continuemos con la etapa 8") ||
+    normalized === "ok avancemos" ||
+    normalized === "avancemos" ||
+    normalized === "sigamos" ||
+    normalized === "continuemos" ||
+    normalized === "pasemos"
   );
 }
 
@@ -716,7 +746,26 @@ function looksLikeProgressClosureRequest(text: string) {
     normalized.includes("el reporte ya esta listo") ||
     normalized.includes("podemos cerrar la etapa 9") ||
     normalized.includes("cierra la etapa 9") ||
-    normalized.includes("pasemos a la etapa 10")
+    normalized.includes("cerramos la etapa 9") ||
+    normalized.includes("finalizamos la etapa 9") ||
+    normalized.includes("ya cerramos la etapa 9") ||
+    normalized.includes("ya finalizamos la etapa 9") ||
+    normalized.includes("etapa 9 completa") ||
+    normalized.includes("la etapa 9 esta completa") ||
+    normalized.includes("la etapa 9 ya esta lista") ||
+    normalized.includes("pasemos a la etapa 10") ||
+    normalized.includes("pasar a la etapa 10") ||
+    normalized.includes("podemos pasar a la etapa 10") ||
+    normalized.includes("pasemos a la siguiente etapa") ||
+    normalized.includes("podemos pasar a la otra etapa") ||
+    normalized.includes("podemos pasar a la siguiente etapa") ||
+    normalized.includes("sigamos con la etapa 10") ||
+    normalized.includes("continuemos con la etapa 10") ||
+    normalized === "ok avancemos" ||
+    normalized === "avancemos" ||
+    normalized === "sigamos" ||
+    normalized === "continuemos" ||
+    normalized === "pasemos"
   );
 }
 
@@ -2697,8 +2746,30 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok: okk, data: json?.data ?? json };
   }
 
+  function softenAssistantLeadInChat(message: string): string {
+    let text = String(message ?? "").trim();
+    if (!text) return text;
+
+    const patterns = [
+      /^(entendido|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay)\s*,\s*[A-ZÁÉÍÓÚÑ][\p{L}'-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'-]+)?[.,:;!\-]*\s*/u,
+      /^(entendido|registrado|perfecto|de acuerdo|muy bien|esta bien|está bien|ok|okay)\s*,\s*/i,
+    ];
+
+    for (const pattern of patterns) {
+      text = text.replace(pattern, "");
+    }
+
+    text = text.replace(/^\s+/, "");
+
+    if (!text) {
+      return String(message ?? "").trim();
+    }
+
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   async function appendAssistant(content: unknown) {
-    const safe =
+    const safeRaw =
       typeof content === "string"
         ? content
         : content == null
@@ -2710,6 +2781,11 @@ function looksLikeProgressClosureRequest(text: string) {
                 return String(content);
               }
             })();
+
+    const safe =
+      modeRef.current === "plan_mejora"
+        ? softenAssistantLeadInChat(safeRaw)
+        : safeRaw;
 
     setMessages((prev) => [...prev, createMessage("assistant", safe)]);
 
@@ -4683,8 +4759,14 @@ function looksLikeProgressClosureRequest(text: string) {
 
           await appendAssistant(assistant.payload.assistantMessage);
 
+          const progressAction = assistant.payload?.updates?.action;
+
           if (nextState.step === "review" && isProgressReadyForValidation(nextState)) {
-            if (!looksLikeProgressClosureRequest(text)) {
+            const shouldValidateNow =
+              progressAction === "ready_to_validate" ||
+              looksLikeProgressClosureRequest(text);
+
+            if (!shouldValidateNow) {
               return;
             }
 
@@ -4820,7 +4902,10 @@ function looksLikeProgressClosureRequest(text: string) {
                     // Solo validamos Etapa 7 cuando ya está en review
           // y el estudiante pide explícitamente revisar/cerrar su plan.
           if (nextState.step === "review" && isImprovementReadyForValidation(nextState)) {
-            if (!looksLikeImprovementClosureRequest(text)) {
+            const wantsToCloseImprovement =
+              looksLikeImprovementClosureRequest(text) || isShortAffirmativeReply(text);
+
+            if (!wantsToCloseImprovement) {
               return;
             }
 
@@ -4832,24 +4917,31 @@ function looksLikeProgressClosureRequest(text: string) {
               return;
             }
 
-            if (v.payload?.valid) {
-              const moved = await applyBackendAdvisorAdvance({
-                fromStage: 7,
-                payload: v.payload,
-                effectiveChatId: advisorChatId,
-              });
+            if (!v.payload?.valid) {
+              const msg =
+                v.payload?.message ??
+                "La Etapa 7 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 8.";
 
-              if (!moved) {
-                await appendAssistant(
-                  "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
-                );
-              }
+              await appendAssistant(
+                "Aún no podemos cerrar la **Etapa 7 (Plan de Mejora)**.\n\n" +
+                  `⚠️ ${msg}\n\n` +
+                  "Cuando quieras, te ayudo a corregir exactamente lo que falta."
+              );
               return;
             }
 
-            await appendAssistant(
-              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 7 antes de cerrarla."}`
-            );
+            const moved = await applyBackendAdvisorAdvance({
+              fromStage: 7,
+              payload: v.payload,
+              effectiveChatId: advisorChatId,
+            });
+
+            if (!moved) {
+              await appendAssistant(
+                "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
+              );
+            }
+            return;
           }
 
           return;
@@ -4898,38 +4990,49 @@ function looksLikeProgressClosureRequest(text: string) {
 
           await appendAssistant(assistant.payload.assistantMessage);
 
-          // Solo validamos Etapa 6 cuando el estado ya está en review
-          // y el estudiante lo pide explícitamente.
+          // Validamos Etapa 6 cuando el estado ya está en review
+          // y el estudiante confirma cierre con una frase natural o una respuesta corta.
           if (nextState.step === "review" && isObjectivesReadyForValidation(nextState)) {
-            if (!looksLikeObjectivesClosureRequest(text)) {
+            const wantsToCloseObjectives =
+              looksLikeObjectivesClosureRequest(text) || isShortAffirmativeReply(text);
+
+            if (!wantsToCloseObjectives) {
               return;
             }
 
             const v = await validateObjectives(effectiveChatId);
+
             if (!v.ok) {
               const msg = v.payload?.message ?? "No se pudo cerrar Etapa 6 (Objetivos).";
               await appendAssistant(`⚠️ ${msg}`);
               return;
             }
 
-            if (v.payload?.valid) {
-              const moved = await applyBackendAdvisorAdvance({
-                fromStage: 6,
-                payload: v.payload,
-                effectiveChatId: advisorChatId,
-              });
+            if (!v.payload?.valid) {
+              const msg =
+                v.payload?.message ??
+                "La Etapa 6 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 7.";
 
-              if (!moved) {
-                await appendAssistant(
-                  "✅ La Etapa 6 quedó validada, pero no pude preparar automáticamente la Etapa 7. Recarga el chat y retomamos."
-                );
-              }
+              await appendAssistant(
+                "Aún no podemos cerrar la **Etapa 6 (Objetivos)**.\n\n" +
+                  `⚠️ ${msg}\n\n` +
+                  "Cuando quieras, te ayudo a corregir exactamente lo que falta."
+              );
               return;
             }
 
-            await appendAssistant(
-              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 6 antes de cerrarla."}`
-            );
+            const moved = await applyBackendAdvisorAdvance({
+              fromStage: 6,
+              payload: v.payload,
+              effectiveChatId: advisorChatId,
+            });
+
+            if (!moved) {
+              await appendAssistant(
+                "✅ La Etapa 6 quedó validada, pero no pude preparar automáticamente la Etapa 7. Recarga el chat y retomamos."
+              );
+            }
+            return;
           }
           return;
         }
