@@ -2768,6 +2768,30 @@ function looksLikeProgressClosureRequest(text: string) {
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
+  function formatAssistantMessageForReadability(message: string): string {
+    let text = String(message ?? "").trim();
+    if (!text) return text;
+
+    // 1. Separar oraciones largas en párrafos
+    text = text
+      .replace(/\. (?=[A-ZÁÉÍÓÚÑ])/g, ".\n\n")
+      .replace(/:\s*/g, ":\n");
+
+    // 2. Convertir enumeraciones tipo "1. ... 2. ..."
+    text = text.replace(/(\d+\.)\s*/g, "\n$1 ");
+
+    // 3. Convertir frases tipo "Primero", "Luego", "Finalmente"
+    text = text
+      .replace(/(Primero|En primer lugar)/gi, "\n• Primero")
+      .replace(/(Luego|Después)/gi, "\n• Luego")
+      .replace(/(Finalmente|Por último)/gi, "\n• Finalmente");
+
+    // 4. Evitar demasiados saltos
+    text = text.replace(/\n{3,}/g, "\n\n");
+
+    return text.trim();
+  }
+
   async function appendAssistant(content: unknown) {
     const safeRaw =
       typeof content === "string"
@@ -2782,10 +2806,14 @@ function looksLikeProgressClosureRequest(text: string) {
               }
             })();
 
-    const safe =
+    let safe =
       modeRef.current === "plan_mejora"
         ? softenAssistantLeadInChat(safeRaw)
         : safeRaw;
+
+    if (modeRef.current === "plan_mejora") {
+      safe = formatAssistantMessageForReadability(safe);
+    }
 
     setMessages((prev) => [...prev, createMessage("assistant", safe)]);
 
