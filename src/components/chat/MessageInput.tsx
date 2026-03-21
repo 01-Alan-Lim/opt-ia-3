@@ -70,6 +70,27 @@ export function MessageInput({
           ].join(" ")}
         >
           <div className="flex items-end gap-2 sm:items-center sm:gap-3">
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={disabled}
+              placeholder="Escribe tu mensaje aquí..."
+              className={[
+                "w-full resize-none overflow-hidden",
+                "rounded-xl sm:rounded-2xl bg-transparent",
+                "px-2.5 sm:px-4",
+                "py-[8px] sm:py-[11px]",
+                "min-h-9 sm:min-h-[44px]",
+                "text-[13px] sm:text-sm",
+                "leading-[1.45]",
+                "text-[color:var(--foreground)] placeholder:text-[color:var(--muted)] caret-[color:var(--foreground)]",
+                "focus:outline-none",
+              ].join(" ")}
+              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+            />
 
             {onUploadFile ? (
               <>
@@ -110,28 +131,6 @@ export function MessageInput({
                 </button>
               </>
             ) : null}
-
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={disabled}
-              placeholder="Escribe tu mensaje aquí..."
-              className={[
-                "w-full resize-none overflow-hidden",
-                "rounded-xl sm:rounded-2xl bg-transparent",
-                "px-2.5 sm:px-4",
-                "py-[8px] sm:py-[11px]",
-                "min-h-9 sm:min-h-[44px]",
-                "text-[13px] sm:text-sm",
-                "leading-[1.45]",
-                "text-[color:var(--foreground)] placeholder:text-[color:var(--muted)] caret-[color:var(--foreground)]",
-                "focus:outline-none",
-              ].join(" ")}
-              style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-            />
 
             <button
               type="submit"

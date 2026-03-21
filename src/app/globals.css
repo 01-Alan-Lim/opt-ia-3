@@ -44,6 +44,12 @@
   --bubble-user-border: rgba(56, 189, 248, 0.18);
   --bubble-user-text: #ffffff;
 
+  --markdown-strong: rgba(255, 255, 255, 0.96);
+  --markdown-link: #7dd3fc;
+  --markdown-link-hover: #bae6fd;
+  --markdown-code-bg: rgba(255, 255, 255, 0.10);
+  --markdown-code-text: rgba(241, 245, 249, 0.96);
+
 }
 
 
@@ -83,6 +89,12 @@
   --bubble-user-bg: rgba(59, 130, 246, 0.16);
   --bubble-user-border: rgba(59, 130, 246, 0.18);
   --bubble-user-text: rgba(15, 23, 42, 0.92);
+
+  --markdown-strong: rgba(15, 23, 42, 0.96);
+  --markdown-link: #2563eb;
+  --markdown-link-hover: #1d4ed8;
+  --markdown-code-bg: rgba(15, 23, 42, 0.06);
+  --markdown-code-text: rgba(15, 23, 42, 0.92);
 
 }
 

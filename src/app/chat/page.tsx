@@ -4643,11 +4643,13 @@ function looksLikeProgressClosureRequest(text: string) {
       await appendAssistant(
         "✅ **Etapa 9 (Reporte de avances) finalizada.**\n\n" +
           "📄 **Etapa 10 (Documento final)**\n\n" +
-          "En esta etapa podemos trabajar de forma **conversacional**: si tienes dudas sobre tu plan final, pregúntame.\n\n" +
-          "Cuando quieras, **sube tu Word/PDF** con el botón de adjuntar y haré una revisión crítica cruzando con tus **etapas validadas** y tu **registro de horas**.\n\n" +
-          "✅ Máximo **2 versiones**:\n" +
-          "• **Versión 1:** te doy feedback.\n" +
-          "• **Versión 2:** es la **definitiva** y luego se cierra el Asesor."
+          "En esta etapa podemos trabajar de forma conversacional. Si tienes dudas sobre tu plan final, puedes consultarme antes de subir el archivo.\n\n" +
+          "Cuando quieras, sube tu Word o PDF con el botón de adjuntar. Haré una revisión crítica cruzando lo que presentes con tus etapas validadas y tu registro de horas.\n\n" +
+          "✅ **Máximo 2 versiones**\n\n" +
+          "1. **Versión 1**\n" +
+          "   Te doy feedback claro y directo para corregir.\n\n" +
+          "2. **Versión 2**\n" +
+          "   Se toma como versión definitiva y luego se cierra el Asesor."
       );
 
       return true;

@@ -18,34 +18,81 @@ function TypingDots() {
 }
 
 const markdownComponents: Components = {
-  a: ({ href, children, ...props }) => (
-    <a
-      {...props}
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="underline underline-offset-2 text-sky-300 hover:text-sky-200 break-all"
-    >
-      {children}
-    </a>
-  ),
-  p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-  ul: ({ children }) => <ul className="mb-3 list-disc pl-5 space-y-1">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-3 list-decimal pl-5 space-y-1">{children}</ol>,
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-  h1: ({ children }) => <h1 className="mb-3 text-base sm:text-lg font-semibold">{children}</h1>,
-  h2: ({ children }) => <h2 className="mb-2 text-[15px] sm:text-base font-semibold">{children}</h2>,
-  h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold">{children}</h3>,
-  strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
-  em: ({ children }) => <em className="italic">{children}</em>,
-  blockquote: ({ children }) => (
-    <blockquote className="mb-3 border-l-2 border-sky-400/50 pl-3 italic text-[color:var(--muted)]">
-      {children}
-    </blockquote>
-  ),
-  code: ({ children }) => (
-    <code className="rounded bg-black/25 px-1.5 py-0.5 text-[12px]">{children}</code>
-  ),
+  a: ({ href, children, ...props }) => {
+    return (
+      <a
+        {...props}
+        href={href}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="underline underline-offset-2 break-all text-[color:var(--markdown-link)] hover:text-[color:var(--markdown-link-hover)] transition-colors"
+      >
+        {children}
+      </a>
+    );
+  },
+
+  p: ({ children }) => {
+    return <p className="mb-3 last:mb-0 whitespace-pre-wrap">{children}</p>;
+  },
+
+  ul: ({ children }) => {
+    return <ul className="mb-3 list-disc pl-5 space-y-1.5">{children}</ul>;
+  },
+
+  ol: ({ children }) => {
+    return <ol className="mb-3 list-decimal pl-5 space-y-1.5">{children}</ol>;
+  },
+
+  li: ({ children }) => {
+    return <li className="leading-relaxed">{children}</li>;
+  },
+
+  h1: ({ children }) => {
+    return <h1 className="mb-3 text-base sm:text-lg font-semibold">{children}</h1>;
+  },
+
+  h2: ({ children }) => {
+    return <h2 className="mb-2 text-[15px] sm:text-base font-semibold">{children}</h2>;
+  },
+
+  h3: ({ children }) => {
+    return <h3 className="mb-2 text-sm font-semibold">{children}</h3>;
+  },
+
+  strong: ({ children }) => {
+    return (
+      <strong className="font-semibold text-[color:var(--markdown-strong)]">
+        {children}
+      </strong>
+    );
+  },
+
+  em: ({ children }) => {
+    return <em className="italic">{children}</em>;
+  },
+
+  blockquote: ({ children }) => {
+    return (
+      <blockquote className="mb-3 border-l-2 border-sky-400/50 pl-3 italic text-[color:var(--muted)]">
+        {children}
+      </blockquote>
+    );
+  },
+
+  code: ({ children }) => {
+    return (
+      <code
+        className="rounded px-1.5 py-0.5 text-[12px]"
+        style={{
+          backgroundColor: "var(--markdown-code-bg)",
+          color: "var(--markdown-code-text)",
+        }}
+      >
+        {children}
+      </code>
+    );
+  },
 };
 
 function renderMessageContent(content: unknown) {
