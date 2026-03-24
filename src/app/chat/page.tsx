@@ -1777,7 +1777,7 @@ function looksLikeProgressClosureRequest(text: string) {
       // Solo tiene sentido si Etapa 0 está confirmada
       if (ctx.status !== "confirmed") return;
 
-      const st = await getProductivityState();
+      const st = await getProductivityState(chatId);
       if (!active) return;
       if (!st.ok) return;
 
@@ -2791,11 +2791,23 @@ function looksLikeProgressClosureRequest(text: string) {
         setBrainstormState(stateJson as BrainstormState);
       } else if (stage === 2 && stateJson) {
         setFodaState(stateJson as FodaState);
+      } else if (stage === 1 && stateJson) {
+        const prodState = stateJson as {
+          prodStep?: number;
+          prodDraft?: ProductivityDraft;
+        };
+
+        const nextProdStep =
+          typeof prodState.prodStep === "number"
+            ? (prodState.prodStep as ProdStep)
+            : 1;
+
+        setProdStep(nextProdStep);
+        setProdDraft(prodState.prodDraft ?? {});
       }
 
       return stage;
     }
-
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(0);
     return 0 as AdvisorRuntimeStage;
@@ -4634,6 +4646,7 @@ function looksLikeProgressClosureRequest(text: string) {
       const nextProdStep =
         typeof prodState.prodStep === "number" ? (prodState.prodStep as ProdStep) : 1;
 
+      setActiveAdvisorStage(1);
       setProdDraft(prodState.prodDraft ?? {});
       setProdStep(nextProdStep);
 
@@ -4651,6 +4664,9 @@ function looksLikeProgressClosureRequest(text: string) {
         "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
         "Estabas en **Etapa 1 (Productividad)**.\n\n" +
         promptProd(nextProdStep, ctx.contextJson ?? {}, prodState.prodDraft ?? {});
+
+      // Evita que el efecto de restauración local vuelva a empujar el mismo prompt
+      restoredWizardRef.current = effectiveChatId;
 
       setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
@@ -5957,13 +5973,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
           return; // importante: ya atendimos FODA
         }
-
-
-        if (ctx.ok && ctx.status === "confirmed" && effectiveChatId) {
-          const restored = await restoreLatestAdvisorStageToNewChat(effectiveChatId);
-          if (restored) return;
-        }
-
 
         // 1) Si ya está confirmado: recién llamamos /api/plans/review
         const body: any = { text };

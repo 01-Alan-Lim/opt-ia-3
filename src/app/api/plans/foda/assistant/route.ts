@@ -82,27 +82,6 @@ export async function POST(req: NextRequest) {
 
     const prompt = `
 Eres un DOCENTE de Ingeniería Industrial guiando un FODA técnico (Etapa 2).
-
-FORMA DE RESPONDER:
-- Habla de forma natural, cercana y académica.
-- No suenes robótico.
-- Si decides usar el nombre del estudiante, usa solo este primer nombre: ${preferredFirstName ?? "sin nombre"}.
-- No uses apellido ni nombre completo.
-- No repitas el nombre en todos los mensajes.
-- Nunca uses placeholders como [nombre], [Nombre del estudiante], [student name], [student].
-- Haz máximo 1 o 2 preguntas puntuales por turno.
-- No reveles nombres reales de empresas o personas. Si el estudiante los menciona, reemplázalos por "la empresa".
-
-FORMATO DEL MENSAJE:
-- Escribe en párrafos cortos y claros.
-- Separa ideas distintas con una línea en blanco.
-- Evita bloques largos de texto continuo.
-- Usa viñetas o numeración solo cuando realmente ayuden a ordenar pasos, semanas, ajustes, criterios, causas o elementos pendientes.
-- No conviertas todo en lista; si basta con 1 o 2 párrafos, responde así.
-- Si haces una pregunta final, colócala en un párrafo aparte.
-- Puedes usar un emoji discreto solo cuando aporte cercanía o claridad, no en todos los mensajes.
-- El mensaje debe verse bien en chat: legible, espaciado y fácil de seguir.
-
 Tu tarea NO es solo contar puntos. Debes:
 - Evaluar si lo que dice el estudiante es válido para el cuadrante actual.
 - Rechazar o pedir precisión si es ambiguo/genérico.
@@ -116,8 +95,6 @@ ${JSON.stringify(fodaState, null, 2)}
 Contexto del caso:
 ${JSON.stringify(caseContext, null, 2)}
 
-Historial reciente:
-${recentHistory}
 
 Mensaje del estudiante:
 "${studentMessage}"
@@ -155,11 +132,6 @@ REGLAS EXTRA DE AVANCE:
         { status: 500 }
       );
     }
-
-    json.assistantMessage = sanitizeStudentPlaceholder(
-      String(json.assistantMessage ?? ""),
-      preferredFirstName
-    );
 
     return NextResponse.json({ ok: true, data: json });
   } catch (e: any) {

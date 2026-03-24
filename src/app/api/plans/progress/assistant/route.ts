@@ -13,6 +13,7 @@ import {
   sanitizeStudentPlaceholder,
 } from "@/lib/chat/studentIdentity";
 
+
 export const runtime = "nodejs";
 
 const PERIOD_KEY = getPeriodKeyLaPaz();

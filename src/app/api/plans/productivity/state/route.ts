@@ -83,14 +83,23 @@ export async function GET(req: Request) {
       });
     }
 
-    const { data, error } = await supabaseServer
+    let query = supabaseServer
       .from(TABLE)
       .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,created_at,updated_at")
       .eq("user_id", authed.userId)
       .eq("stage", STAGE)
       .eq("artifact_type", ARTIFACT_TYPE)
-      .eq("period_key", PERIOD_KEY)
-      .maybeSingle();
+      .eq("period_key", PERIOD_KEY);
+
+    const requestedChatId = parsed.data.chatId ?? null;
+
+    if (requestedChatId) {
+      query = query.eq("chat_id", requestedChatId);
+    } else {
+      query = query.order("updated_at", { ascending: false }).limit(1);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       return NextResponse.json(fail("INTERNAL", "No se pudo leer el estado de Productividad.", error), {
@@ -104,7 +113,6 @@ export async function GET(req: Request) {
     }
 
     // Si el cliente mandó chatId, devolvemos también si coincide
-    const requestedChatId = parsed.data.chatId ?? null;
     const matchesChat = requestedChatId ? data.chat_id === requestedChatId : true;
 
     return ok({

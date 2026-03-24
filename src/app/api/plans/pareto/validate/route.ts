@@ -9,6 +9,7 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { extractJsonSafe } from "@/lib/llm/extractJson";
 
 export const runtime = "nodejs";
 
@@ -57,19 +58,6 @@ function normalizeStringArray(input: unknown): string[] {
   return out;
 }
 
-function extractJsonSafe(text: string) {
-  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {}
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
