@@ -41,6 +41,59 @@ function extractJsonSafe(text: string) {
   }
 }
 
+function isValidFinalDocAssistantResponse(value: unknown): value is {
+  assistantMessage: string;
+  extractedSections?: Record<string, unknown> | null;
+  evaluation: {
+    total_score: number;
+    total_label: "Deficiente" | "Regular" | "Adecuado" | "Bien";
+    detail: {
+      coherencia_metodologica: number;
+      consistencia_asesor: number;
+      proceso_continuidad: number;
+      calidad_redaccion: number;
+    };
+    signals?: {
+      inconsistencias_detectadas?: string[];
+      cambios_importantes?: string[];
+      continuidad_observada?: string;
+      secciones_debiles?: string[];
+      justificaciones_faltantes?: string[];
+      coherencia_por_etapa?: Array<{
+        etapa: string;
+        hallazgo: string;
+        nivel: "alineado" | "parcial" | "debil" | "inconsistente";
+      }>;
+    };
+    mejoras?: string[];
+    needs_resubmission: boolean;
+  };
+} {
+  if (!value || typeof value !== "object") return false;
+
+  const obj = value as Record<string, unknown>;
+  const evaluation =
+    obj.evaluation && typeof obj.evaluation === "object"
+      ? (obj.evaluation as Record<string, unknown>)
+      : null;
+
+  const detail =
+    evaluation?.detail && typeof evaluation.detail === "object"
+      ? (evaluation.detail as Record<string, unknown>)
+      : null;
+
+  return (
+    typeof obj.assistantMessage === "string" &&
+    typeof evaluation?.total_score === "number" &&
+    typeof evaluation?.total_label === "string" &&
+    typeof evaluation?.needs_resubmission === "boolean" &&
+    typeof detail?.coherencia_metodologica === "number" &&
+    typeof detail?.consistencia_asesor === "number" &&
+    typeof detail?.proceso_continuidad === "number" &&
+    typeof detail?.calidad_redaccion === "number"
+  );
+}
+
 function toISO(d: Date) {
   return d.toISOString();
 }
@@ -322,7 +375,7 @@ RÚBRICA (0-100) — 4 ítems:
 
 Devuelve SOLO JSON:
 {
-  "assistantMessage": "string (feedback corto, accionable, sin acusar)",
+  "assistantMessage": "string",
   "extractedSections": {
     "resumen_ejecutivo": "string|null",
     "diagnostico": "string|null",
@@ -331,8 +384,8 @@ Devuelve SOLO JSON:
     "plan_implementacion": "string|null",
     "conclusiones": "string|null"
   },
-    "evaluation": {
-    "total_score": number (0-100),
+  "evaluation": {
+    "total_score": number,
     "total_label": "Deficiente" | "Regular" | "Adecuado" | "Bien",
     "detail": {
       "coherencia_metodologica": number,
@@ -345,12 +398,54 @@ Devuelve SOLO JSON:
       "cambios_importantes": ["string"],
       "continuidad_observada": "string",
       "secciones_debiles": ["string"],
-      "justificaciones_faltantes": ["string"]
+      "justificaciones_faltantes": ["string"],
+      "coherencia_por_etapa": [
+        {
+          "etapa": "Problema / diagnóstico",
+          "hallazgo": "string",
+          "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+        },
+        {
+          "etapa": "Causas raíz / Pareto / Ishikawa",
+          "hallazgo": "string",
+          "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+        },
+        {
+          "etapa": "Objetivos",
+          "hallazgo": "string",
+          "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+        },
+        {
+          "etapa": "Propuesta de mejora",
+          "hallazgo": "string",
+          "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+        },
+        {
+          "etapa": "Planificación y avance",
+          "hallazgo": "string",
+          "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+        }
+      ]
     },
-    "mejoras": ["string","string","string"],
+    "mejoras": ["string", "string", "string"],
     "needs_resubmission": boolean
   }
 }
+
+REQUISITOS OBLIGATORIOS PARA "assistantMessage":
+- Debe escribirse como feedback de un docente asesor.
+- Debe estar estructurado exactamente en 4 bloques, separados por una línea en blanco:
+  1. "Valoración general:"
+  2. "Coherencia con lo trabajado:"
+  3. "Observaciones puntuales:"
+  4. "Qué debes corregir para la siguiente versión:"
+- En "Coherencia con lo trabajado", debes contrastar explícitamente el documento contra etapas previas.
+- En "Observaciones puntuales", menciona ejemplos concretos de desalineación metodológica, no frases generales.
+- En "Qué debes corregir para la siguiente versión", da 3 acciones claras y realizables.
+- Si hay incoherencia entre problema, causas, objetivos, propuesta o planificación, debes decir exactamente dónde se rompe la lógica.
+- No digas solo “hay una desconexión importante”; explica entre qué elementos aparece esa desconexión.
+- Si el documento cambia enfoque respecto a lo validado, debes indicar qué cambió y por qué eso afecta la consistencia del plan de mejora.
+- El mensaje debe ser claro, puntual, útil y con tono académico.
 
 CRITERIOS DE SEVERIDAD:
 - "Bien" solo si el documento es consistentemente sólido y alineado con lo trabajado antes.
@@ -382,15 +477,95 @@ HISTORIAL RECIENTE (solo contexto conversacional, no inventes):
 ${String(recentHistory ?? "")}
 `;
 
-    const llmRes = await model.generateContent(prompt);
-    const llmText = llmRes.response.text();
-    const json = extractJsonSafe(llmText);
+    const llmRes = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: "application/json",
+      },
+    });
 
-    if (!json?.assistantMessage || !json?.evaluation?.detail) {
-      return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "IA no devolvió JSON válido.", raw: llmText },
-        { status: 500 }
-      );
+    const llmText = llmRes.response.text();
+    let json = extractJsonSafe(llmText);
+
+    if (!isValidFinalDocAssistantResponse(json)) {
+      const repairPrompt = `
+      Convierte la siguiente respuesta a JSON VÁLIDO.
+      Debes devolver EXCLUSIVAMENTE un objeto JSON, sin markdown, sin explicación, sin texto adicional.
+
+      Formato obligatorio:
+      {
+        "assistantMessage": "string",
+        "extractedSections": {
+          "resumen_ejecutivo": "string|null",
+          "diagnostico": "string|null",
+          "objetivos": "string|null",
+          "propuesta_mejora": "string|null",
+          "plan_implementacion": "string|null",
+          "conclusiones": "string|null"
+        },
+        "evaluation": {
+          "total_score": number,
+          "total_label": "Deficiente" | "Regular" | "Adecuado" | "Bien",
+          "detail": {
+            "coherencia_metodologica": number,
+            "consistencia_asesor": number,
+            "proceso_continuidad": number,
+            "calidad_redaccion": number
+          },
+          "signals": {
+            "inconsistencias_detectadas": ["string"],
+            "cambios_importantes": ["string"],
+            "continuidad_observada": "string",
+            "secciones_debiles": ["string"],
+            "justificaciones_faltantes": ["string"],
+            "coherencia_por_etapa": [
+              {
+                "etapa": "string",
+                "hallazgo": "string",
+                "nivel": "alineado" | "parcial" | "debil" | "inconsistente"
+              }
+            ]
+          },
+          "mejoras": ["string", "string", "string"],
+          "needs_resubmission": boolean
+        }
+      }
+
+      Además, "assistantMessage" debe venir estructurado exactamente con estos 4 encabezados:
+      1. "Valoración general:"
+      2. "Coherencia con lo trabajado:"
+      3. "Observaciones puntuales:"
+      4. "Qué debes corregir para la siguiente versión:"
+
+      Si falta algún dato, complétalo conservadoramente sin inventar hechos específicos.
+
+      RESPUESTA A CONVERTIR:
+      ${llmText}
+      `;
+
+      const repairRes = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: repairPrompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+        },
+      });
+
+      const repairedText = repairRes.response.text();
+      json = extractJsonSafe(repairedText);
+
+      if (!isValidFinalDocAssistantResponse(json)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "INTERNAL",
+            message: "IA no devolvió JSON válido.",
+            raw: llmText,
+          },
+          { status: 500 }
+        );
+      }
     }
 
     // Construir nextState mínimo para guardar en Stage 10

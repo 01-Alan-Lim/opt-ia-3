@@ -80,6 +80,25 @@ const ImprovementStateSchema = z.object({
   lastSummary: z.string().nullable(),
 });
 
+const ImprovementDecisionSchema = z.object({
+  intent: z.enum([
+    "mutate_state",
+    "check_readiness",
+    "confirm_close",
+    "guide_next",
+    "clarify",
+  ]),
+  shouldMutateState: z.boolean(),
+  shouldValidateNow: z.boolean(),
+  userFacingResponse: z.string().trim().min(1).max(3000).nullable().optional(),
+});
+
+const ImprovementReadinessSchema = z.object({
+  isReady: z.boolean(),
+  missingItems: z.array(z.string()),
+  summary: z.string(),
+});
+
 const ImprovementAssistantResponseSchema = z.object({
   assistantMessage: z.string().min(1),
   updates: z.object({
@@ -94,8 +113,12 @@ const ImprovementAssistantResponseSchema = z.object({
       "ready_to_validate",
     ]),
   }),
+  decision: ImprovementDecisionSchema.optional(),
+  readiness: ImprovementReadinessSchema.optional(),
 });
 
+type ImprovementDecision = z.infer<typeof ImprovementDecisionSchema>;
+type ImprovementReadiness = z.infer<typeof ImprovementReadinessSchema>;
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
@@ -196,6 +219,216 @@ function normalizeImprovementAssistantResponse(input: unknown): unknown {
   };
 }
 
+function normalizeText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function buildImprovementReadiness(
+  state: ImprovementState,
+  specificObjectives: string[],
+  linkedCriticalRoots: string[]
+): ImprovementReadiness {
+  const missingItems: string[] = [];
+
+  if (state.initiatives.length < 2) {
+    missingItems.push("Define al menos 2 iniciativas concretas y ejecutables.");
+  }
+
+  const specificSet = new Set(specificObjectives);
+  const linkedRootsSet = new Set(linkedCriticalRoots);
+
+  const invalidObjectiveLinks = state.initiatives.filter(
+    (initiative) =>
+      initiative.linkedObjective &&
+      !specificSet.has(initiative.linkedObjective)
+  );
+
+  const missingObjectiveLinks = state.initiatives.filter(
+    (initiative) => !initiative.linkedObjective
+  );
+
+  const missingMeasurement = state.initiatives.filter(
+    (initiative) =>
+      !initiative.measurement.indicator?.trim() &&
+      !initiative.measurement.kpi?.trim()
+  );
+
+  const missingTitle = state.initiatives.filter(
+    (initiative) => initiative.title.trim().length < 6
+  );
+
+  if (missingTitle.length > 0) {
+    missingItems.push("Al menos una iniciativa todavía necesita un título claro.");
+  }
+
+  if (missingObjectiveLinks.length > 0) {
+    missingItems.push("Cada iniciativa debe vincularse a un objetivo específico validado.");
+  }
+
+  if (invalidObjectiveLinks.length > 0) {
+    missingItems.push("Hay iniciativas vinculadas a objetivos que no coinciden con la Etapa 6.");
+  }
+
+  if (missingMeasurement.length > 0) {
+    missingItems.push("Cada iniciativa debe tener al menos un indicador o KPI simple.");
+  }
+
+  const coveredRoots = new Set(
+    state.initiatives
+      .map((initiative) => initiative.linkedRoot)
+      .filter((root): root is string => !!root && linkedRootsSet.has(root))
+  );
+
+  const missingCoverage = linkedCriticalRoots.filter((root) => !coveredRoots.has(root));
+  if (missingCoverage.length > 0) {
+    missingItems.push(
+      `Aún falta cubrir estas causas críticas: ${missingCoverage.join("; ")}.`
+    );
+  }
+
+  const weeks = state.initiatives
+    .map((initiative) => initiative.feasibility.estimatedWeeks)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  const totalWeeks = weeks.length > 0 ? weeks.reduce((acc, value) => acc + value, 0) : null;
+  if (totalWeeks !== null && totalWeeks > 7) {
+    missingItems.push(
+      `El alcance actual parece demasiado largo (${totalWeeks} semanas aprox.). Ajusta a ~4 a 6 semanas.`
+    );
+  }
+
+  return {
+    isReady: missingItems.length === 0,
+    missingItems,
+    summary:
+      missingItems.length === 0
+        ? "El plan ya está suficientemente armado para validación."
+        : `Todavía faltan ${missingItems.length} ajuste(s) antes de cerrar la etapa.`,
+  };
+}
+
+function buildImprovementReadinessMessage(
+  readiness: ImprovementReadiness
+) {
+  if (readiness.isReady) {
+    return (
+      "Tu **Plan de Mejora** ya está lo bastante sólido para cerrar la etapa.\n\n" +
+      "Si estás de acuerdo, en este turno lo tomo como confirmación de cierre y pasamos a la **Etapa 8: Planificación**."
+    );
+  }
+
+  return (
+    "Todavía no conviene cerrar la **Etapa 7**.\n\n" +
+    readiness.missingItems.map((item) => `- ${item}`).join("\n") +
+    "\n\nDime cuál de esos puntos quieres ajustar primero y lo trabajamos juntos."
+  );
+}
+
+async function generateImprovementIntent(prompt: string) {
+  const model = getGeminiModel();
+
+  const first = await model.generateContent(prompt);
+  const firstText = first.response.text();
+  const firstJson = extractJsonSafe(firstText);
+
+  if (firstJson) {
+    return { json: firstJson, raw: firstText };
+  }
+
+  const repairPrompt = `
+Convierte la siguiente respuesta a JSON válido, sin agregar explicaciones.
+
+Debes devolver SOLO JSON crudo con este formato exacto:
+{
+  "intent": "mutate_state" | "check_readiness" | "confirm_close" | "guide_next" | "clarify",
+  "shouldMutateState": boolean,
+  "shouldValidateNow": boolean,
+  "userFacingResponse": "string | null"
+}
+
+RESPUESTA ORIGINAL A CONVERTIR:
+${firstText}
+`;
+
+  const repaired = await model.generateContent(repairPrompt);
+  const repairedText = repaired.response.text();
+  const repairedJson = extractJsonSafe(repairedText);
+
+  return {
+    json: repairedJson,
+    raw: firstText,
+    repairedRaw: repairedText,
+  };
+}
+
+async function generateImprovementJson(prompt: string) {
+  const model = getGeminiModel();
+
+  const first = await model.generateContent(prompt);
+  const firstText = first.response.text();
+  const firstJson = extractJsonSafe(firstText);
+
+  if (firstJson) {
+    return { json: firstJson, raw: firstText };
+  }
+
+  const repairPrompt = `
+Convierte la siguiente respuesta a JSON válido, sin agregar explicaciones.
+
+Debes devolver SOLO JSON crudo con este formato exacto:
+{
+  "assistantMessage": "string",
+  "updates": {
+    "nextState": {
+      "stageIntroDone": boolean,
+      "step": "discover" | "build" | "refine" | "review",
+      "focus": {
+        "chosenRoot": "string | null",
+        "chosenObjective": "string | null"
+      },
+      "initiatives": [
+        {
+          "id": "string",
+          "title": "string",
+          "description": "string",
+          "linkedRoot": "string | null",
+          "linkedObjective": "string | null",
+          "measurement": {
+            "indicator": "string | null",
+            "kpi": "string | null",
+            "target": "string | null"
+          },
+          "feasibility": {
+            "estimatedWeeks": "number | null",
+            "notes": "string | null"
+          }
+        }
+      ],
+      "lastSummary": "string | null"
+    },
+    "action": "init" | "add_initiative" | "refine_initiative" | "ask_clarify" | "summarize" | "redirect" | "ready_to_validate"
+  }
+}
+
+RESPUESTA ORIGINAL A CONVERTIR:
+${firstText}
+`;
+
+  const repaired = await model.generateContent(repairPrompt);
+  const repairedText = repaired.response.text();
+  const repairedJson = extractJsonSafe(repairedText);
+
+  return {
+    json: repairedJson,
+    raw: firstText,
+    repairedRaw: repairedText,
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
@@ -222,6 +455,21 @@ export async function POST(req: NextRequest) {
     }
 
     const { chatId, studentMessage, improvementState, caseContext, recentHistory } = parsed.data;
+
+    const stateParse = ImprovementStateSchema.safeParse(improvementState);
+    if (!stateParse.success) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: "improvementState inválido.",
+          detail: stateParse.error.flatten(),
+        },
+        { status: 400 }
+      );
+    }
+
+    const currentImprovementState = stateParse.data;
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
@@ -313,6 +561,12 @@ export async function POST(req: NextRequest) {
     const specificObjectives = asStringArray(objectivesPayload.specificObjectives);
     const linkedCriticalRoots = asStringArray(objectivesPayload.linkedCriticalRoots);
 
+    const currentReadiness = buildImprovementReadiness(
+      currentImprovementState,
+      specificObjectives,
+      linkedCriticalRoots
+    );
+
     if (!generalObjective || specificObjectives.length < 1 || linkedCriticalRoots.length < 1) {
       return NextResponse.json(
         {
@@ -324,7 +578,94 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const model = getGeminiModel();
+    const intentPrompt = `
+    Eres un docente asesor de Ingeniería Industrial.
+
+    Tu tarea primero NO es reescribir el plan.
+    Tu tarea primero es interpretar qué quiso hacer el estudiante en este turno de la Etapa 7.
+
+    Clasifica la intención del mensaje en una de estas opciones:
+    - "mutate_state": el estudiante está proponiendo, corrigiendo o ajustando contenido real del plan.
+    - "check_readiness": el estudiante quiere saber si ya está bien, qué falta o cómo va.
+    - "confirm_close": el estudiante da a entender que quiere cerrar, avanzar o pasar de etapa.
+    - "guide_next": el estudiante quiere continuar guiado, aunque no necesariamente cerrar.
+    - "clarify": el mensaje es ambiguo y necesitas pedir una aclaración breve.
+
+    REGLAS:
+    - No te bases en una sola palabra exacta. Interpreta el sentido completo.
+    - Si el estudiante expresa conformidad, cierre, avance o pregunta si ya está listo, normalmente eso es "confirm_close" o "check_readiness".
+    - Si pregunta "qué falta", "cómo vamos", "ya está bien", "con esto basta", eso es "check_readiness".
+    - Si añade o corrige iniciativas, medición, vinculación, alcance o factibilidad, eso es "mutate_state".
+    - Si el mensaje es corto pero claramente busca continuar la conversación, puedes usar "guide_next".
+
+    Devuelve SOLO JSON:
+    {
+      "intent": "mutate_state" | "check_readiness" | "confirm_close" | "guide_next" | "clarify",
+      "shouldMutateState": boolean,
+      "shouldValidateNow": boolean,
+      "userFacingResponse": "string | null"
+    }
+
+    CONTEXTO:
+    - Estado actual Etapa 7:
+    ${JSON.stringify(currentImprovementState, null, 2)}
+
+    - Resumen de readiness:
+    ${JSON.stringify(currentReadiness, null, 2)}
+
+    - Historial reciente:
+    ${String(recentHistory ?? "")}
+
+    - Mensaje del estudiante:
+    "${studentMessage}"
+    `;
+
+    const intentResult = await generateImprovementIntent(intentPrompt);
+
+    const fallbackDecision: ImprovementDecision = {
+      intent: "guide_next",
+      shouldMutateState: true,
+      shouldValidateNow: false,
+      userFacingResponse: null,
+    };
+
+    const intentParse = ImprovementDecisionSchema.safeParse(intentResult.json);
+    const decision = intentParse.success ? intentParse.data : fallbackDecision;
+
+    if (
+      decision.intent === "check_readiness" ||
+      decision.intent === "confirm_close" ||
+      decision.intent === "clarify" ||
+      !decision.shouldMutateState
+    ) {
+      const shouldValidateNow =
+        currentReadiness.isReady &&
+        (decision.intent === "confirm_close" || decision.shouldValidateNow === true);
+
+      const assistantMessage = sanitizeStudentPlaceholder(
+        decision.userFacingResponse?.trim() || buildImprovementReadinessMessage(currentReadiness),
+        preferredFirstName
+      );
+
+      return NextResponse.json(
+        {
+          ok: true,
+          data: {
+            assistantMessage,
+            updates: {
+              nextState: currentImprovementState,
+              action: shouldValidateNow ? "ready_to_validate" : "summarize",
+            },
+            decision: {
+              ...decision,
+              shouldValidateNow,
+            },
+            readiness: currentReadiness,
+          },
+        },
+        { status: 200 }
+      );
+    }
 
     const prompt = `
 Eres un DOCENTE asesor de Ingeniería de Métodos.
@@ -383,7 +724,10 @@ CONTEXTO DEL CASO (si existe):
 ${JSON.stringify(caseContext ?? {}, null, 2)}
 
 ESTADO ACTUAL (Etapa 7):
-${JSON.stringify(improvementState, null, 2)}
+${JSON.stringify(currentImprovementState, null, 2)}
+
+RESUMEN DE PREPARACIÓN ACTUAL:
+${JSON.stringify(currentReadiness, null, 2)}
 
 HISTORIAL RECIENTE:
 ${String(recentHistory ?? "")}
@@ -429,18 +773,22 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
 - Al final, cuando haya un plan coherente, ofrecer cerrar Etapa 7 y pasar a Etapa 8 (Planificación).
 `;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    const parsedJson = extractJsonSafe(text);
+    const llmResult = await generateImprovementJson(prompt);
 
-    if (!parsedJson) {
+    if (!llmResult.json) {
       return NextResponse.json(
-        { ok: false, code: "INTERNAL", message: "LLM no devolvió JSON válido", raw: text },
+        {
+          ok: false,
+          code: "INTERNAL",
+          message: "LLM no devolvió JSON válido",
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
+        },
         { status: 500 }
       );
     }
 
-    const normalizedJson = normalizeImprovementAssistantResponse(parsedJson);
+    const normalizedJson = normalizeImprovementAssistantResponse(llmResult.json);
     const responseParse = ImprovementAssistantResponseSchema.safeParse(normalizedJson);
 
     if (!responseParse.success) {
@@ -450,17 +798,34 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
           code: "INTERNAL",
           message: "LLM devolvió JSON, pero no con la estructura esperada en Etapa 7.",
           detail: responseParse.error.flatten(),
-          raw: text,
+          raw: llmResult.raw,
+          repairedRaw: llmResult.repairedRaw ?? null,
         },
         { status: 500 }
       );
     }
 
     const responseData = responseParse.data;
+    const nextReadiness = buildImprovementReadiness(
+      responseData.updates.nextState,
+      specificObjectives,
+      linkedCriticalRoots
+    );
+
     responseData.assistantMessage = sanitizeStudentPlaceholder(
       responseData.assistantMessage,
       preferredFirstName
     );
+
+    responseData.decision = {
+      intent: "mutate_state",
+      shouldMutateState: true,
+      shouldValidateNow:
+        responseData.updates.action === "ready_to_validate" && nextReadiness.isReady,
+      userFacingResponse: null,
+    };
+
+    responseData.readiness = nextReadiness;
 
     return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
   } catch (e: unknown) {

@@ -1,29 +1,38 @@
 // src/lib/pdfText.ts
 
-import * as pdfjsLib from "pdfjs-dist";
+type PdfParseResult = {
+  text?: string;
+};
 
-// En entorno Node (como tus API routes de Next.js) no es necesario configurar workerSrc
+type PdfParseFn = (
+  dataBuffer: Buffer,
+  options?: Record<string, unknown>
+) => Promise<PdfParseResult>;
 
-export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
-  // Cargar el PDF desde un Buffer
-  const loadingTask = (pdfjsLib as any).getDocument({ data: buffer });
-  const pdf = await loadingTask.promise;
+let pdfParsePromise: Promise<PdfParseFn> | null = null;
 
-  let fullText = "";
+async function getPdfParse(): Promise<PdfParseFn> {
+  if (!pdfParsePromise) {
+    pdfParsePromise = import("pdf-parse").then((mod) => {
+      const candidate = "default" in mod ? mod.default : mod;
 
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
+      if (typeof candidate !== "function") {
+        throw new Error("No se pudo cargar pdf-parse correctamente.");
+      }
 
-    const pageText = textContent.items
-      .map((item: any) => {
-        if ("str" in item) return item.str;
-        return "";
-      })
-      .join(" ");
-
-    fullText += pageText + "\n";
+      return candidate as PdfParseFn;
+    });
   }
 
-  return fullText;
+  return pdfParsePromise;
+}
+
+export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
+  const pdfParse = await getPdfParse();
+  const result = await pdfParse(buffer);
+
+  return (result.text ?? "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
 }

@@ -277,14 +277,121 @@ export default function ChatPage() {
 
   type FodaState = {
     currentQuadrant: FodaQuadrant;
-    pendingEvidence?: { quadrant: "O" | "A"; index: number } | null;
+    pendingEvidence?: { quadrant: FodaQuadrant; index: number } | null;
     items: {
-      F: { text: string }[];
-      D: { text: string }[];
+      F: { text: string; evidence?: string }[];
+      D: { text: string; evidence?: string }[];
       O: { text: string; evidence?: string }[];
       A: { text: string; evidence?: string }[];
     };
   };
+
+  function sanitizeFodaState(raw: unknown): FodaState | null {
+    const source =
+      raw && typeof raw === "object"
+        ? (raw as Record<string, unknown>)
+        : null;
+
+    if (!source) return null;
+
+    const currentQuadrantRaw = source.currentQuadrant;
+    const currentQuadrant: FodaQuadrant =
+      currentQuadrantRaw === "F" ||
+      currentQuadrantRaw === "D" ||
+      currentQuadrantRaw === "O" ||
+      currentQuadrantRaw === "A"
+        ? currentQuadrantRaw
+        : "F";
+
+    const rawItems =
+      source.items && typeof source.items === "object"
+        ? (source.items as Record<string, unknown>)
+        : {};
+
+    const normalizeItemArray = (
+      value: unknown
+    ): { text: string; evidence?: string }[] => {
+      if (!Array.isArray(value)) return [];
+
+      return value
+        .map((entry) => {
+          if (typeof entry === "string") {
+            const text = entry.trim();
+            return text ? { text } : null;
+          }
+
+          if (!entry || typeof entry !== "object") return null;
+
+          const record = entry as Record<string, unknown>;
+
+          const text =
+            typeof record.text === "string"
+              ? record.text.trim()
+              : typeof record.label === "string"
+                ? record.label.trim()
+                : typeof record.title === "string"
+                  ? record.title.trim()
+                  : "";
+
+          const evidence =
+            typeof record.evidence === "string"
+              ? record.evidence.trim()
+              : typeof record.support === "string"
+                ? record.support.trim()
+                : typeof record.justification === "string"
+                  ? record.justification.trim()
+                  : "";
+
+          if (!text) return null;
+
+          return evidence ? { text, evidence } : { text };
+        })
+        .filter(
+          (item): item is { text: string; evidence?: string } => Boolean(item)
+        );
+    };
+
+    const pendingRaw =
+      source.pendingEvidence && typeof source.pendingEvidence === "object"
+        ? (source.pendingEvidence as Record<string, unknown>)
+        : null;
+
+    const pendingQuadrantRaw = pendingRaw?.quadrant;
+    const pendingIndexRaw = pendingRaw?.index;
+
+    const pendingQuadrant: FodaQuadrant | null =
+      pendingQuadrantRaw === "F" ||
+      pendingQuadrantRaw === "D" ||
+      pendingQuadrantRaw === "O" ||
+      pendingQuadrantRaw === "A"
+        ? pendingQuadrantRaw
+        : null;
+
+    const pendingIndex =
+      typeof pendingIndexRaw === "number" &&
+      Number.isInteger(pendingIndexRaw) &&
+      pendingIndexRaw >= 0
+        ? pendingIndexRaw
+        : null;
+
+    const pendingEvidence: FodaState["pendingEvidence"] =
+      pendingQuadrant !== null && pendingIndex !== null
+        ? { quadrant: pendingQuadrant, index: pendingIndex }
+        : null;
+
+    return {
+      currentQuadrant,
+      pendingEvidence,
+      items: {
+        F: normalizeItemArray(rawItems.F),
+        D: normalizeItemArray(rawItems.D),
+        O: normalizeItemArray(rawItems.O),
+        A: normalizeItemArray(rawItems.A),
+      },
+    };
+  }
+
+  
 
   type BrainstormIdea = { text: string };
 
@@ -667,6 +774,12 @@ function looksLikeImprovementClosureRequest(text: string) {
     normalized.includes("valida el plan de mejora") ||
     normalized.includes("mi plan de mejora ya esta listo") ||
     normalized.includes("el plan de mejora ya esta listo") ||
+    normalized.includes("mi plan de mejora ya esta completo") ||
+    normalized.includes("el plan de mejora ya esta completo") ||
+    normalized.includes("considero terminada la etapa 7") ||
+    normalized.includes("considero finalizada la etapa 7") ||
+    normalized.includes("ya termine la etapa 7") ||
+    normalized.includes("ya complete la etapa 7") ||
     normalized.includes("podemos cerrar la etapa 7") ||
     normalized.includes("cierra la etapa 7") ||
     normalized.includes("cerramos la etapa 7") ||
@@ -679,15 +792,20 @@ function looksLikeImprovementClosureRequest(text: string) {
     normalized.includes("pasemos a la etapa 8") ||
     normalized.includes("pasar a la etapa 8") ||
     normalized.includes("podemos pasar a la etapa 8") ||
-    normalized.includes("pasemos a la siguiente etapa") ||
-    normalized.includes("podemos pasar a la siguiente etapa") ||
     normalized.includes("sigamos con la etapa 8") ||
     normalized.includes("continuemos con la etapa 8") ||
+    normalized.includes("podemos continuar") ||
+    normalized.includes("ya esta") ||
+    normalized.includes("ya quedo") ||
+    normalized.includes("ya termine") ||
+    normalized.includes("ya esta listo") ||
+    normalized.includes("ya esta completa") ||
     normalized === "ok avancemos" ||
     normalized === "avancemos" ||
     normalized === "sigamos" ||
     normalized === "continuemos" ||
-    normalized === "pasemos"
+    normalized === "pasemos" ||
+    normalized === "pasemos nomas"
   );
 }
 
@@ -705,6 +823,10 @@ function looksLikePlanningClosureRequest(text: string) {
     normalized.includes("la planificacion ya esta lista") ||
     normalized.includes("mi cronograma ya esta listo") ||
     normalized.includes("el cronograma ya esta listo") ||
+    normalized.includes("considero terminada la etapa 8") ||
+    normalized.includes("considero finalizada la etapa 8") ||
+    normalized.includes("ya termine la etapa 8") ||
+    normalized.includes("ya complete la etapa 8") ||
     normalized.includes("podemos cerrar la etapa 8") ||
     normalized.includes("cierra la etapa 8") ||
     normalized.includes("cerramos la etapa 8") ||
@@ -717,10 +839,20 @@ function looksLikePlanningClosureRequest(text: string) {
     normalized.includes("pasemos a la etapa 9") ||
     normalized.includes("pasar a la etapa 9") ||
     normalized.includes("podemos pasar a la etapa 9") ||
-    normalized.includes("pasemos a la siguiente etapa") ||
-    normalized.includes("podemos pasar a la siguiente etapa") ||
     normalized.includes("sigamos con la etapa 9") ||
-    normalized.includes("continuemos con la etapa 9")
+    normalized.includes("continuemos con la etapa 9") ||
+    normalized.includes("podemos continuar") ||
+    normalized.includes("ya esta") ||
+    normalized.includes("ya quedo") ||
+    normalized.includes("ya termine") ||
+    normalized.includes("ya esta listo") ||
+    normalized.includes("ya esta completa") ||
+    normalized === "ok avancemos" ||
+    normalized === "avancemos" ||
+    normalized === "sigamos" ||
+    normalized === "continuemos" ||
+    normalized === "pasemos" ||
+    normalized === "pasemos nomas"
   );
 }
 
@@ -744,7 +876,13 @@ function isShortAffirmativeReply(text: string) {
     normalized === "dale" ||
     normalized === "vamos" ||
     normalized === "continuemos" ||
-    normalized === "sigamos"
+    normalized === "sigamos" ||
+    normalized === "ya esta" ||
+    normalized === "ya quedó" ||
+    normalized === "ya quedo" ||
+    normalized === "avancemos" ||
+    normalized === "pasemos" ||
+    normalized === "pasemos nomas"
   );
 }
 
@@ -824,7 +962,29 @@ function looksLikeProgressClosureRequest(text: string) {
 
   function isFinalDocReadyForUpload(st: FinalDocState | null) {
     if (!st) return false;
-    return st.step === "await_upload" || st.step === "needs_v2";
+
+    return (
+      st.step === "await_upload" ||
+      st.step === "review" ||
+      st.step === "needs_v2"
+    );
+  }
+
+  function canShowFinalDocUploadButton(
+    mode: "general" | "plan_mejora",
+    canInteract: boolean,
+    activeAdvisorStage: AdvisorRuntimeStage,
+    st: FinalDocState | null
+  ) {
+    if (mode !== "plan_mejora") return false;
+    if (!canInteract) return false;
+    if (activeAdvisorStage !== 10) return false;
+
+    // Si aún no cargó state desde BD, igual mostramos el botón
+    // porque Etapa 10 sí permite adjuntar.
+    if (!st) return true;
+
+    return isFinalDocReadyForUpload(st);
   }
 
   function isFodaComplete(st: FodaState) {
@@ -1570,7 +1730,8 @@ function looksLikeProgressClosureRequest(text: string) {
       if (!res.ok) return;
 
       if (res.payload?.exists && res.payload?.state) {
-        setFodaState(res.payload.state);
+        const normalized = sanitizeFodaState(res.payload.state);
+        setFodaState(normalized);
       } else {
         setFodaState(null);
       }
@@ -2790,7 +2951,8 @@ function looksLikeProgressClosureRequest(text: string) {
       } else if (stage === 3 && stateJson) {
         setBrainstormState(stateJson as BrainstormState);
       } else if (stage === 2 && stateJson) {
-        setFodaState(stateJson as FodaState);
+        const normalizedFoda = sanitizeFodaState(stateJson);
+        setFodaState(normalizedFoda);
       } else if (stage === 1 && stateJson) {
         const prodState = stateJson as {
           prodStep?: number;
@@ -3703,7 +3865,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
 
 
-  async function saveFodaState(state: any, chatIdArg?: string | null) {
+  async function saveFodaState(state: FodaState, chatIdArg?: string | null) {
     if (!accessToken) {
       return { ok: false as const, skipped: true as const, reason: "NO_ACCESS_TOKEN" as const };
     }
@@ -4476,6 +4638,7 @@ function looksLikeProgressClosureRequest(text: string) {
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(stage);
 
+
     if (stage === 10 && stateJson) {
       const final10 = stateJson as FinalDocState;
       setFinalDocState(final10);
@@ -4483,13 +4646,14 @@ function looksLikeProgressClosureRequest(text: string) {
 
       const msg =
         "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
-        "Estabas en **Etapa 10 (Documento final)**.\n\n" +
-        "👉 Continúa con tu documento, sube la versión correspondiente o hazme consultas para mejorarlo.";
+        "Estabas en la **Etapa 10 (Informe final)**.\n\n" +
+        "👉 Continúa subiendo, corrigiendo o validando tu informe final.";
 
       setMessages([createMessage("assistant", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
       return true;
     }
+
 
     if (stage === 9 && stateJson) {
       const progress9 = stateJson as ProgressState;
@@ -4616,14 +4780,62 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (stage === 2) {
       if (stateJson) {
-        const foda2 = stateJson as FodaState;
+        const foda2 = sanitizeFodaState(stateJson);
+
+        if (!foda2) {
+          await appendAssistant(
+            "No pude restaurar correctamente tu estado FODA anterior. Reiniciemos esta etapa desde un estado limpio."
+          );
+
+          const initial: FodaState = {
+            currentQuadrant: "F",
+            items: { F: [], D: [], O: [], A: [] },
+            pendingEvidence: null,
+          };
+
+          setFodaState(initial);
+          await saveFodaState(initial, effectiveChatId);
+          return true;
+        }
+
         setFodaState(foda2);
         await saveFodaState(foda2, effectiveChatId);
+
+        const currentLabel =
+          foda2.currentQuadrant === "F"
+            ? "Fortalezas"
+            : foda2.currentQuadrant === "D"
+              ? "Debilidades"
+              : foda2.currentQuadrant === "O"
+                ? "Oportunidades"
+                : "Amenazas";
+
+        const pendingLabel =
+          foda2.pendingEvidence?.quadrant === "F"
+            ? "Fortalezas"
+            : foda2.pendingEvidence?.quadrant === "D"
+              ? "Debilidades"
+              : foda2.pendingEvidence?.quadrant === "O"
+                ? "Oportunidades"
+                : foda2.pendingEvidence?.quadrant === "A"
+                  ? "Amenazas"
+                  : null;
+
+        const pendingMsg =
+          foda2.pendingEvidence && pendingLabel
+            ? `\n- Evidencia pendiente: **sí**, en **${pendingLabel}** #${foda2.pendingEvidence.index + 1}`
+            : "\n- Evidencia pendiente: **no**";
 
         const msg =
           "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
           "Estabas en **Etapa 2 (FODA)**.\n\n" +
-          "👉 Continúa desarrollando fortalezas, debilidades, oportunidades y amenazas con enfoque en el caso.";
+          `- Cuadrante actual: **${currentLabel}**\n` +
+          `- Fortalezas: **${foda2.items.F.length}**\n` +
+          `- Debilidades: **${foda2.items.D.length}**\n` +
+          `- Oportunidades: **${foda2.items.O.length}**\n` +
+          `- Amenazas: **${foda2.items.A.length}**` +
+          `${pendingMsg}\n\n` +
+          `👉 Continuemos exactamente desde **${currentLabel}**.`;
 
         setMessages([createMessage("assistant", msg)]);
         await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
@@ -5211,51 +5423,9 @@ function looksLikeProgressClosureRequest(text: string) {
         }
 
         // ================================
-        // ETAPA 8: Planificación (fluido con assistant)
+        // ETAPA 8: Planificación (assistant decide intención y cierre)
         // ================================
         if (activeAdvisorStage === 8 && planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const wantsToClosePlanning =
-            looksLikePlanningClosureRequest(text) || isShortAffirmativeReply(text);
-
-          // 1) Si el estudiante ya está confirmando cierre, validar ANTES de llamar al assistant
-          if (wantsToClosePlanning) {
-            const v = await validatePlanning(effectiveChatId);
-
-            if (!v.ok) {
-              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            if (!v.payload?.valid) {
-              const msg =
-                v.payload?.message ??
-                "La Etapa 8 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 9.";
-
-              await appendAssistant(
-                "Aún no podemos cerrar la **Etapa 8 (Planificación)**.\n\n" +
-                  `⚠️ ${msg}\n\n` +
-                  "Cuando quieras, te ayudo a completar exactamente lo que falta."
-              );
-              return;
-            }
-
-            const moved = await applyBackendAdvisorAdvance({
-              fromStage: 8,
-              payload: v.payload,
-              effectiveChatId: advisorChatId,
-            });
-
-            if (!moved) {
-              await appendAssistant(
-                "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
-              );
-            }
-
-            return;
-          }
-
-          // 2) Si no está cerrando, recién conversamos con el assistant
           const assistant = await callPlanningAssistant({
             studentMessage: text,
             planningState,
@@ -5267,23 +5437,61 @@ function looksLikeProgressClosureRequest(text: string) {
             const backendMsg =
               typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
                 ? `⚠️ ${assistant.payload.message}`
-                : "⚠️ No pude procesar tu Planificación. Dime en 1 línea: ¿cuántas semanas te quedan para aplicar la mejora (aprox.)?";
+                : "⚠️ No pude procesar tu Planificación. Dime en 1 línea cuántas semanas te quedan o qué parte del cronograma quieres ajustar.";
             await appendAssistant(backendMsg);
             return;
           }
 
           const nextState = assistant.payload.updates.nextState as PlanningState;
+          const shouldValidateNow = assistant.payload?.decision?.shouldValidateNow === true;
 
           setPlanningState(nextState);
           await savePlanningState(nextState, effectiveChatId);
 
           await appendAssistant(assistant.payload.assistantMessage);
 
+          if (!shouldValidateNow) {
+            return;
+          }
+
+          const v = await validatePlanning(effectiveChatId);
+
+          if (!v.ok) {
+            const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
+            await appendAssistant(`⚠️ ${msg}`);
+            return;
+          }
+
+          if (!v.payload?.valid) {
+            const msg =
+              v.payload?.message ??
+              "La Etapa 8 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 9.";
+
+            await appendAssistant(
+              "Aún no podemos cerrar la **Etapa 8 (Planificación)**.\n\n" +
+                `⚠️ ${msg}\n\n` +
+                "Si quieres, te ayudo a completar exactamente lo que falta."
+            );
+            return;
+          }
+
+          const moved = await applyBackendAdvisorAdvance({
+            fromStage: 8,
+            payload: v.payload,
+            effectiveChatId: advisorChatId,
+          });
+
+          if (!moved) {
+            await appendAssistant(
+              "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
+            );
+          }
+
           return;
         }
 
         // ================================
-        // ETAPA 7: Plan de mejora (fluido con assistant)
+        // ETAPA 7: Plan de mejora (assistant decide intención y cierre)
         // ================================
         if (activeAdvisorStage === 7 && improvementState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const assistant = await callImprovementAssistant({
@@ -5297,61 +5505,54 @@ function looksLikeProgressClosureRequest(text: string) {
             const backendMsg =
               typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
                 ? `⚠️ ${assistant.payload.message}`
-                : "⚠️ No pude procesar tu Plan de Mejora. ¿Me resumes en 1–2 líneas qué mejora quieres implementar o qué duda tienes?";
+                : "⚠️ No pude procesar tu Plan de Mejora. Dime en 1 o 2 líneas qué parte quieres ajustar o si quieres que revise si ya está listo.";
             await appendAssistant(backendMsg);
             return;
           }
 
           const nextState = assistant.payload.updates.nextState as ImprovementState;
+          const shouldValidateNow = assistant.payload?.decision?.shouldValidateNow === true;
 
           setImprovementState(nextState);
           await saveImprovementState(nextState, effectiveChatId);
 
           await appendAssistant(assistant.payload.assistantMessage);
 
-                    // Solo validamos Etapa 7 cuando ya está en review
-          // y el estudiante pide explícitamente revisar/cerrar su plan.
-          if (nextState.step === "review" && isImprovementReadyForValidation(nextState)) {
-            const wantsToCloseImprovement =
-              looksLikeImprovementClosureRequest(text) || isShortAffirmativeReply(text);
-
-            if (!wantsToCloseImprovement) {
-              return;
-            }
-
-            const v = await validateImprovement(effectiveChatId);
-
-            if (!v.ok) {
-              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 7 (Plan de Mejora).";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            if (!v.payload?.valid) {
-              const msg =
-                v.payload?.message ??
-                "La Etapa 7 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 8.";
-
-              await appendAssistant(
-                "Aún no podemos cerrar la **Etapa 7 (Plan de Mejora)**.\n\n" +
-                  `⚠️ ${msg}\n\n` +
-                  "Cuando quieras, te ayudo a corregir exactamente lo que falta."
-              );
-              return;
-            }
-
-            const moved = await applyBackendAdvisorAdvance({
-              fromStage: 7,
-              payload: v.payload,
-              effectiveChatId: advisorChatId,
-            });
-
-            if (!moved) {
-              await appendAssistant(
-                "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
-              );
-            }
+          if (!shouldValidateNow) {
             return;
+          }
+
+          const v = await validateImprovement(effectiveChatId);
+
+          if (!v.ok) {
+            const msg = v.payload?.message ?? "No se pudo cerrar Etapa 7 (Plan de Mejora).";
+            await appendAssistant(`⚠️ ${msg}`);
+            return;
+          }
+
+          if (!v.payload?.valid) {
+            const msg =
+              v.payload?.message ??
+              "La Etapa 7 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 8.";
+
+            await appendAssistant(
+              "Aún no podemos cerrar la **Etapa 7 (Plan de Mejora)**.\n\n" +
+                `⚠️ ${msg}\n\n` +
+                "Si quieres, te ayudo a corregir exactamente lo que falta."
+            );
+            return;
+          }
+
+          const moved = await applyBackendAdvisorAdvance({
+            fromStage: 7,
+            payload: v.payload,
+            effectiveChatId: advisorChatId,
+          });
+
+          if (!moved) {
+            await appendAssistant(
+              "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
+            );
           }
 
           return;
@@ -5926,8 +6127,14 @@ function looksLikeProgressClosureRequest(text: string) {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
+            const backendMessage =
+              typeof assistant.payload?.message === "string" && assistant.payload.message.trim().length > 0
+                ? assistant.payload.message.trim()
+                : null;
+
             await appendAssistant(
-              "⚠️ No pude evaluar tu respuesta con claridad. ¿Puedes reformularla con un ejemplo concreto del proceso?"
+              backendMessage ??
+                "⚠️ Seguimos en esta parte del FODA, pero tuve un problema momentáneo para procesar tu mensaje. Vuelve a enviarlo y continuamos desde aquí."
             );
             return;
           }
@@ -6389,8 +6596,7 @@ function looksLikeProgressClosureRequest(text: string) {
       return;
     }
 
-    // Solo se permite upload en Etapa 10 cuando está esperando documento (v1) o pidiendo v2
-    if (!finalDocState || !isFinalDocReadyForUpload(finalDocState)) {
+    if (modeRef.current !== "plan_mejora" || activeAdvisorStage !== 10) {
       await appendAssistant(
         "⚠️ En este momento no se puede subir un documento. Llega a **Etapa 10** para poder adjuntar tu Word/PDF."
       );
@@ -6398,6 +6604,25 @@ function looksLikeProgressClosureRequest(text: string) {
     }
 
     const effectiveChatId = chatIdRef.current ?? chatId ?? null;
+    if (!effectiveChatId) {
+      await appendAssistant("⚠️ No encontré un chat activo para guardar tu documento. Intenta recargar el chat.");
+      return;
+    }
+
+    const currentFinalDocState: FinalDocState =
+      finalDocState && isFinalDocReadyForUpload(finalDocState)
+        ? finalDocState
+        : {
+            step: "await_upload",
+            versionNumber: 1,
+            lastFeedback: null,
+            upload: {
+              fileName: null,
+              storagePath: null,
+              extractedText: null,
+              uploadedAt: null,
+            },
+          };
     if (!effectiveChatId) {
       await appendAssistant("⚠️ No encontré un chat activo para guardar tu documento. Intenta recargar el chat.");
       return;
@@ -6419,6 +6644,7 @@ function looksLikeProgressClosureRequest(text: string) {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("chatId", effectiveChatId);
+      formData.append("versionNumber", String(currentFinalDocState.versionNumber));
 
       const uploadRes = await fetch("/api/plans/upload", {
         method: "POST",
@@ -6450,7 +6676,7 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       // 2) Llamar IA de Etapa 10 (NO usar /api/plans/review)
-      const versionNumber = finalDocState.versionNumber;
+      const versionNumber = currentFinalDocState.versionNumber;
 
       const a = await callFinalDocAssistant({
         effectiveChatId,
@@ -6536,9 +6762,10 @@ function looksLikeProgressClosureRequest(text: string) {
       sidebar={
         <Sidebar
           currentChatId={chatId}
+          currentMode={mode}
+          activeAdvisorStage={activeAdvisorStage}
           onSelectChat={(id, pickedMode) => {
-            // 1) set modo del chat seleccionado
-            const m = (pickedMode === "plan_mejora" ? "plan_mejora" : "general");
+            const m = pickedMode === "plan_mejora" ? "plan_mejora" : "general";
             modeRef.current = m;
             chatIdRef.current = id;
             setMode(m);
@@ -6686,10 +6913,12 @@ function looksLikeProgressClosureRequest(text: string) {
               onSend={handleSend}
               disabled={isSending || !canInteract}
               onUploadFile={
-                mode === "plan_mejora" &&
-                canInteract &&
-                finalDocState &&
-                isFinalDocReadyForUpload(finalDocState)
+                canShowFinalDocUploadButton(
+                  mode,
+                  canInteract,
+                  activeAdvisorStage,
+                  finalDocState
+                )
                   ? handleUploadPlanFile
                   : undefined
               }

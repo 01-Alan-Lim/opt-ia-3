@@ -52,6 +52,25 @@ const PlanningStateSchema = z.object({
 
 type PlanningState = z.infer<typeof PlanningStateSchema>;
 
+const PlanningDecisionSchema = z.object({
+  intent: z.enum([
+    "mutate_state",
+    "check_readiness",
+    "confirm_close",
+    "guide_next",
+    "clarify",
+  ]),
+  shouldMutateState: z.boolean(),
+  shouldValidateNow: z.boolean(),
+  userFacingResponse: z.string().trim().min(1).max(3000).nullable().optional(),
+});
+
+const PlanningReadinessSchema = z.object({
+  isReady: z.boolean(),
+  missingItems: z.array(z.string()),
+  summary: z.string(),
+});
+
 const PlanningAssistantResponseSchema = z.object({
   assistantMessage: z.string().min(1),
   updates: z.object({
@@ -65,7 +84,12 @@ const PlanningAssistantResponseSchema = z.object({
       "ready_to_validate",
     ]),
   }),
+  decision: PlanningDecisionSchema.optional(),
+  readiness: PlanningReadinessSchema.optional(),
 });
+
+type PlanningDecision = z.infer<typeof PlanningDecisionSchema>;
+type PlanningReadiness = z.infer<typeof PlanningReadinessSchema>;
 
 const BodySchema = z.object({
   chatId: z.string().uuid(),
@@ -94,6 +118,15 @@ function extractJsonSafe(text: string): unknown | null {
 
 function asString(value: unknown): string {
   return String(value ?? "").trim();
+}
+
+function safeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  const parsed = Number(String(value ?? "").trim());
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseCourseCutoffDate(ctx: Record<string, unknown> | undefined): string | null {
@@ -139,6 +172,99 @@ function normalizePlanningState(input: PlanningState): PlanningState {
     lastSummary: input.lastSummary?.trim() || null,
   };
 }
+
+function buildPlanningReadiness(state: PlanningState): PlanningReadiness {
+  const missingItems: string[] = [];
+
+  const studentWeeks = safeNumber(state.time.studentWeeks);
+  const courseCutoffDate = asString(state.time.courseCutoffDate);
+
+  if (studentWeeks === null && !courseCutoffDate) {
+    missingItems.push("Define cuántas semanas quedan o una fecha de corte.");
+  }
+
+  if (courseCutoffDate && !/^\d{4}-\d{2}-\d{2}/.test(courseCutoffDate)) {
+    missingItems.push("La fecha de corte debe tener formato YYYY-MM-DD.");
+  }
+
+  if (state.plan.weekly.length < 1) {
+    missingItems.push("Falta definir al menos una semana con actividades.");
+  }
+
+  if (state.plan.milestones.length < 2) {
+    missingItems.push("Define al menos 2 hitos claros para el cronograma.");
+  }
+
+  const hasMeasurement = state.plan.weekly.some((week) => {
+    return Boolean(asString(week.measurement));
+  });
+
+  if (!hasMeasurement) {
+    missingItems.push("Incluye al menos un punto de medición o seguimiento.");
+  }
+
+  return {
+    isReady: missingItems.length === 0,
+    missingItems,
+    summary:
+      missingItems.length === 0
+        ? "La planificación ya está lista para validación."
+        : `Todavía faltan ${missingItems.length} ajuste(s) antes de cerrar la etapa.`,
+  };
+}
+
+function buildPlanningReadinessMessage(readiness: PlanningReadiness) {
+  if (readiness.isReady) {
+    return (
+      "Tu **Planificación** ya quedó suficientemente consistente para cerrar la etapa.\n\n" +
+      "Si estás de acuerdo, en este turno lo tomo como confirmación y pasamos a la **Etapa 9**."
+    );
+  }
+
+  return (
+    "Todavía no conviene cerrar la **Etapa 8**.\n\n" +
+    readiness.missingItems.map((item) => `- ${item}`).join("\n") +
+    "\n\nDime qué punto quieres completar primero y lo ajustamos."
+  );
+}
+
+async function generatePlanningIntent(prompt: string) {
+  const model = getGeminiModel();
+
+  const first = await model.generateContent(prompt);
+  const firstText = first.response.text();
+  const firstJson = extractJsonSafe(firstText);
+
+  if (firstJson) {
+    return { json: firstJson, raw: firstText };
+  }
+
+  const repairPrompt = `
+Convierte la siguiente respuesta a JSON válido, sin agregar explicaciones.
+
+Debes devolver SOLO JSON crudo con este formato exacto:
+{
+  "intent": "mutate_state" | "check_readiness" | "confirm_close" | "guide_next" | "clarify",
+  "shouldMutateState": boolean,
+  "shouldValidateNow": boolean,
+  "userFacingResponse": "string | null"
+}
+
+RESPUESTA ORIGINAL A CONVERTIR:
+${firstText}
+`;
+
+  const repaired = await model.generateContent(repairPrompt);
+  const repairedText = repaired.response.text();
+  const repairedJson = extractJsonSafe(repairedText);
+
+  return {
+    json: repairedJson,
+    raw: firstText,
+    repairedRaw: repairedText,
+  };
+}
+
 
 async function generatePlanningJson(prompt: string) {
   const model = getGeminiModel();
@@ -250,6 +376,7 @@ export async function POST(req: NextRequest) {
     }
 
     const currentPlanningState = planningStateParse.data;
+    const currentReadiness = buildPlanningReadiness(currentPlanningState);
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
@@ -323,6 +450,95 @@ export async function POST(req: NextRequest) {
     }
 
     const courseCutoffDate = parseCourseCutoffDate(caseContext);
+
+    const intentPrompt = `
+    Eres un docente asesor de Ingeniería Industrial.
+
+    Tu tarea primero NO es reescribir el cronograma.
+    Tu tarea primero es interpretar qué quiso hacer el estudiante en este turno de la Etapa 8.
+
+    Clasifica el mensaje en una de estas opciones:
+    - "mutate_state": está ajustando cronograma, semanas, hitos, riesgos o medición.
+    - "check_readiness": quiere saber si ya está bien o qué falta.
+    - "confirm_close": quiere cerrar, pasar o continuar a la siguiente etapa.
+    - "guide_next": quiere seguir guiado sin cerrar todavía.
+    - "clarify": el mensaje es ambiguo.
+
+    REGLAS:
+    - Interpreta el sentido, no una palabra aislada.
+    - Si el estudiante pregunta si ya está listo, qué falta o cómo va, eso es "check_readiness".
+    - Si da a entender que quiere avanzar o cerrar, eso es "confirm_close".
+    - Si agrega semanas, tareas, hitos o cambios al cronograma, eso es "mutate_state".
+    - Si escribe algo breve pero claramente quiere continuar, eso es "guide_next".
+
+    Devuelve SOLO JSON:
+    {
+      "intent": "mutate_state" | "check_readiness" | "confirm_close" | "guide_next" | "clarify",
+      "shouldMutateState": boolean,
+      "shouldValidateNow": boolean,
+      "userFacingResponse": "string | null"
+    }
+
+    CONTEXTO:
+    - Estado actual Etapa 8:
+    ${JSON.stringify(currentPlanningState, null, 2)}
+
+    - Resumen de readiness:
+    ${JSON.stringify(currentReadiness, null, 2)}
+
+    - Historial reciente:
+    ${String(recentHistory ?? "")}
+
+    - Mensaje del estudiante:
+    "${studentMessage}"
+    `;
+
+    const intentResult = await generatePlanningIntent(intentPrompt);
+
+    const fallbackDecision: PlanningDecision = {
+      intent: "guide_next",
+      shouldMutateState: true,
+      shouldValidateNow: false,
+      userFacingResponse: null,
+    };
+
+    const intentParse = PlanningDecisionSchema.safeParse(intentResult.json);
+    const decision = intentParse.success ? intentParse.data : fallbackDecision;
+
+    if (
+      decision.intent === "check_readiness" ||
+      decision.intent === "confirm_close" ||
+      decision.intent === "clarify" ||
+      !decision.shouldMutateState
+    ) {
+      const shouldValidateNow =
+        currentReadiness.isReady &&
+        (decision.intent === "confirm_close" || decision.shouldValidateNow === true);
+
+      const assistantMessage = sanitizeStudentPlaceholder(
+        decision.userFacingResponse?.trim() || buildPlanningReadinessMessage(currentReadiness),
+        preferredFirstName
+      );
+
+      return NextResponse.json(
+        {
+          ok: true,
+          data: {
+            assistantMessage,
+            updates: {
+              nextState: currentPlanningState,
+              action: shouldValidateNow ? "ready_to_validate" : "summarize",
+            },
+            decision: {
+              ...decision,
+              shouldValidateNow,
+            },
+            readiness: currentReadiness,
+          },
+        },
+        { status: 200 }
+      );
+    }
 
     const prompt = `
 Eres un DOCENTE asesor de Ingeniería Industrial. Estás guiando la Etapa 8: Planificación.
@@ -483,10 +699,22 @@ DEVUELVE SOLO JSON con este formato exacto:
 
     responseData.updates.nextState = normalizePlanningState(responseData.updates.nextState);
 
+    const nextReadiness = buildPlanningReadiness(responseData.updates.nextState);
+
     responseData.assistantMessage = sanitizeStudentPlaceholder(
       responseData.assistantMessage,
       preferredFirstName
     );
+
+    responseData.decision = {
+      intent: "mutate_state",
+      shouldMutateState: true,
+      shouldValidateNow:
+        responseData.updates.action === "ready_to_validate" && nextReadiness.isReady,
+      userFacingResponse: null,
+    };
+
+    responseData.readiness = nextReadiness;
 
     return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
   } catch (error: unknown) {

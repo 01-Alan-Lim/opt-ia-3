@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
           stage: STAGE,
           artifact_type: versionType,
           period_key: PERIOD_KEY,
-          status: "submitted",
+          status: "draft",
           payload: versionPayload,
           score: scoreToSave,
           updated_at: new Date().toISOString(),

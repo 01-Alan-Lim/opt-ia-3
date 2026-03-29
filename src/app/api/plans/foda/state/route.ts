@@ -13,9 +13,33 @@ const STAGE = 2;
 const LEGACY_ARTIFACT_TYPE = "foda_wizard_state";
 const PERIOD_KEY = getPeriodKeyLaPaz();
 
+const FodaQuadrantSchema = z.enum(["F", "D", "O", "A"]);
+
+const FodaItemSchema = z.object({
+  text: z.string().trim().min(1).max(500),
+  evidence: z.string().trim().min(1).max(1200).optional(),
+});
+
+const FodaStateSchema = z.object({
+  currentQuadrant: FodaQuadrantSchema,
+  items: z.object({
+    F: z.array(FodaItemSchema),
+    D: z.array(FodaItemSchema),
+    O: z.array(FodaItemSchema),
+    A: z.array(FodaItemSchema),
+  }),
+  pendingEvidence: z
+    .object({
+      quadrant: FodaQuadrantSchema,
+      index: z.number().int().min(0).max(20),
+    })
+    .nullable()
+    .optional(),
+});
+
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
-  state: z.record(z.string(), z.unknown()),
+  state: FodaStateSchema,
 });
 
 const QuerySchema = z.object({
@@ -225,15 +249,7 @@ export async function POST(req: NextRequest) {
       return fail(500, "DB_ERROR", "No se pudo leer el estado actual.", existing.error);
     }
 
-    const prev =
-      existing.data?.state_json && typeof existing.data.state_json === "object"
-        ? existing.data.state_json
-        : {};
-
-    const mergedState = {
-      ...prev,
-      ...state,
-    };
+    const mergedState = FodaStateSchema.parse(state);
 
     const { error } = await supabaseServer
       .from("plan_stage_states")

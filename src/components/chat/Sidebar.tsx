@@ -22,17 +22,28 @@ interface ChatSummary {
   pinned?: boolean;
 }
 
+
 interface SidebarProps {
   currentChatId: string | null;
   onSelectChat: (chatId: string | null, mode?: ChatMode) => void;
   onNewChat: () => void;
-
-  // ✅ NUEVO: para mover logout al final del historial
   onLogout?: () => void;
   displayName?: string | null;
+
+  currentMode: ChatMode;
+  activeAdvisorStage: number | null;
 }
 
-export function Sidebar({ currentChatId, onSelectChat, onNewChat, onLogout, displayName }: SidebarProps) {
+
+export function Sidebar({
+  currentChatId,
+  onSelectChat,
+  onNewChat,
+  onLogout,
+  displayName,
+  currentMode,
+  activeAdvisorStage,
+}: SidebarProps) {
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -48,6 +59,15 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat, onLogout, disp
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const openItemRef = useRef<HTMLDivElement | null>(null);
+
+    const MAX_ADVISOR_STAGE = 10;
+
+    const safeStage =
+      typeof activeAdvisorStage === "number" && activeAdvisorStage >= 0
+        ? Math.min(activeAdvisorStage, MAX_ADVISOR_STAGE)
+        : 0;
+
+    const progressPercent = (safeStage / MAX_ADVISOR_STAGE) * 100;
 
     const refreshChats = async (): Promise<ChatSummary[]> => {
       setIsLoading(true);
@@ -226,6 +246,29 @@ export function Sidebar({ currentChatId, onSelectChat, onNewChat, onLogout, disp
       >
         + Nuevo chat
       </button>
+
+      {currentMode === "plan_mejora" && (
+        <div
+          className="mb-4 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface)]/70 px-3 py-3"
+          aria-label={`Etapa actual ${safeStage}`}
+        >
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[11px] text-[color:var(--muted)]">
+              Progreso del asesor
+            </span>
+            <span className="text-[12px] font-semibold text-[color:var(--foreground)]">
+              Etapa {safeStage}
+            </span>
+          </div>
+
+          <div className="relative h-2.5 w-full overflow-hidden rounded-full border border-[color:var(--border)]/70 bg-[color:var(--surface)]">
+            <div
+              className="h-full rounded-full bg-[color:var(--primary)] transition-all duration-500 ease-out"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
         {isLoading && <div className="text-xs text-slate-400 mb-2">Cargando chats...</div>}
