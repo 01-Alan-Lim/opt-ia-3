@@ -307,89 +307,52 @@ function buildClarifyWhyMessage(studentMessage: string) {
   const raw = (studentMessage ?? "").trim();
   const t = raw.toLowerCase();
 
-  // Tomamos el texto normalizado pero lo "profesionalizamos" (sin jejeje/jaja/xd)
   const hint0 = normalizeWhyText(raw);
   const hint = hint0
     .replace(/\b(jeje+|jaja+|haha+|xd+|xD+)\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 
-  // Detectar tema para que las opciones SÍ tengan sentido
   const topic =
-    /(pago|salari|sueldo|bono|incentiv|remuner|comisi)/.test(t) ? "comp" :
+    /(pago|salari|sueldo|bono|incentiv|remuner|comisi|presup|fondos|dinero)/.test(t) ? "comp" :
     /(inter[eé]s|desmotiv|motiv|clima|cultura|actitud)/.test(t) ? "mot" :
     /(supervis|jefe|encargad|lider|control|seguim|disciplina)/.test(t) ? "lead" :
     /(manual|sop|proced|est[aá]ndar|instruct|checklist)/.test(t) ? "std" :
     /(capacit|inducci|entren|formaci)/.test(t) ? "trn" :
     /(manten|inspecci|lubric|desgaste|calibr|falla|aver[ií]a)/.test(t) ? "mnt" :
-    /(recurso|presup|dinero|tiempo|personal|apoyo)/.test(t) ? "res" :
+    /(recurso|tiempo|personal|apoyo)/.test(t) ? "res" :
     "gen";
 
-  const optionsByTopic: Record<string, string[]> = {
-    comp: [
-      "Pago/bono no está ligado al desempeño (no hay incentivo por orden, disciplina o productividad)",
-      "Pagos atrasados o variabilidad en pagos (afecta asistencia/compromiso)",
-      "Percepción de inequidad salarial (desmotiva y baja el seguimiento)",
-      "No existen metas/KPIs claros para el rol del supervisor (no se prioriza control/orden)",
-    ],
-    mot: [
-      "Cultura sin disciplina operativa (no hay hábitos de orden/5S sostenidos)",
-      "Falta de reglas claras y consecuencias (se tolera el desorden)",
-      "Alta rotación o baja cohesión (nadie “se hace cargo” del estándar)",
-      "El equipo no ve impacto/beneficio de mantener orden (no hay retroalimentación)",
-    ],
-    lead: [
-      "No hay rutina de supervisión (rondas, checklist, reuniones cortas de seguimiento)",
-      "Roles y responsables poco claros (nadie es dueño del orden del área)",
-      "Supervisor sin herramientas/metodología (no sabe cómo controlar/estandarizar)",
-      "No existen indicadores visibles (tiempos, paros menores, 5S, auditorías)",
-    ],
-    std: [
-      "No existe SOP/checklist (cada operador trabaja a su manera)",
-      "Existe SOP, pero no se cumple (falta control/auditoría)",
-      "El procedimiento no es claro o no está disponible en el puesto",
-      "Cambios de turno/formatos sin estándar de set-up/limpieza",
-    ],
-    trn: [
-      "No hay inducción formal (aprenden 'por mirar')",
-      "No hay matriz de habilidades/certificación por puesto",
-      "Capacitación es ocasional y sin material (SOP/guía/checklist)",
-      "Supervisor no tiene tiempo/estructura para capacitar (no hay rutina)",
-    ],
-    mnt: [
-      "Mantenimiento preventivo insuficiente (solo correctivo)",
-      "Fallas recurrentes sin análisis de causa (se repiten paros)",
-      "Falta inspección/ajustes antes de operar (condición del equipo)",
-      "No hay repuestos/planificación para fallas típicas",
-    ],
-    res: [
-      "Falta de personal/tiempo para sostener orden y seguimiento",
-      "Demanda alta/urgencias desplazan tareas de control (5S, capacitación, inspección)",
-      "No hay herramientas/espacio definido (orden difícil de mantener)",
-      "El supervisor está saturado (no puede ejecutar rutina de control)",
-    ],
-    gen: [
-      "Falta de estándar (no hay un 'modo único' de hacerlo)",
-      "Falta de control/seguimiento (no se verifica cumplimiento)",
-      "Falta de capacitación/inducción (no dominan el método)",
-      "Falta de recursos/tiempo (se deja de hacer lo necesario)",
-    ],
+  const followUpByTopic: Record<string, string> = {
+    comp:
+      "Cuando dices eso, ¿qué pasaba en la práctica: no se asignó presupuesto, se priorizó otra área o simplemente no se aprobó la compra? Dame el hecho más concreto que recuerdes.",
+    mot:
+      "Para aterrizarlo mejor, ¿eso se veía como desinterés del personal, poca disciplina o falta de compromiso sostenido? Cuéntame qué pasaba en la práctica.",
+    lead:
+      "Para bajarlo a algo más concreto, ¿el problema era que nadie hacía seguimiento, que no había responsable claro o que no se revisaba el cumplimiento? Dímelo con un ejemplo de lo que ocurría.",
+    std:
+      "Para precisarlo, ¿el problema era que no existía un procedimiento claro, que cada uno lo hacía distinto o que no se verificaba su cumplimiento? Dímelo con un caso concreto.",
+    trn:
+      "Para aterrizarlo, ¿faltaba capacitación inicial, práctica supervisada o refuerzo del método? Dime qué ocurría realmente en el puesto.",
+    mnt:
+      "Para concretarlo mejor, ¿había fallas recurrentes, falta de inspección o ausencia de mantenimiento preventivo? Dime qué pasaba realmente.",
+    res:
+      "Para volverlo más útil, dime si el problema real era falta de presupuesto, falta de tiempo, falta de personal o saturación de trabajo. ¿Qué ocurría en tu caso?",
+    gen:
+      "Ayúdame a aterrizarlo con algo observable: ¿qué pasaba exactamente en la empresa que hacía que eso ocurriera?"
   };
 
-  const opts = optionsByTopic[topic] ?? optionsByTopic.gen;
-
-  const numbered =
-    opts.slice(0, 4).map((o, i) => `${i + 1}) ${o}`).join("\n");
+  const opener =
+    hint
+      ? `Entiendo tu idea (${hint}), pero todavía está un poco general.`
+      : "Entiendo tu idea, pero todavía está un poco general.";
 
   return (
-    `Entiendo tu punto${hint ? ` (**${hint}**)` : ""}, pero aún está **muy general**.\n` +
-    `Para volverlo una causa raíz accionable, necesito que lo concretes como: **mecanismo + evidencia**.\n\n` +
-    `Elige UNA opción (o escribe una propia más precisa):\n` +
-    `${numbered}\n\n` +
-    `👉 ¿Cuál aplica más en tu caso y qué evidencia concreta tienes? (ej.: “no hay checklist”, “no hay rutina de supervisión”, “pagos atrasados 2 semanas”, “no hay KPI del supervisor”).`
+    `${opener}\n\n` +
+    `Para que sí nos sirva como causa raíz, necesito bajarlo a algo que se pueda observar dentro de la empresa.\n\n` +
+    `${followUpByTopic[topic] ?? followUpByTopic.gen}`
   );
 }
-
 
 
 async function llmText(prompt: string) {
@@ -2156,10 +2119,22 @@ export async function POST(req: Request) {
             updates: { nextState: meta.nextState },
           });
         }
-        // 3) Muy vaga todavía
+        // 3) Muy vaga todavía -> pedir ayuda contextual real, no mensaje fijo
         if (isVagueWhyAnswer(answerRaw)) {
+          const guidedHelp = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            categoryName: active.cat.name ?? "Sin categoría",
+            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
+            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
+            whys: whysArr,
+            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+          });
+
           return ok({
-            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            assistantMessage: sanitizeStudentPlaceholder(
+              guidedHelp || buildClarifyWhyMessage(answerRaw),
+              preferredFirstName
+            ),
             updates: { nextState },
           });
         }
@@ -2167,8 +2142,20 @@ export async function POST(req: Request) {
         // 4) Sanitizar antes de persistir
         const cleanWhy = sanitizeWhyCandidate(answerRaw);
         if (!cleanWhy) {
+          const guidedHelp = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            categoryName: active.cat.name ?? "Sin categoría",
+            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
+            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
+            whys: whysArr,
+            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+          });
+
           return ok({
-            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            assistantMessage: sanitizeStudentPlaceholder(
+              guidedHelp || buildClarifyWhyMessage(answerRaw),
+              preferredFirstName
+            ),
             updates: { nextState },
           });
         }
@@ -2177,8 +2164,20 @@ export async function POST(req: Request) {
 
         // 5) Debe ser una causa accionable real, no texto meta
         if (!isActionableWhyText(answer)) {
+          const guidedHelp = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            categoryName: active.cat.name ?? "Sin categoría",
+            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
+            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
+            whys: whysArr,
+            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+          });
+
           return ok({
-            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            assistantMessage: sanitizeStudentPlaceholder(
+              guidedHelp || buildClarifyWhyMessage(answerRaw),
+              preferredFirstName
+            ),
             updates: { nextState },
           });
         }
