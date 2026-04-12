@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -83,6 +83,21 @@ const IntentResponseSchema = z.object({
 });
 
 type IntentResponse = z.infer<typeof IntentResponseSchema>;
+
+const QualityVerdictSchema = z.enum(["valid", "weak", "invalid"]);
+
+const QualityAssessmentSchema = z.object({
+  verdict: QualityVerdictSchema,
+  score: z.number().int().min(0).max(100),
+  isSpecific: z.boolean(),
+  isRelevantToQuadrant: z.boolean(),
+  needsEvidence: z.boolean(),
+  missingElements: z.array(z.string().trim().min(1).max(160)).max(4),
+  improvedVersion: z.string().trim().min(1).max(500).nullable(),
+  explanationForStudent: z.string().trim().min(1).max(1600),
+});
+
+type QualityAssessment = z.infer<typeof QualityAssessmentSchema>;
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
   return NextResponse.json({ ok: false, code, message, detail }, { status });
@@ -248,6 +263,227 @@ function buildQuadrantNoun(q: FodaQuadrant) {
   return "amenaza";
 }
 
+function normalizeLooseText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripLeadingConnector(text: string) {
+  return text
+    .trim()
+    .replace(
+      /^(ok|okay|bueno|bien|perfecto|listo|sí|si|claro|de acuerdo|entiendo|entendido|entonces)\s*,?\s*/i,
+      ""
+    )
+    .trim();
+}
+
+function extractCandidateFromStudentMessage(text: string, quadrant: FodaQuadrant) {
+  const cleaned = stripLeadingConnector(text);
+
+  const patternsByQuadrant: Record<FodaQuadrant, RegExp[]> = {
+    F: [
+      /(?:una|otra)\s+fortaleza\s+(?:es|seria|sería)\s*[:\-]?\s*(.+)$/i,
+      /fortaleza\s*[:\-]?\s*(.+)$/i,
+    ],
+    D: [
+      /(?:una|otra)\s+debilidad\s+(?:es|seria|sería)\s*[:\-]?\s*(.+)$/i,
+      /debilidad\s*[:\-]?\s*(.+)$/i,
+    ],
+    O: [
+      /(?:una|otra)\s+oportunidad\s+(?:es|seria|sería)\s*[:\-]?\s*(.+)$/i,
+      /oportunidad\s*[:\-]?\s*(.+)$/i,
+    ],
+    A: [
+      /(?:una|otra)\s+amenaza\s+(?:es|seria|sería)\s*[:\-]?\s*(.+)$/i,
+      /amenaza\s*[:\-]?\s*(.+)$/i,
+    ],
+  };
+
+  for (const pattern of patternsByQuadrant[quadrant]) {
+    const match = cleaned.match(pattern);
+    if (match?.[1]?.trim()) {
+      return normalizeItemText(match[1]);
+    }
+  }
+
+  return normalizeItemText(cleaned);
+}
+
+function looksLikeConcreteFodaItem(text: string, quadrant: FodaQuadrant) {
+  const normalized = normalizeLooseText(text);
+  const noun = buildQuadrantNoun(quadrant);
+
+  if (normalized.length < 12) return false;
+
+  if (
+    normalized.includes(`${noun} es`) ||
+    normalized.includes(`${noun} seria`) ||
+    normalized.includes(`${noun} sería`) ||
+    normalized.includes(`otra ${noun}`) ||
+    normalized.includes(`una ${noun}`)
+  ) {
+    return true;
+  }
+
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  return wordCount >= 6;
+}
+
+function canAdvanceCurrentQuadrant(state: FodaState) {
+  return state.items[state.currentQuadrant].length >= 3 && !state.pendingEvidence;
+}
+
+function detectQuadrantMention(text: string): FodaQuadrant | null {
+  const t = normalizeLooseText(text);
+
+  if (t.includes("fortaleza") || t.includes("fortalezas")) return "F";
+  if (t.includes("debilidad") || t.includes("debilidades")) return "D";
+  if (t.includes("oportunidad") || t.includes("oportunidades")) return "O";
+  if (t.includes("amenaza") || t.includes("amenazas")) return "A";
+
+  return null;
+}
+
+function detectAdvanceIntent(text: string) {
+  const t = normalizeLooseText(text);
+
+  return (
+    t.includes("pasemos") ||
+    t.includes("pasar") ||
+    t.includes("continuemos") ||
+    t.includes("continuar") ||
+    t.includes("avancemos") ||
+    t.includes("avanzar") ||
+    t.includes("siguiente") ||
+    t.includes("otro cuadrante") ||
+    t.includes("cambiar de cuadrante") ||
+    t.includes("vamos con") ||
+    t.includes("sigamos con")
+  );
+}
+
+function getSuggestedNextQuadrant(state: FodaState): FodaQuadrant | null {
+  const order: FodaQuadrant[] = ["F", "D", "O", "A"];
+  const currentIndex = order.indexOf(state.currentQuadrant);
+
+  for (let offset = 1; offset < order.length; offset += 1) {
+    const q = order[(currentIndex + offset) % order.length];
+    if (state.items[q].length < 3) return q;
+  }
+
+  return null;
+}
+
+function normalizeCompletedQuadrantState(state: FodaState): FodaState {
+  if (state.pendingEvidence) return cloneState(state);
+
+  const currentCount = state.items[state.currentQuadrant].length;
+  if (currentCount < 3) return cloneState(state);
+
+  const nextQuadrant = getSuggestedNextQuadrant(state);
+  if (!nextQuadrant || nextQuadrant === state.currentQuadrant) {
+    return cloneState(state);
+  }
+
+  return {
+    ...cloneState(state),
+    currentQuadrant: nextQuadrant,
+    pendingEvidence: null,
+  };
+}
+
+function buildQuadrantAdvanceMessage(
+  from: FodaQuadrant,
+  to: FodaQuadrant,
+  baseAnalysis?: string
+) {
+  const fromLabel = buildQuadrantLabel(from);
+  const toLabel = buildQuadrantLabel(to);
+  const toNoun = buildQuadrantNoun(to);
+
+  const analysis = (baseAnalysis ?? "").trim();
+  const intro = analysis ? `${analysis}\n\n` : "";
+
+  return (
+    `${intro}` +
+    `✅ Con esto ya completamos el cuadrante de **${fromLabel}** ` +
+    `(mínimo 3 puntos).\n\n` +
+    `Ahora pasamos a **${toLabel}**.\n\n` +
+    `Cuéntame una ${toNoun} concreta de la empresa, del proceso o del entorno y yo te ayudo a redactarla técnicamente.`
+  );
+}
+
+function buildQuadrantCompletedMessage(state: FodaState, baseAnalysis?: string) {
+  const current = state.currentQuadrant;
+  const label = buildQuadrantLabel(current);
+  const next = getSuggestedNextQuadrant(state);
+
+  const analysis = (baseAnalysis ?? "").trim();
+
+  if (!next) {
+    return (
+      `✅ Con esto ya completamos el cuadrante de **${label}** ` +
+      `(mínimo 3 puntos).\n\n` +
+      `Ya tienes los **4 cuadrantes completos**. Continuamos con la validación final del FODA.`
+    );
+  }
+
+  const intro = analysis ? `${analysis}\n\n` : "";
+
+  return (
+    `${intro}` +
+    `✅ Con esto ya completamos el cuadrante de **${label}** ` +
+    `(mínimo 3 puntos).\n\n` +
+    `Si deseas, ahora podemos pasar a **${buildQuadrantLabel(next)}**.`
+  );
+}
+
+function resolveDeterministicQuadrantAdvance(
+  state: FodaState,
+  studentMessage: string
+): { action: "advance_quadrant" | "complete"; nextState: FodaState; assistantMessage: string } | null {
+  if (!canAdvanceCurrentQuadrant(state)) return null;
+
+  const wantsAdvance = detectAdvanceIntent(studentMessage);
+  const mentionedQuadrant = detectQuadrantMention(studentMessage);
+
+  if (!wantsAdvance && !mentionedQuadrant) return null;
+
+  if (isCompleteState(state)) {
+    return {
+      action: "complete",
+      nextState: cloneState(state),
+      assistantMessage:
+        "✅ El FODA ya está completo en sus 4 cuadrantes. Ahora corresponde validarlo para pasar a la siguiente etapa.",
+    };
+  }
+
+  const targetQuadrant =
+    mentionedQuadrant && mentionedQuadrant !== state.currentQuadrant
+      ? mentionedQuadrant
+      : getSuggestedNextQuadrant(state);
+
+  if (!targetQuadrant || targetQuadrant === state.currentQuadrant) {
+    return null;
+  }
+
+  const nextState = cloneState(state);
+  nextState.currentQuadrant = targetQuadrant;
+  nextState.pendingEvidence = null;
+
+  return {
+    action: "advance_quadrant",
+    nextState,
+    assistantMessage: buildQuadrantAdvanceMessage(state.currentQuadrant, targetQuadrant),
+  };
+}
+
 function buildEmergencyFallbackMessage(state: FodaState) {
   const label = buildQuadrantLabel(state.currentQuadrant);
   const noun = buildQuadrantNoun(state.currentQuadrant);
@@ -266,6 +502,424 @@ function buildStableNoMutationResult(state: FodaState, assistantMessage: string)
     updates: {
       action: "ask_clarify" as const,
       nextState: cloneState(state),
+    },
+  };
+}
+
+function normalizeItemText(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\.+$/g, "")
+    .trim();
+}
+
+function hasEquivalentItem(items: Array<{ text: string }>, candidateText: string) {
+  const normalizedCandidate = normalizeLooseText(candidateText);
+
+  return items.some((item) => normalizeLooseText(item.text) === normalizedCandidate);
+}
+
+function requiresExternalEvidence(quadrant: FodaQuadrant) {
+  return quadrant === "O" || quadrant === "A";
+}
+
+function buildAskEvidenceMessage(quadrant: FodaQuadrant, itemText: string) {
+  const label = buildQuadrantLabel(quadrant);
+
+  return (
+    `La idea puede funcionar como punto de **${label}**, pero en este cuadrante necesito un poco de sustento externo para que no quede solo como una percepción.\n\n` +
+    `Punto propuesto:\n**${itemText}**\n\n` +
+    `Ayúdame con alguno de estos apoyos:\n` +
+    `- un dato\n` +
+    `- una fuente\n` +
+    `- una tendencia observable\n` +
+    `- un ejemplo real del entorno\n\n` +
+    `Puede ser algo breve, pero debe ayudar a justificar por qué esto realmente es una oportunidad o una amenaza.`
+  );
+}
+
+function buildPendingEvidenceReminderMessage(state: FodaState) {
+  const pending = state.pendingEvidence;
+
+  if (!pending) {
+    return buildEmergencyFallbackMessage(state);
+  }
+
+  const item = state.items[pending.quadrant][pending.index];
+  const label = buildQuadrantLabel(pending.quadrant);
+
+  return (
+    `Antes de registrar un nuevo punto, necesito cerrar la evidencia pendiente en **${label}**.\n\n` +
+    `Punto pendiente:\n**${item?.text ?? "Ítem sin texto"}**\n\n` +
+    `Envíame un dato, una fuente, una tendencia observable o un ejemplo del entorno que lo sustente.`
+  );
+}
+
+function looksLikeExternalEvidence(text: string) {
+  const t = normalizeLooseText(text);
+
+  return (
+    t.includes("fuente") ||
+    t.includes("segun") ||
+    t.includes("según") ||
+    t.includes("datos de") ||
+    t.includes("dato de") ||
+    t.includes("informe") ||
+    t.includes("reporte") ||
+    t.includes("estudio") ||
+    t.includes("estadistica") ||
+    t.includes("estadística") ||
+    t.includes("indicador") ||
+    t.includes("por ciento") ||
+    t.includes("%") ||
+    /\b\d{1,3}(?:[.,]\d+)?\s*%/.test(text) ||
+    /\b20\d{2}\b/.test(text)
+  );
+}
+
+function hasMinimumSemanticContent(text: string) {
+  const normalized = normalizeLooseText(text);
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+
+  return normalized.length >= 12 && wordCount >= 4;
+}
+
+function buildQualityAssessmentPrompt(params: {
+  quadrant: FodaQuadrant;
+  candidateText: string;
+  caseContext: unknown;
+  recentHistory: string;
+  stateSummary: ReturnType<typeof buildStateSummary>;
+}) {
+  const { quadrant, candidateText, caseContext, recentHistory, stateSummary } = params;
+
+  return `
+Eres un docente experto en Ingeniería Industrial y análisis FODA.
+
+Tu tarea es evaluar la CALIDAD de un posible ítem del cuadrante ${quadrant} (${buildQuadrantLabel(quadrant)}).
+
+NO debes responder como chat libre.
+Debes evaluar si el texto realmente sirve para un FODA académico y útil para etapas posteriores.
+
+CRITERIOS DE EVALUACIÓN:
+1. Especificidad: evita frases vagas, genéricas o superficiales.
+2. Relevancia: debe corresponder al cuadrante actual.
+3. Valor analítico: debe describir una condición real, observable y útil para el caso.
+4. Claridad: debe entenderse qué ocurre, dónde ocurre o qué efecto produce.
+5. Evidencia: en Oportunidades y Amenazas, si falta sustento externo, márcalo.
+
+CONTEXTO DEL CASO:
+${JSON.stringify(caseContext, null, 2)}
+
+CONVERSACIÓN RECIENTE:
+${recentHistory || "No hay historial reciente."}
+
+RESUMEN DEL ESTADO ACTUAL:
+${JSON.stringify(stateSummary, null, 2)}
+
+CANDIDATO A EVALUAR:
+${candidateText}
+
+INSTRUCCIONES IMPORTANTES:
+- "valid": el ítem ya tiene suficiente calidad para registrarse.
+- "weak": la idea puede servir, pero aún está incompleta, ambigua o demasiado general.
+- "invalid": no corresponde al cuadrante o no aporta valor suficiente para registrarse.
+- "improvedVersion" debe conservar la idea del estudiante, pero redactada de forma más técnica y útil. Si no se puede rescatar, devuelve null.
+- "missingElements" debe listar lo que falta para fortalecer el ítem.
+- "explanationForStudent" debe sonar como un docente claro y natural, no robótico.
+- No inventes cifras ni hechos que no estén en el caso.
+- Devuelve JSON válido únicamente.
+
+Devuelve EXACTAMENTE:
+{
+  "verdict": "valid" | "weak" | "invalid",
+  "score": 0,
+  "isSpecific": true,
+  "isRelevantToQuadrant": true,
+  "needsEvidence": false,
+  "missingElements": ["..."],
+  "improvedVersion": "..." o null,
+  "explanationForStudent": "..."
+}
+`;
+}
+
+function buildQualityAssessmentMessage(
+  quadrant: FodaQuadrant,
+  candidateText: string,
+  quality: QualityAssessment
+) {
+  const noun = buildQuadrantNoun(quadrant);
+  const label = buildQuadrantLabel(quadrant);
+  const improvedBlock = quality.improvedVersion
+    ? `\n\nPodríamos dejarla mejor redactada así:\n**${quality.improvedVersion}**`
+    : "";
+
+  const missingBlock = quality.missingElements.length
+    ? `\n\nPara que sí aporte valor en **${label}**, necesito que la precisemos un poco más. Falta, por ejemplo:\n${quality.missingElements
+        .map((item) => `- ${item}`)
+        .join("\n")}`
+    : "";
+
+  return (
+    `${quality.explanationForStudent}\n\n` +
+    `La idea base que me diste fue: "${candidateText}".` +
+    improvedBlock +
+    missingBlock +
+    `\n\n¿Quieres que la dejemos así o prefieres ajustarla tú antes de registrarla como ${noun}?`
+  );
+}
+
+function evaluateFodaItemQualityRuleBased(
+  text: string,
+  quadrant: FodaQuadrant
+): QualityAssessment {
+  const clean = normalizeItemText(text);
+  const normalized = normalizeLooseText(clean);
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+
+  if (!hasMinimumSemanticContent(clean)) {
+    return {
+      verdict: "invalid",
+      score: 20,
+      isSpecific: false,
+      isRelevantToQuadrant: true,
+      needsEvidence: requiresExternalEvidence(quadrant),
+      missingElements: ["más detalle concreto sobre la situación observada"],
+      improvedVersion: null,
+      explanationForStudent:
+        "La idea todavía está demasiado corta o incompleta para registrarla como un punto útil del FODA.",
+    };
+  }
+
+  if (wordCount < 6) {
+    return {
+      verdict: "weak",
+      score: 45,
+      isSpecific: false,
+      isRelevantToQuadrant: true,
+      needsEvidence: requiresExternalEvidence(quadrant),
+      missingElements: [
+        "qué ocurre exactamente",
+        "en qué área, proceso o situación se observa",
+      ],
+      improvedVersion: null,
+      explanationForStudent:
+        "La idea podría servir, pero todavía está muy resumida y así queda ambigua.",
+    };
+  }
+
+  return {
+    verdict: "valid",
+    score: 70,
+    isSpecific: true,
+    isRelevantToQuadrant: true,
+    needsEvidence: false,
+    missingElements: [],
+    improvedVersion: clean,
+    explanationForStudent:
+      "La idea tiene una base suficiente para ser trabajada como ítem del FODA.",
+  };
+}
+
+function buildServerQualityGate(params: {
+  prevState: FodaState;
+  candidateText: string | null | undefined;
+  quality: QualityAssessment;
+}) {
+  const { prevState, candidateText, quality } = params;
+  const quadrant = prevState.currentQuadrant;
+  const cleanCandidate = normalizeItemText(candidateText ?? "");
+
+  if (!cleanCandidate) {
+    return null;
+  }
+
+  if (quality.verdict === "valid") {
+    return null;
+  }
+
+  return {
+    assistantMessage: buildQualityAssessmentMessage(quadrant, cleanCandidate, quality),
+    updates: {
+      action: "ask_clarify" as const,
+      nextState: cloneState(prevState),
+    },
+    metaReason: quality.verdict === "invalid" ? "QUALITY_INVALID" : "QUALITY_WEAK",
+  };
+}
+
+async function runQualityAssessment(params: {
+  model: ReturnType<typeof getGeminiModel>;
+  quadrant: FodaQuadrant;
+  candidateText: string;
+  caseContext: unknown;
+  recentHistory: string;
+  stateSummary: ReturnType<typeof buildStateSummary>;
+}): Promise<QualityAssessment> {
+  const { model, quadrant, candidateText, caseContext, recentHistory, stateSummary } = params;
+
+  const prompt = buildQualityAssessmentPrompt({
+    quadrant,
+    candidateText,
+    caseContext,
+    recentHistory,
+    stateSummary,
+  });
+
+  const result = await model.generateContent(prompt);
+  const rawText = result.response.text();
+  const extracted = extractJsonSafe(rawText);
+  const parsed = QualityAssessmentSchema.safeParse(extracted);
+
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  return evaluateFodaItemQualityRuleBased(candidateText, quadrant);
+}
+
+function buildDeterministicAddEvidenceResult(
+  state: FodaState,
+  evidenceText: string,
+  assistantMessage: string
+) {
+  const pending = state.pendingEvidence;
+
+  if (!pending) {
+    return buildStableNoMutationResult(state, assistantMessage);
+  }
+
+  const nextState = cloneState(state);
+  const targetItem = nextState.items[pending.quadrant][pending.index];
+  const cleanEvidence = normalizeItemText(evidenceText);
+
+  if (!targetItem || !cleanEvidence) {
+    return buildStableNoMutationResult(state, assistantMessage);
+  }
+
+  nextState.items[pending.quadrant][pending.index] = {
+    ...targetItem,
+    evidence: cleanEvidence,
+  };
+
+  nextState.pendingEvidence = null;
+
+  return {
+    assistantMessage,
+    updates: {
+      action: "add_evidence" as const,
+      nextState,
+    },
+  };
+}
+
+function buildServerEvidenceGate(params: {
+  prevState: FodaState;
+  nextState: FodaState;
+}) {
+  const { prevState, nextState } = params;
+  const quadrant = prevState.currentQuadrant;
+
+  if (!requiresExternalEvidence(quadrant)) {
+    return null;
+  }
+
+  const prevItems = prevState.items[quadrant];
+  const nextItems = nextState.items[quadrant];
+
+  if (nextItems.length <= prevItems.length) {
+    return null;
+  }
+
+  const insertedIndex = nextItems.findIndex((nextItem) => {
+    return !prevItems.some(
+      (prevItem) =>
+        normalizeLooseText(prevItem.text) === normalizeLooseText(nextItem.text)
+    );
+  });
+
+  const resolvedIndex = insertedIndex >= 0 ? insertedIndex : nextItems.length - 1;
+  const targetItem = nextItems[resolvedIndex];
+
+  if (!targetItem) {
+    return null;
+  }
+
+  const alreadyHasEvidence = Boolean(targetItem.evidence?.trim());
+  if (alreadyHasEvidence || looksLikeExternalEvidence(targetItem.text)) {
+    return null;
+  }
+
+  const gatedState = cloneState(nextState);
+  gatedState.currentQuadrant = prevState.currentQuadrant;
+  gatedState.pendingEvidence = {
+    quadrant,
+    index: resolvedIndex,
+  };
+
+  return {
+    assistantMessage: buildAskEvidenceMessage(quadrant, targetItem.text),
+    updates: {
+      action: "ask_evidence" as const,
+      nextState: gatedState,
+    },
+  };
+}
+
+function buildDeterministicAddItemResult(
+  state: FodaState,
+  candidateText: string,
+  assistantMessage: string
+) {
+  const nextState = cloneState(state);
+  const quadrant = state.currentQuadrant;
+  const cleanText = normalizeItemText(candidateText);
+
+  if (!cleanText) {
+    return buildStableNoMutationResult(state, assistantMessage);
+  }
+
+  const alreadyExists = hasEquivalentItem(nextState.items[quadrant], cleanText);
+
+  if (!alreadyExists) {
+    nextState.items[quadrant] = [
+      ...nextState.items[quadrant],
+      { text: cleanText },
+    ];
+  }
+
+  const insertedIndex = nextState.items[quadrant].findIndex(
+    (item) => normalizeLooseText(item.text) === normalizeLooseText(cleanText)
+  );
+
+  if (
+    requiresExternalEvidence(quadrant) &&
+    insertedIndex >= 0 &&
+    !looksLikeExternalEvidence(cleanText)
+  ) {
+    nextState.pendingEvidence = {
+      quadrant,
+      index: insertedIndex,
+    };
+
+    return {
+      assistantMessage: buildAskEvidenceMessage(quadrant, cleanText),
+      updates: {
+        action: "ask_evidence" as const,
+        nextState,
+      },
+    };
+  }
+
+  nextState.pendingEvidence = null;
+
+  return {
+    assistantMessage,
+    updates: {
+      action: "add_item" as const,
+      nextState,
     },
   };
 }
@@ -316,13 +970,13 @@ Debes clasificar la intención en UNA de estas categorías:
 - "provide_supporting_evidence": el estudiante está dando evidencia, ejemplo o sustento para un punto ya mencionado.
 - "ask_rephrase_help": el estudiante pide reformular, mejorar redacción o convertir su idea en algo más técnico.
 - "ask_process_help": el estudiante pregunta cómo seguir, qué poner, qué corresponde ahora o tiene dudas del proceso.
-- "continue_or_confirm": el estudiante solo confirma que quiere seguir, continuar o avanzar conversacionalmente.
+- "continue_or_confirm": el estudiante solo confirma que quiere seguir, continuar o avanzar conversacionalmente, PERO sin aportar un nuevo contenido sustantivo para el FODA.
 - "unclear_or_other": el mensaje no alcanza para mutar estado o es ambiguo / fuera de foco.
 
 REGLAS:
 - No cambies de cuadrante.
 - No confundas un problema de formato con un problema de comprensión.
-- Si el estudiante escribe de forma breve o natural, interpreta su intención igual.
+- Si el estudiante menciona explícitamente una fortaleza, debilidad, oportunidad o amenaza y luego desarrolla una idea concreta, clasifícalo como "propose_item", no como "continue_or_confirm".
 - "needsStateMutation" debe ser true SOLO si el mensaje realmente trae contenido que puede cambiar el estado del FODA.
 - "candidateText" debe contener únicamente el posible texto útil del estudiante si aplica; si no aplica, devuelve null.
 - "userFacingResponse" debe ser una respuesta natural, fluida y útil, en español, coherente con el cuadrante actual.
@@ -425,9 +1079,9 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
-      return fail(403, gate.reason, gate.message);
+      return fail(403, "FORBIDDEN", gate.message);
     }
 
     const rawBody = await req.json().catch(() => null);
@@ -448,6 +1102,35 @@ export async function POST(req: NextRequest) {
       caseContext = {},
       recentHistory = "",
     } = parsedBody.data;
+
+    const deterministicAdvance = resolveDeterministicQuadrantAdvance(
+      fodaState,
+      studentMessage
+    );
+
+    if (deterministicAdvance) {
+      return NextResponse.json(
+        {
+          ok: true,
+          data: {
+            assistantMessage: sanitizeStudentPlaceholder(
+              deterministicAdvance.assistantMessage,
+              null
+            ),
+            updates: {
+              action: deterministicAdvance.action,
+              nextState: deterministicAdvance.nextState,
+            },
+          },
+          meta: {
+            fallback: false,
+            phase: "server_transition",
+            reason: "DETERMINISTIC_QUADRANT_ADVANCE",
+          },
+        },
+        { status: 200 }
+      );
+    }
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
@@ -512,11 +1195,113 @@ export async function POST(req: NextRequest) {
 
     const interpreted = parsedIntent.data;
 
+    const heuristicCandidate = extractCandidateFromStudentMessage(
+      studentMessage,
+      currentQuadrant
+    );
+
+    const shouldForceProvideEvidence =
+      Boolean(fodaState.pendingEvidence) &&
+      (
+        interpreted.intent === "provide_supporting_evidence" ||
+        looksLikeExternalEvidence(studentMessage)
+      );
+
+    const shouldForceProposeItem =
+      looksLikeConcreteFodaItem(studentMessage, currentQuadrant) &&
+      heuristicCandidate.length >= 8;
+
+    const interpretedNormalized: IntentResponse = shouldForceProvideEvidence
+      ? {
+          ...interpreted,
+          intent: "provide_supporting_evidence",
+          needsStateMutation: true,
+          candidateText: normalizeItemText(studentMessage),
+        }
+      : shouldForceProposeItem
+        ? {
+            ...interpreted,
+            intent: "propose_item",
+            needsStateMutation: true,
+            candidateText: heuristicCandidate,
+          }
+        : interpreted;
+
+            if (
+              fodaState.pendingEvidence &&
+              interpretedNormalized.intent !== "provide_supporting_evidence"
+            ) {
+              return NextResponse.json(
+                {
+                  ok: true,
+                  data: buildStableNoMutationResult(
+                    fodaState,
+                    sanitizeStudentPlaceholder(
+                      buildPendingEvidenceReminderMessage(fodaState),
+                      preferredFirstName
+                    )
+                  ),
+                  meta: {
+                    fallback: false,
+                    phase: "server_pending_evidence_gate",
+                    reason: "PENDING_EVIDENCE_MUST_BE_RESOLVED_FIRST",
+                    intent: interpretedNormalized.intent,
+                  },
+                },
+                { status: 200 }
+              );
+            }
+      
+          let qualityAssessment: QualityAssessment | null = null;
+
+          if (
+            interpretedNormalized.intent === "propose_item" &&
+            interpretedNormalized.candidateText?.trim()
+          ) {
+            qualityAssessment = await runQualityAssessment({
+              model,
+              quadrant: currentQuadrant,
+              candidateText: interpretedNormalized.candidateText,
+              caseContext,
+              recentHistory,
+              stateSummary,
+            });
+
+            const qualityGate = buildServerQualityGate({
+              prevState: fodaState,
+              candidateText: interpretedNormalized.candidateText,
+              quality: qualityAssessment,
+            });
+
+            if (qualityGate) {
+              return NextResponse.json(
+                {
+                  ok: true,
+                  data: qualityGate,
+                  meta: {
+                    fallback: false,
+                    phase: "server_quality_gate",
+                    reason: qualityGate.metaReason,
+                    intent: interpretedNormalized.intent,
+                    qualityScore: qualityAssessment.score,
+                  },
+                },
+                { status: 200 }
+              );
+            }
+          }
+
     // Si la intención no requiere mutar estado, respondemos natural y mantenemos el estado intacto
-    if (!interpreted.needsStateMutation || !interpreted.candidateText?.trim()) {
+    if (
+      !interpretedNormalized.needsStateMutation ||
+      !interpretedNormalized.candidateText?.trim()
+    ) {
       const stable = buildStableNoMutationResult(
         fodaState,
-        sanitizeStudentPlaceholder(interpreted.userFacingResponse, preferredFirstName)
+        sanitizeStudentPlaceholder(
+          interpretedNormalized.userFacingResponse,
+          preferredFirstName
+        )
       );
 
       return NextResponse.json(
@@ -526,7 +1311,36 @@ export async function POST(req: NextRequest) {
           meta: {
             fallback: false,
             phase: "interpret_only",
-            intent: interpreted.intent,
+            intent: interpretedNormalized.intent,
+          },
+        },
+        { status: 200 }
+      );
+    }
+
+    if (
+      fodaState.pendingEvidence &&
+      interpretedNormalized.intent === "provide_supporting_evidence" &&
+      interpretedNormalized.candidateText?.trim()
+    ) {
+      const evidenceResult = buildDeterministicAddEvidenceResult(
+        fodaState,
+        interpretedNormalized.candidateText,
+        sanitizeStudentPlaceholder(
+          interpretedNormalized.userFacingResponse,
+          preferredFirstName
+        )
+      );
+
+      return NextResponse.json(
+        {
+          ok: true,
+          data: evidenceResult,
+          meta: {
+            fallback: false,
+            phase: "server_evidence_attach",
+            reason: "DETERMINISTIC_ADD_EVIDENCE",
+            intent: interpretedNormalized.intent,
           },
         },
         { status: 200 }
@@ -544,7 +1358,7 @@ export async function POST(req: NextRequest) {
       recentHistory,
       caseContext,
       studentMessage,
-      interpreted,
+      interpreted: interpretedNormalized,
     });
 
     const mutationResult = await model.generateContent(mutationPrompt);
@@ -552,20 +1366,32 @@ export async function POST(req: NextRequest) {
     const mutationExtracted = extractJsonSafe(mutationRawText);
 
     if (!mutationExtracted) {
-      const stable = buildStableNoMutationResult(
-        fodaState,
-        sanitizeStudentPlaceholder(interpreted.userFacingResponse, preferredFirstName)
-      );
+      const fallbackData =
+        interpretedNormalized.intent === "propose_item" && interpretedNormalized.candidateText?.trim()
+          ? buildDeterministicAddItemResult(
+              fodaState,
+              qualityAssessment?.improvedVersion?.trim() || interpretedNormalized.candidateText,
+              sanitizeStudentPlaceholder(
+                qualityAssessment?.improvedVersion
+                  ? `Bien. Esta idea sí se puede registrar mejor redactada como:\n**${qualityAssessment.improvedVersion}**`
+                  : interpretedNormalized.userFacingResponse,
+                preferredFirstName
+              )
+            )
+          : buildStableNoMutationResult(
+              fodaState,
+              sanitizeStudentPlaceholder(interpretedNormalized.userFacingResponse, preferredFirstName)
+            );
 
       return NextResponse.json(
         {
           ok: true,
-          data: stable,
+          data: fallbackData,
           meta: {
             fallback: true,
             phase: "mutation",
             reason: "LLM_INVALID_JSON",
-            intent: interpreted.intent,
+            intent: interpretedNormalized.intent,
           },
         },
         { status: 200 }
@@ -573,26 +1399,38 @@ export async function POST(req: NextRequest) {
     }
 
     const parsedResponse = AssistantResponseSchema.safeParse(mutationExtracted);
-    if (!parsedResponse.success) {
-      const stable = buildStableNoMutationResult(
-        fodaState,
-        sanitizeStudentPlaceholder(interpreted.userFacingResponse, preferredFirstName)
-      );
+      if (!parsedResponse.success) {
+        const fallbackData =
+          interpretedNormalized.intent === "propose_item" && interpretedNormalized.candidateText?.trim()
+            ? buildDeterministicAddItemResult(
+                fodaState,
+                qualityAssessment?.improvedVersion?.trim() || interpretedNormalized.candidateText,
+                sanitizeStudentPlaceholder(
+                  qualityAssessment?.improvedVersion
+                    ? `Bien. Esta idea sí se puede registrar mejor redactada como:\n**${qualityAssessment.improvedVersion}**`
+                    : interpretedNormalized.userFacingResponse,
+                  preferredFirstName
+                )
+              )
+            : buildStableNoMutationResult(
+                fodaState,
+                sanitizeStudentPlaceholder(interpretedNormalized.userFacingResponse, preferredFirstName)
+              );
 
-      return NextResponse.json(
-        {
-          ok: true,
-          data: stable,
-          meta: {
-            fallback: true,
-            phase: "mutation",
-            reason: "LLM_INVALID_SHAPE",
-            intent: interpreted.intent,
+        return NextResponse.json(
+          {
+            ok: true,
+            data: fallbackData,
+            meta: {
+              fallback: true,
+              phase: "mutation",
+              reason: "LLM_INVALID_SHAPE",
+              intent: interpretedNormalized.intent,
+            },
           },
-        },
-        { status: 200 }
-      );
-    }
+          { status: 200 }
+        );
+      }
 
     const rawNextState = sanitizeStateLoose(
       parsedResponse.data.updates.nextState,
@@ -605,10 +1443,75 @@ export async function POST(req: NextRequest) {
       parsedResponse.data.updates.action
     );
 
-    const assistantMessage = sanitizeStudentPlaceholder(
+    let assistantMessage = sanitizeStudentPlaceholder(
       parsedResponse.data.assistantMessage,
       preferredFirstName
     );
+
+    if (interpretedNormalized.intent === "propose_item") {
+      const evidenceGate = buildServerEvidenceGate({
+        prevState: fodaState,
+        nextState: enforced.nextState,
+      });
+
+      if (evidenceGate) {
+        return NextResponse.json(
+          {
+            ok: true,
+            data: evidenceGate,
+            meta: {
+              fallback: false,
+              phase: "server_evidence_gate",
+              reason: "EXTERNAL_EVIDENCE_REQUIRED",
+              intent: interpretedNormalized.intent,
+            },
+          },
+          { status: 200 }
+        );
+      }
+    }
+
+    const previousQuadrant = fodaState.currentQuadrant;
+    const previousCount = fodaState.items[previousQuadrant].length;
+    const nextCount = enforced.nextState.items[previousQuadrant].length;
+
+    const completedCurrentQuadrantNow =
+      enforced.nextState.currentQuadrant === previousQuadrant &&
+      !enforced.nextState.pendingEvidence &&
+      previousCount < 3 &&
+      nextCount >= 3;
+
+    let finalAction = enforced.action;
+    let finalNextState = enforced.nextState;
+
+    if (completedCurrentQuadrantNow) {
+      const normalizedAfterCompletion = normalizeCompletedQuadrantState(enforced.nextState);
+      const movedToAnotherQuadrant =
+        normalizedAfterCompletion.currentQuadrant !== previousQuadrant;
+
+      finalNextState = normalizedAfterCompletion;
+      finalAction = movedToAnotherQuadrant ? "advance_quadrant" : enforced.action;
+
+      assistantMessage = sanitizeStudentPlaceholder(
+        movedToAnotherQuadrant
+          ? buildQuadrantAdvanceMessage(
+              previousQuadrant,
+              normalizedAfterCompletion.currentQuadrant,
+              assistantMessage
+            )
+          : buildQuadrantCompletedMessage(normalizedAfterCompletion, assistantMessage),
+        preferredFirstName
+      );
+    } else if (enforced.action === "advance_quadrant") {
+      assistantMessage = sanitizeStudentPlaceholder(
+        buildQuadrantAdvanceMessage(
+          previousQuadrant,
+          enforced.nextState.currentQuadrant,
+          assistantMessage
+        ),
+        preferredFirstName
+      );
+    }
 
     return NextResponse.json(
       {
@@ -616,29 +1519,38 @@ export async function POST(req: NextRequest) {
         data: {
           assistantMessage,
           updates: {
-            action: enforced.action,
-            nextState: enforced.nextState,
+            action: finalAction,
+            nextState: finalNextState,
           },
         },
         meta: {
           fallback: false,
           phase: "mutation",
-          intent: interpreted.intent,
+          intent: interpretedNormalized.intent,
         },
       },
       { status: 200 }
     );
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Error en FODA assistant";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
 
-    if (message === "UNAUTHORIZED") {
+    if (authCode === "UNAUTHORIZED") {
       return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
     }
 
-    if (message === "FORBIDDEN_DOMAIN") {
-      return fail(403, "FORBIDDEN", "Acceso restringido.");
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
     }
 
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    const message = err instanceof Error ? err.message : "Error en FODA assistant";
     return fail(500, "INTERNAL", "Error interno.", message);
   }
 }

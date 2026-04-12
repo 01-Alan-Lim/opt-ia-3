@@ -1,5 +1,5 @@
 // src/lib/auth/chatAccess.ts
-import { requireUser } from "@/lib/auth/supabase";
+import { AuthedUser, requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 
 export type GateReason =
@@ -19,8 +19,11 @@ function toDateOrNull(x: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-export async function assertChatAccess(req: Request): Promise<GateResult> {
-  const authed = await requireUser(req);
+  export async function assertChatAccess(
+    req: Request,
+    authedUser?: AuthedUser
+  ): Promise<GateResult> {
+    const authed = authedUser ?? (await requireUser(req));
 
   // Teachers no pasan por gates académicos
   if (authed.role === "teacher") return { ok: true };

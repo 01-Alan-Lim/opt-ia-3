@@ -3,8 +3,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { supabaseServer } from "@/lib/supabaseServer";
-import { requireUser } from "@/lib/auth/supabase";
-import { ok, fail, type ApiErrorCode } from "@/lib/api/response";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { ok, fail, failResponse, type ApiErrorCode } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { extractTextFromPDF } from "@/lib/pdfText";
 
@@ -98,7 +98,7 @@ export async function POST(req: Request) {
   try {
     const authed = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, authed);
     if (!gate.ok) {
       const code =
         gate.reason === "NEEDS_ONBOARDING"
@@ -216,27 +216,32 @@ export async function POST(req: Request) {
       storagePath,
       versionNumber: parsed.data.versionNumber,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "INTERNAL";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
 
-    if (msg === "UNAUTHORIZED") {
-      return NextResponse.json(
-        fail("UNAUTHORIZED", "Sesión inválida o ausente."),
-        { status: 401 }
-      );
+    if (authCode === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
     }
 
-    if (msg === "FORBIDDEN_DOMAIN") {
-      return NextResponse.json(
-        fail("FORBIDDEN", "Acceso restringido a correos autorizados."),
-        { status: 403 }
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido.", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
       );
     }
 
     console.error("❌ Error en /api/plans/upload:", err);
-    return NextResponse.json(
-      fail("INTERNAL", "Error interno procesando el archivo del plan de mejora."),
-      { status: 500 }
+    return failResponse(
+      "INTERNAL",
+      err instanceof Error
+        ? err.message
+        : "Error interno procesando el archivo del plan de mejora.",
+      500
     );
   }
 }

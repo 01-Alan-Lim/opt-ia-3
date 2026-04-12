@@ -1,18 +1,35 @@
 //src/app/api/plans/ishikawa/assistant/route.ts
 
+import { z } from "zod";
 import { ok, failResponse } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
 } from "@/lib/chat/studentIdentity";
+import {
+  classifyWhyIntent,
+  sanitizeWhyCandidate,
+} from "@/lib/plan/ishikawaWhyInterpreter";
 
 export const runtime = "nodejs";
 
 function makeRequestId() {
   return `ish_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const ISHIKAWA_DEBUG = process.env.ISHIKAWA_DEBUG === "true";
+
+function logIshikawaDebug(event: string, payload: Record<string, unknown>) {
+  if (!ISHIKAWA_DEBUG) return;
+
+  console.log(
+    `[ISHIKAWA_DEBUG] ${event}`,
+    JSON.stringify(payload, null, 2)
+  );
 }
 
 type IshikawaWhy = string | { id?: string; text?: string };
@@ -44,6 +61,46 @@ export type IshikawaState = {
   rootCauses?: string[]; // opcional: se puede rellenar al final
 };
 
+type RecentMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+type LooseObject = Record<string, unknown>;
+
+const RecentMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().max(4000),
+});
+
+const BodySchema = z.object({
+  studentMessage: z.string().trim().min(1).max(4000),
+  ishikawaState: z
+    .object({})
+    .passthrough()
+    .transform((value) => value as IshikawaState),
+  caseContext: z.object({}).catchall(z.unknown()).nullable().optional(),
+  stage1Summary: z.object({}).catchall(z.unknown()).nullable().optional(),
+  brainstormState: z.object({}).catchall(z.unknown()).nullable().optional(),
+  recentMessages: z.array(RecentMessageSchema).max(12).optional().default([]),
+});
+
+function getStringField(
+  obj: LooseObject | null | undefined,
+  ...keys: string[]
+): string | null {
+  if (!obj) return null;
+
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+
+  return null;
+}
 
 function countRootCandidates(state: any) {
   const cats = Array.isArray(state?.categories) ? state.categories : [];
@@ -120,6 +177,68 @@ function normalizeWhyText(input: string) {
   return t;
 }
 
+function isActionableWhyText(input: string) {
+  const t = (input ?? "").trim().toLowerCase();
+  if (!t) return false;
+
+  if (t.length < 8) return false;
+
+  if (
+    t.includes("ayudame") ||
+    t.includes("ayúdame") ||
+    t.includes("como encontramos") ||
+    t.includes("cómo encontramos") ||
+    t.includes("como hallar") ||
+    t.includes("cómo hallar") ||
+    t.includes("como encontrar") ||
+    t.includes("cómo encontrar") ||
+    t.includes("no se como") ||
+    t.includes("no sé cómo") ||
+    t.includes("cual seria") ||
+    t.includes("cuál sería")
+  ) {
+    return false;
+  }
+
+  if (
+    /^(seria|sería|podria|podría|quizas|quizás|tal vez|creo que|pienso que)\b/.test(t)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function sanitizeWhyList(whys: IshikawaWhy[] | undefined): string[] {
+  const rawList = Array.isArray(whys) ? whys : [];
+
+  const cleaned = rawList
+    .map((item) => (typeof item === "string" ? item : (item?.text ?? "")))
+    .map((item) => sanitizeWhyCandidate(String(item ?? "")))
+    .filter((item): item is string => Boolean(item))
+    .map((item) => normalizeWhyText(item))
+    .filter((item) => isActionableWhyText(item));
+
+  return Array.from(new Set(cleaned.map((item) => item.trim()))); // dedup exacto
+}
+
+function sanitizeIshikawaStateForWhyQuality(state: IshikawaState): IshikawaState {
+  const cloned = safeClone(state);
+
+  cloned.categories = (cloned.categories ?? []).map((cat) => ({
+    ...cat,
+    mainCauses: (cat.mainCauses ?? []).map((mc) => ({
+      ...mc,
+      subCauses: (mc.subCauses ?? []).map((sc) => ({
+        ...sc,
+        whys: sanitizeWhyList(sc.whys),
+      })),
+    })),
+  }));
+
+  return cloned;
+}
+
 function isVagueWhyAnswer(input: string) {
   const t = (input ?? "").trim().toLowerCase();
   if (!t) return true;
@@ -141,39 +260,48 @@ function isVagueWhyAnswer(input: string) {
 }
 
 function isNonCausalMessage(input: string) {
-  const t = (input ?? "").toLowerCase().trim();
+  const t = normalizeIntentText(input);
   if (!t) return true;
 
-  // Intenciones de navegación / control
+  if (looksLikeSwitchCategoryIntent(t)) return true;
+
   if (
     t.includes("continuemos") ||
     t.includes("sigamos") ||
     t.includes("ahora trabajemos") ||
     t.includes("ahora quiero trabajar") ||
+    t.includes("trabajar la categoria") ||
+    t.includes("trabajar categoria") ||
+    t.includes("podemos trabajar") ||
+    t.includes("quiero trabajar") ||
+    t.includes("quiero ir a") ||
     t.includes("pasemos a") ||
     t.includes("siguiente categoria") ||
     t.includes("otra categoria") ||
-    t.includes("material") ||
-    t.includes("metodo") ||
-    t.includes("maquina") ||
-    t.includes("mano de obra")
+    t.includes("cambiemos de categoria") ||
+    t.includes("cambiemos de rama") ||
+    t.includes("cambiar de rama") ||
+    t.includes("rama actual")
   ) {
     return true;
   }
 
-  // Preguntas meta
   if (
     t.startsWith("que temas") ||
-    t.startsWith("qué temas") ||
     t.startsWith("en que estamos") ||
-    t.startsWith("qué estamos viendo") ||
-    t.includes("que causa estamos")
+    t.startsWith("que estamos viendo") ||
+    t.includes("que causa estamos") ||
+    t.includes("muestrame el avance") ||
+    t.includes("en que rama") ||
+    t.includes("donde ibamos") ||
+    t.includes("retomemos")
   ) {
     return true;
   }
 
   return false;
 }
+
 
 function buildClarifyWhyMessage(studentMessage: string) {
   const raw = (studentMessage ?? "").trim();
@@ -284,6 +412,210 @@ async function geminiText(args: { system: string; prompt: string; temperature?: 
   return result.response.text();
 }
 
+function normalizeIntentText(text: string) {
+  return String(text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildRecentMessagesDigest(recentMessages: RecentMessage[]) {
+  return recentMessages
+    .slice(-6)
+    .map((message) => {
+      const speaker = message.role === "assistant" ? "Asistente" : "Estudiante";
+      const content = String(message.content ?? "").trim().slice(0, 280);
+      return content ? `${speaker}: ${content}` : null;
+    })
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function hasCategorySwitchVerb(text: string) {
+  const t = normalizeIntentText(text);
+
+  return [
+    "pasemos a",
+    "vamos a",
+    "vamos con",
+    "sigamos con",
+    "continuemos con",
+    "continuemos ahora en",
+    "sigamos ahora en",
+    "ahora con",
+    "trabajemos",
+    "trabajar la categoria",
+    "trabajar categoria",
+    "podemos trabajar",
+    "quiero trabajar",
+    "quiero ir a",
+    "mejor pasemos a",
+    "cambiemos a",
+    "cambiar de categoria",
+    "cambiar de rama",
+    "movernos a",
+    "ir a la categoria",
+  ].some((signal) => t.includes(signal));
+}
+
+function looksLikeCategoryNavigationMessage(
+  text: string,
+  state: IshikawaState
+) {
+  const normalized = normalizeIntentText(text);
+  if (!normalized) return false;
+
+  const explicitCategoryId = detectExplicitCategoryId(state, text);
+  if (!explicitCategoryId) return false;
+
+  const plainCategoryNames = new Set([
+    "material",
+    "metodo",
+    "maquina",
+    "hombre",
+    "mano de obra",
+    "medicion",
+    "medida",
+    "entorno",
+  ]);
+
+  if (plainCategoryNames.has(normalized)) return true;
+  if (normalized.includes("categoria") || normalized.includes("rama")) return true;
+  if (hasCategorySwitchVerb(normalized)) return true;
+
+  return false;
+}
+
+type ContextualBranchIntent =
+  | "SWITCH_CATEGORY"
+  | "META_PROCESS"
+  | "ASK_GUIDANCE"
+  | "ANSWER_WHY"
+  | "CONTINUE_SAME_CATEGORY"
+  | "OTHER";
+
+async function classifyContextualBranchIntent(args: {
+  studentMessage: string;
+  state: IshikawaState;
+  recentMessages: RecentMessage[];
+}): Promise<ContextualBranchIntent> {
+  if (looksLikeCategoryNavigationMessage(args.studentMessage, args.state)) {
+    return "SWITCH_CATEGORY";
+  }
+
+  const whyIntent = classifyWhyIntent(args.studentMessage);
+  if (whyIntent === "meta_process") return "META_PROCESS";
+  if (whyIntent === "ask_guidance" || whyIntent === "ask_example") {
+    return "ASK_GUIDANCE";
+  }
+
+  if (looksLikeContinueSameCategoryIntent(args.studentMessage)) {
+    return "CONTINUE_SAME_CATEGORY";
+  }
+
+  const active = findActiveNodes(args.state);
+  if (!active?.cat) return "OTHER";
+
+  const recentHistory = buildRecentMessagesDigest(args.recentMessages);
+  const explicitCategoryId = detectExplicitCategoryId(
+    args.state,
+    args.studentMessage
+  );
+  const explicitCategoryName = explicitCategoryId
+    ? args.state.categories.find((category) => category.id === explicitCategoryId)
+        ?.name ?? null
+    : null;
+
+  const system =
+    `Eres un clasificador de intención conversacional para una sesión Ishikawa.\n` +
+    `Devuelve SOLO una etiqueta exacta de esta lista: SWITCH_CATEGORY, META_PROCESS, ASK_GUIDANCE, ANSWER_WHY, CONTINUE_SAME_CATEGORY, OTHER.\n` +
+    `No expliques nada. No uses JSON.`;
+
+  const prompt =
+    `Rama activa actual:\n` +
+    `- Categoría: ${active.cat.name ?? "Sin categoría"}\n` +
+    `- Causa principal: ${active.mc?.name ?? active.mc?.text ?? "Sin causa principal"}\n` +
+    `- Subcausa: ${active.sc?.name ?? active.sc?.text ?? "Sin subcausa"}\n\n` +
+    `Categoría mencionada explícitamente por el estudiante: ${explicitCategoryName ?? "ninguna"}\n\n` +
+    `Contexto conversacional reciente:\n${recentHistory || "(sin historial reciente)"}\n\n` +
+    `Último mensaje del estudiante:\n"${args.studentMessage}"\n\n` +
+    `Criterios:\n` +
+    `- Si el estudiante está pidiendo moverse a otra categoría o rama, devuelve SWITCH_CATEGORY.\n` +
+    `- Si está pidiendo avance, resumen, validación de cierre o ubicación dentro del proceso, devuelve META_PROCESS.\n` +
+    `- Si pide ayuda para redactar, aterrizar o dar ideas, devuelve ASK_GUIDANCE.\n` +
+    `- Si está aportando una causa real de la rama activa, devuelve ANSWER_WHY.\n` +
+    `- Si quiere seguir en la misma categoría con otra causa principal, devuelve CONTINUE_SAME_CATEGORY.\n` +
+    `- Si el mensaje solo navega el flujo, NO lo clasifiques como ANSWER_WHY.\n\n` +
+    `Etiqueta:`;
+
+  try {
+    const raw = await geminiText({ system, prompt, temperature: 0 });
+    const label = String(raw ?? "").trim().toUpperCase();
+
+    if (
+      label === "SWITCH_CATEGORY" ||
+      label === "META_PROCESS" ||
+      label === "ASK_GUIDANCE" ||
+      label === "ANSWER_WHY" ||
+      label === "CONTINUE_SAME_CATEGORY" ||
+      label === "OTHER"
+    ) {
+      return label as ContextualBranchIntent;
+    }
+  } catch {
+    return "OTHER";
+  }
+
+  return "OTHER";
+}
+
+function buildSwitchCategoryResponse(
+  state: IshikawaState,
+  requestedCategoryId?: string | null
+) {
+  const nextState = ensureDefaultCategoriesIfEmpty(safeClone(state));
+
+  if (!requestedCategoryId) {
+    const available = (nextState.categories ?? [])
+      .map((category) => `- ${category.name}`)
+      .join("\n");
+
+    return {
+      assistantMessage:
+        "Claro. Podemos cambiar de categoría sin problema.\n\n" +
+        "¿Cuál quieres trabajar ahora?\n" +
+        `${available}\n\n` +
+        "Dime una y seguimos desde ahí con otra causa principal.",
+      nextState,
+    };
+  }
+
+  const targetCategory = (nextState.categories ?? []).find(
+    (category) => category.id === requestedCategoryId
+  );
+
+  if (!targetCategory) {
+    return {
+      assistantMessage:
+        "Te sigo. Pero no pude identificar bien la categoría destino.\n\n" +
+        "Dime si quieres ir a Hombre, Máquina, Método, Material, Medición o Entorno.",
+      nextState,
+    };
+  }
+
+  nextState.cursor = { categoryId: targetCategory.id };
+
+  return {
+    assistantMessage:
+      `Perfecto. Pasemos a **${targetCategory.name}**.\n\n` +
+      `Ahora dime una **causa principal concreta** dentro de esa categoría y yo te ayudo a bajarla con los porqués.`,
+    nextState,
+  };
+}
+
 function isAdvanceToStage4Message(text: string) {
   const t = (text ?? "").toLowerCase().trim();
   if (!t) return false;
@@ -383,6 +715,179 @@ function guessCategoryIdFromText(state: IshikawaState, text: string): string | n
   }
 
   return null;
+}
+
+function getCategoryDisplayName(state: IshikawaState, categoryId?: string | null) {
+  if (!categoryId) return null;
+  const cat = (state.categories ?? []).find((c) => c.id === categoryId);
+  return cat?.name ?? null;
+}
+
+function detectExplicitCategoryId(state: IshikawaState, text: string): string | null {
+  const t = (text ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+  const matchCategory = (keywords: string[]) =>
+    (state.categories ?? []).find((c) => {
+      const name = (c.name ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      return keywords.some((kw) => name.includes(kw));
+    })?.id ?? null;
+
+  if (/\bhombre\b|\bmano de obra\b|\bpersonal\b/.test(t)) {
+    return matchCategory(["hombre", "mano de obra"]);
+  }
+
+  if (/\bmaquina\b|\bmáquina\b|\bequipo\b/.test(t)) {
+    return matchCategory(["maquina", "máquina"]);
+  }
+
+  if (/\bmetodo\b|\bmétodo\b|\bproceso\b|\bprocedimiento\b/.test(t)) {
+    return matchCategory(["metodo", "método"]);
+  }
+
+  if (/\bmaterial\b|\binsumo\b|\bmateria prima\b/.test(t)) {
+    return matchCategory(["material"]);
+  }
+
+  if (/\bmedicion\b|\bmedición\b|\bmedida\b|\bkpi\b|\bindicador\b/.test(t)) {
+    return matchCategory(["medida", "medición", "medicion"]);
+  }
+
+  if (/\bentorno\b|\bmedio ambiente\b|\bambiente\b/.test(t)) {
+    return matchCategory(["entorno", "medio ambiente", "ambiente"]);
+  }
+
+  return null;
+}
+
+function looksLikeSwitchCategoryIntent(text: string) {
+  const t = normalizeIntentText(text);
+  if (!t) return false;
+
+  return (
+    t.includes("otra categoria") ||
+    t.includes("siguiente categoria") ||
+    t.includes("cambiar de categoria") ||
+    t.includes("cambiar de rama") ||
+    t.includes("pasemos a") ||
+    t.includes("vamos a") ||
+    t.includes("vamos con") ||
+    t.includes("sigamos con") ||
+    t.includes("continuemos con") ||
+    t.includes("continuemos ahora en") ||
+    t.includes("sigamos ahora en") ||
+    t.includes("ahora con") ||
+    t.includes("trabajemos") ||
+    t.includes("trabajar la categoria") ||
+    t.includes("trabajar categoria") ||
+    t.includes("podemos trabajar") ||
+    t.includes("quiero trabajar") ||
+    t.includes("quiero ir a") ||
+    t.includes("mejor pasemos a") ||
+    t === "material" ||
+    t === "metodo" ||
+    t === "maquina" ||
+    t === "hombre" ||
+    t === "mano de obra" ||
+    t === "medicion" ||
+    t === "medida" ||
+    t === "entorno"
+  );
+}
+
+function looksLikeContinueSameCategoryIntent(text: string) {
+  const t = (text ?? "").toLowerCase().trim();
+
+  if (!t) return false;
+
+  return (
+    t.includes("misma categoria") ||
+    t.includes("misma categoría") ||
+    t.includes("seguir con la categoria") ||
+    t.includes("seguir con la categoría") ||
+    t.includes("continuar con la categoria") ||
+    t.includes("continuar con la categoría") ||
+    t.includes("sigamos con la categoria") ||
+    t.includes("sigamos con la categoría") ||
+    t.includes("agregar otra causa") ||
+    t.includes("agregaremos otra causa") ||
+    t.includes("otra causa en esa categoria") ||
+    t.includes("otra causa en esa categoría")
+  );
+}
+
+function resolveContinuationCategoryId(state: IshikawaState, studentMessage: string): string | null {
+  const explicitCategory = detectExplicitCategoryId(state, studentMessage);
+  if (explicitCategory) return explicitCategory;
+
+  const inferred = guessCategoryIdFromText(state, studentMessage);
+  if (inferred) return inferred;
+
+  // Si no menciona una categoría explícita, usar la categoría actual del cursor
+  if (state.cursor?.categoryId) return state.cursor.categoryId;
+
+  return null;
+}
+
+function extractMainCauseCandidateFromContinuationMessage(input: string): string | null {
+  const raw = (input ?? "").trim();
+  if (!raw) return null;
+
+  let text = raw;
+
+  // Cortar introducciones típicas de continuación
+  text = text.replace(
+    /^(si|sí|ok|okay|dale|listo)\s*,?\s*/i,
+    ""
+  );
+
+  text = text.replace(
+    /^(continuemos|continuar|sigamos|seguimos)\s+(con\s+)?(la\s+categor[ií]a\s+)?[a-záéíóúñ\s]+,?\s*/i,
+    ""
+  );
+
+  text = text.replace(
+    /^(con\s+otra\s+causa\s+principal\s+(que\s+ser[ií]a|ser[ií]a)?[:,]?\s*)/i,
+    ""
+  );
+
+  text = text.replace(
+    /^(otra\s+causa\s+(principal\s+)?ser[ií]a\s*[:,-]?\s*)/i,
+    ""
+  );
+
+  text = text.replace(
+    /^(otra\s+causa\s+(principal\s+)?[:,-]?\s*)/i,
+    ""
+  );
+
+  text = text.trim();
+
+  // Si quedó muy corto o sigue siendo meta, no sirve
+  if (!text || text.length < 8) return null;
+
+  const lower = text.toLowerCase();
+
+  if (
+    lower.includes("continuemos") ||
+    lower.includes("sigamos") ||
+    lower.includes("categoría") ||
+    lower.includes("categoria") ||
+    lower.includes("otra causa") ||
+    lower.includes("agregaremos")
+  ) {
+    return null;
+  }
+
+  // Capitalización simple
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function createMainCauseNode(text: string, prefix: string) {
+  return {
+    id: `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    name: text,
+    subCauses: [],
+  };
 }
 
 function extractRootCauses(state: any) {
@@ -888,6 +1393,53 @@ function buildVariedFollowUp(studentMessage: string) {
   return `${opener} ${analysis}\n${q}`;
 }
 
+async function buildGuidedWhyStep(args: {
+  studentMessage: string;
+  categoryName: string;
+  mainCauseName: string;
+  subCauseName: string;
+  whys: string[];
+  maxWhyDepth: number;
+}) {
+  const depth = args.whys.length;
+  const lastWhy = depth > 0 ? args.whys[depth - 1] : null;
+
+  const prompt = `
+Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
+
+Estás trabajando una sola rama del árbol. Tu tarea es decidir cómo continuar la conversación
+de forma natural y útil, SIN responder como robot.
+
+Rama actual:
+- Categoría: ${args.categoryName}
+- Causa principal: ${args.mainCauseName}
+- Subcausa: ${args.subCauseName}
+- Why depth actual: ${depth}
+- Último porqué registrado: ${lastWhy ?? "(ninguno)"}
+
+Mensaje más reciente del estudiante:
+"${args.studentMessage}"
+
+Whys registrados hasta ahora:
+${JSON.stringify(args.whys, null, 2)}
+
+Reglas:
+- Si el último porqué todavía no es una causa raíz accionable, pregunta un nuevo “¿por qué?” centrado en ESA rama.
+- Si el estudiante quedó a medio formular, ayúdalo a aterrizar la causa con 2 o 3 formulaciones plausibles y una sola pregunta final.
+- Si ya parece una causa raíz accionable/sistémica, puedes proponer cerrarla como raíz candidata.
+- No preguntes cosas genéricas que no tengan relación con la rama.
+- No uses frases rígidas tipo “esto puede estar contribuyendo...” si no aportan.
+- Responde breve, natural y docente.
+- Máximo 2 párrafos.
+- No uses JSON.
+
+Devuelve solo el mensaje final.
+`;
+
+  const text = await llmText(prompt);
+  return String(text ?? "").trim();
+}
+
 type IshikawaIntent =
   | "SHOW_MAP"
   | "HELP"
@@ -896,6 +1448,20 @@ type IshikawaIntent =
   | "NON_CAUSAL"
   | "CAUSE_OR_WHY"
   | "UNKNOWN";
+
+type IshikawaTurnAction =
+  | "show_map"
+  | "resume_branch"
+  | "switch_category"
+  | "continue_same_category"
+  | "ask_help_inside_branch"
+  | "ask_meta_inside_branch"
+  | "capture_why_answer"
+  | "capture_new_main_cause"
+  | "capture_problem"
+  | "advance_stage_intro"
+  | "close_branch"
+  | "fallback_llm";
 
 function classifyIntentRules(msgLower: string): IshikawaIntent {
   if (!msgLower.trim()) return "UNKNOWN";
@@ -1019,6 +1585,71 @@ function buildUnknownIntentMessage(state: IshikawaState) {
   };
 }
 
+function buildActiveBranchMetaResponse(args: {
+  state: IshikawaState;
+  studentMessage: string;
+}) {
+  const nextState = ensureDefaultCategoriesIfEmpty(safeClone(args.state));
+  const active = findActiveNodes(nextState);
+
+  if (!active?.cat) {
+    return {
+      assistantMessage:
+        "Claro. Para seguir bien el Ishikawa, dime primero en qué categoría quieres trabajar ahora.",
+      nextState,
+    };
+  }
+
+  const catName = active.cat.name ?? "la categoría actual";
+  const mainName = active.mc?.name ?? active.mc?.text ?? "esta causa principal";
+  const subName = active.sc?.name ?? active.sc?.text ?? "esta subcausa";
+
+  const msg = args.studentMessage.toLowerCase();
+
+  if (
+    msg.includes("avance") ||
+    msg.includes("que tenemos") ||
+    msg.includes("qué tenemos") ||
+    msg.includes("como va") ||
+    msg.includes("cómo va") ||
+    msg.includes("resumen")
+  ) {
+    return {
+      assistantMessage:
+        `Hasta ahora estamos trabajando en **${catName}**` +
+        (active.mc ? `, dentro de la causa principal **${mainName}**` : "") +
+        (active.sc ? `, y la subcausa activa es **${subName}**.` : ".") +
+        `\n\nSi quieres, seguimos profundizando esta misma rama o cambiamos a otra categoría.`,
+      nextState,
+    };
+  }
+
+  if (
+    msg.includes("ya terminamos") ||
+    msg.includes("cerramos") ||
+    msg.includes("ya podemos pasar") ||
+    msg.includes("pasamos")
+  ) {
+    return {
+      assistantMessage:
+        `Podemos cerrarla solo si ya llegamos a una causa suficientemente concreta y accionable.\n\n` +
+        `En este momento estamos en **${catName} → ${mainName}**` +
+        (active.sc ? ` → ${subName}` : "") +
+        `.\n\nSi quieres, te ayudo a decidir si esta rama ya está lista o si falta un porqué más.`,
+      nextState,
+    };
+  }
+
+  return {
+    assistantMessage:
+      `Te sigo. Ahora mismo estamos en **${catName}**` +
+      (active.mc ? `, trabajando **${mainName}**` : "") +
+      (active.sc ? ` y la subcausa **${subName}**` : "") +
+      `.\n\nDime si quieres: continuar esta rama, cerrar esta subcausa o cambiar de categoría.`,
+    nextState,
+  };
+}
+
 function buildLLMStateContext(state: IshikawaState) {
   const cursor = state.cursor;
 
@@ -1071,10 +1702,80 @@ function buildLLMStateContext(state: IshikawaState) {
   };
 }
 
+function resolveIshikawaTurnAction(args: {
+  studentMessage: string;
+  state: IshikawaState;
+  intent: IshikawaIntent;
+}) : IshikawaTurnAction {
+  const text = (args.studentMessage ?? "").trim();
+  const lower = text.toLowerCase();
+  const state = ensureDefaultCategoriesIfEmpty(args.state);
+  const active = findActiveNodes(state);
+  const hasProblem =
+    typeof state.problem === "string"
+      ? state.problem.trim().length > 0
+      : typeof state.problem?.text === "string"
+        ? state.problem.text.trim().length > 0
+        : false;
+
+  const whyIntent = classifyWhyIntent(text);
+  const alreadyInIshikawa = hasAnyIshikawaWork(state);
+
+  if (!hasProblem) return "capture_problem";
+
+  if (args.intent === "SHOW_MAP") return "show_map";
+
+  if (!alreadyInIshikawa && args.intent === "ADVANCE_STAGE") {
+    return "advance_stage_intro";
+  }
+
+  if (active?.sc) {
+    if (whyIntent === "switch_context") return "switch_category";
+    if (whyIntent === "meta_process") return "ask_meta_inside_branch";
+    if (whyIntent === "ask_guidance" || whyIntent === "ask_example") {
+      return "ask_help_inside_branch";
+    }
+
+    if (!isNonCausalMessage(text)) {
+      return "capture_why_answer";
+    }
+
+    return "fallback_llm";
+  }
+
+  if (alreadyInIshikawa && looksLikeSwitchCategoryIntent(text)) {
+    return "switch_category";
+  }
+
+  if (alreadyInIshikawa && looksLikeContinueSameCategoryIntent(text)) {
+    return "continue_same_category";
+  }
+
+  if (args.intent === "HELP") {
+    return active?.mc ? "ask_help_inside_branch" : "fallback_llm";
+  }
+
+  if (args.intent === "CLOSE_BRANCH") {
+    return "close_branch";
+  }
+
+  if (alreadyInIshikawa && !isNonCausalMessage(text)) {
+    return "capture_new_main_cause";
+  }
+
+  return "fallback_llm";
+}
+
 
 export async function POST(req: Request) {
   try {
     const authed = await requireUser(req);
+
+    const gate = await assertChatAccess(req, authed);
+    if (!gate.ok) {
+      return failResponse(gate.reason, gate.message, 403);
+    }
+
     const userId = authed.userId;
 
     const { data: profile, error: profileError } = await supabaseServer
@@ -1097,23 +1798,40 @@ export async function POST(req: Request) {
       email: profile?.email ?? authed.email ?? null,
     });
 
-    const body = await req.json().catch(() => null);
-    const studentMessage = (body?.studentMessage ?? "").toString();
-    const ishikawaState = body?.ishikawaState as IshikawaState | null;
-    const caseContext = body?.caseContext ?? null;
-    const stage1Summary = body?.stage1Summary ?? null;
-    const brainstormState = body?.brainstormState ?? null;
+    const rawBody = await req.json().catch(() => null);
+    const parsedBody = BodySchema.safeParse(rawBody);
 
-    if (!studentMessage.trim()) {
-    return failResponse("BAD_REQUEST", "Mensaje vacío", 400);
+    if (!parsedBody.success) {
+      return failResponse(
+        "BAD_REQUEST",
+        parsedBody.error.issues[0]?.message ?? "Payload inválido para Ishikawa.",
+        400
+      );
     }
-    if (!ishikawaState) {
-    return failResponse("BAD_REQUEST", "Falta ishikawaState", 400);
-    }
+
+    const studentMessage = parsedBody.data.studentMessage;
+    const ishikawaState = parsedBody.data.ishikawaState;
+    const caseContext = parsedBody.data.caseContext ?? null;
+    const stage1Summary = parsedBody.data.stage1Summary ?? null;
+    const brainstormState = parsedBody.data.brainstormState ?? null;
+    const recentMessages = parsedBody.data.recentMessages ?? [];
 
     const msgLower = studentMessage.trim().toLowerCase();
 
     const intent = await classifyIntent(studentMessage);
+
+    const turnAction = resolveIshikawaTurnAction({
+      studentMessage,
+      state: ishikawaState,
+      intent,
+    });
+
+    logIshikawaDebug("TURN_CLASSIFIED", {
+      studentMessage,
+      intent,
+      turnAction,
+      cursor: ishikawaState.cursor ?? null,
+    });
 
     // ✅ Si la intención quedó "UNKNOWN", NO dispares el prompt gigante.
     // Mejor aclaramos de forma fluida y seguimos sin romper el estado.
@@ -1134,27 +1852,31 @@ export async function POST(req: Request) {
         : ishikawaState.problem?.text ?? "";
 
     const ctxProblem =
-      (typeof caseContext?.problem === "string" ? caseContext.problem : "") ||
-      (typeof caseContext?.problemText === "string" ? caseContext.problemText : "") ||
-      (typeof caseContext?.problema === "string" ? caseContext.problema : "") ||
-      (typeof stage1Summary?.problem === "string" ? stage1Summary.problem : "") ||
-      (typeof stage1Summary?.problemText === "string" ? stage1Summary.problemText : "") ||
-      (typeof stage1Summary?.problema === "string" ? stage1Summary.problema : "");
+      getStringField(caseContext, "problem", "problemText", "problema") ??
+      getStringField(stage1Summary, "problem", "problemText", "problema") ??
+      "";
 
     if (!currentProblem.trim() && ctxProblem.trim()) {
       ishikawaState.problem = { text: ctxProblem.trim() };
     }
 
-    if (intent === "SHOW_MAP") {
+    if (turnAction === "show_map") {
       const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
+      const currentCategoryName = getCategoryDisplayName(nextState, nextState.cursor?.categoryId);
+
+      const followUp =
+        currentCategoryName
+          ? `\n\n👉 Si quieres, podemos continuar ahora mismo en **${currentCategoryName}** agregando otra causa principal.`
+          : "";
+
       return ok({
-        assistantMessage: buildIshikawaMap(nextState),
+        assistantMessage: buildIshikawaMap(nextState) + followUp,
         updates: { nextState },
       });
     }
 
     // 0) Si el estudiante está confirmando avanzar a Etapa 4, damos introducción y arrancamos
-    if (intent === "ADVANCE_STAGE" && !hasAnyIshikawaWork(ishikawaState)) {
+    if (turnAction === "advance_stage_intro") {
       const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
 
       const problemText =
@@ -1184,6 +1906,146 @@ export async function POST(req: Request) {
     const msg = studentMessage.trim().toLowerCase();
     const alreadyInIshikawa = hasAnyIshikawaWork(ishikawaState);
 
+    const continuationCategoryId = resolveContinuationCategoryId(
+      ishikawaState,
+      studentMessage
+    );
+
+    const explicitSwitchCategoryId = detectExplicitCategoryId(
+      ishikawaState,
+      studentMessage
+    );
+
+    const activeNodes = findActiveNodes(ishikawaState);
+
+    const shouldRunContextualBranchIntent =
+      Boolean(activeNodes?.sc) &&
+      (
+        Boolean(explicitSwitchCategoryId) ||
+        /(?:categoria|categoría|rama|sigamos|continuemos|pasemos|ahora|trabaj|vamos)/i.test(
+          studentMessage
+        )
+      );
+
+    const contextualBranchIntent = shouldRunContextualBranchIntent
+      ? await classifyContextualBranchIntent({
+          studentMessage,
+          state: ishikawaState,
+          recentMessages,
+        })
+      : null;
+
+    logIshikawaDebug("BRANCH_CONTEXT", {
+      shouldRunContextualBranchIntent,
+      contextualBranchIntent,
+      explicitSwitchCategoryId,
+      continuationCategoryId,
+      cursor: ishikawaState.cursor ?? null,
+    });
+
+    const wantsSwitchCategory =
+      alreadyInIshikawa &&
+      (
+        looksLikeSwitchCategoryIntent(studentMessage) ||
+        looksLikeCategoryNavigationMessage(studentMessage, ishikawaState) ||
+        contextualBranchIntent === "SWITCH_CATEGORY"
+      );
+
+    if (wantsSwitchCategory) {
+      const switchResponse = buildSwitchCategoryResponse(
+        ishikawaState,
+        explicitSwitchCategoryId
+      );
+    
+      logIshikawaDebug("SWITCH_CATEGORY", {
+        studentMessage,
+        explicitSwitchCategoryId,
+        resolvedCategoryName:
+          ishikawaState.categories.find((c) => c.id === explicitSwitchCategoryId)?.name ?? null,
+        cursorBefore: ishikawaState.cursor ?? null,
+        cursorAfter: switchResponse.nextState.cursor ?? null,
+      });
+
+      return ok({
+        assistantMessage: switchResponse.assistantMessage,
+        updates: { nextState: switchResponse.nextState },
+      });
+    }
+
+    const wantsContinueSameCategory =
+      alreadyInIshikawa &&
+      (
+        looksLikeContinueSameCategoryIntent(studentMessage) ||
+        (
+          Boolean(continuationCategoryId) &&
+          (
+            msg.includes("continuemos") ||
+            msg.includes("continuar") ||
+            msg.includes("sigamos") ||
+            msg.includes("seguimos") ||
+            msg.includes("agregar otra causa") ||
+            msg.includes("otra causa")
+          )
+        )
+      );
+
+    if (wantsContinueSameCategory && continuationCategoryId) {
+      const nextState = ensureDefaultCategoriesIfEmpty(safeClone(ishikawaState));
+      const cat = nextState.categories.find((c) => c.id === continuationCategoryId);
+
+      if (cat) {
+        const mainCauseCandidate = extractMainCauseCandidateFromContinuationMessage(studentMessage);
+
+        // Caso A: el estudiante solo indicó que quiere seguir en esa categoría
+        if (!mainCauseCandidate) {
+          nextState.cursor = { categoryId: cat.id };
+
+          return ok({
+            assistantMessage:
+              `Perfecto. Continuemos dentro de **${cat.name}**.\n\n` +
+              `Ahora dime **otra causa principal** de esa categoría que también esté contribuyendo al problema.\n\n` +
+              `Puede ser una idea breve y yo te ayudo a aterrizarla si hace falta.`,
+            updates: { nextState },
+          });
+        }
+
+        // Caso B: en el mismo mensaje ya propuso la nueva causa principal
+        const duplicate = (cat.mainCauses ?? []).some((mc) => {
+          const current = (mc.name ?? mc.text ?? "").toString().trim().toLowerCase();
+          return current === mainCauseCandidate.trim().toLowerCase();
+        });
+
+        if (!duplicate) {
+          const newMain = createMainCauseNode(mainCauseCandidate, `mc_${cat.id}`);
+          cat.mainCauses = [...(cat.mainCauses ?? []), newMain];
+          nextState.cursor = { categoryId: cat.id, mainCauseId: newMain.id };
+
+          return ok({
+            assistantMessage:
+              `Bien. Tomo **${mainCauseCandidate}** como una nueva **causa principal** dentro de **${cat.name}**.\n\n` +
+              `Ahora vayamos un nivel más abajo: ¿**por qué ocurre** ${mainCauseCandidate.toLowerCase()} en tu caso?`,
+            updates: { nextState },
+          });
+        }
+
+        // Caso C: ya existe; retomamos esa rama
+        const existing = (cat.mainCauses ?? []).find((mc) => {
+          const current = (mc.name ?? mc.text ?? "").toString().trim().toLowerCase();
+          return current === mainCauseCandidate.trim().toLowerCase();
+        });
+
+        if (existing) {
+          nextState.cursor = { categoryId: cat.id, mainCauseId: existing.id };
+
+          return ok({
+            assistantMessage:
+              `Esa causa ya la tenemos dentro de **${cat.name}**.\n\n` +
+              `Sigamos profundizando esa misma rama: ¿**por qué ocurre** ${mainCauseCandidate.toLowerCase()} en tu caso?`,
+            updates: { nextState },
+          });
+        }
+      }
+    }
 
     // ✅ FAST-PATH: si ya estamos en Ishikawa y el mensaje es corto, evitamos Gemini
     if (alreadyInIshikawa && isShortFastPathCandidate(studentMessage)) {
@@ -1209,21 +2071,92 @@ export async function POST(req: Request) {
       const active = findActiveNodes(nextState);
       if (active?.sc) {
         const sc = active.sc;
-        const whysArr = (sc.whys ?? []).map((w) => (typeof w === "string" ? w : (w.text ?? ""))).filter(Boolean);
+        const whysArr = sanitizeWhyList(sc.whys);
 
         const answerRaw = studentMessage.trim();
+        const whyIntent = classifyWhyIntent(answerRaw);
 
-        // 🚫 No es causa (navegación / meta / control)
-        if (isNonCausalMessage(answerRaw)) {
+        logIshikawaDebug("ACTIVE_BRANCH_FAST_PATH", {
+          answerRaw,
+          whyIntent,
+          contextualBranchIntent,
+          category: active.cat.name ?? null,
+          mainCause: active.mc.name ?? active.mc.text ?? null,
+          subCause: sc.name ?? sc.text ?? null,
+          currentWhyDepth: whysArr.length,
+        });
+
+        // 1) Cambio de contexto/categoría: no tratarlo como causa
+        if (
+          whyIntent === "switch_context" ||
+          contextualBranchIntent === "SWITCH_CATEGORY"
+        ) {
+          const switchResponse = buildSwitchCategoryResponse(
+            nextState,
+            detectExplicitCategoryId(nextState, answerRaw)
+          );
+
           return ok({
-            assistantMessage:
-              "Perfecto 👍 Antes de cambiar de categoría, terminemos de **cerrar esta causa**. " +
-              "Dime **por qué ocurre** este problema en la práctica (una razón concreta que genere el desorden).",
+            assistantMessage: switchResponse.assistantMessage,
+            updates: { nextState: switchResponse.nextState },
+          });
+        }
+
+        // 2) Consulta meta del proceso: responder según la rama activa
+        if (
+            whyIntent === "meta_process" ||
+            contextualBranchIntent === "META_PROCESS"
+          ) {
+          const meta = buildActiveBranchMetaResponse({
+            state: nextState,
+            studentMessage: answerRaw,
+          });
+
+          return ok({
+            assistantMessage: meta.assistantMessage,
+            updates: { nextState: meta.nextState },
+          });
+        }
+
+        // 3) El estudiante está pidiendo ayuda o ejemplos, no respondiendo una causa
+        if (
+            whyIntent === "ask_guidance" ||
+            whyIntent === "ask_example" ||
+            contextualBranchIntent === "ASK_GUIDANCE"
+          ) {
+          const currentWhys = sanitizeWhyList(sc.whys);
+
+          const guidedHelp = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            categoryName: active.cat.name ?? "Sin categoría",
+            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
+            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
+            whys: currentWhys,
+            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+          });
+
+          return ok({
+            assistantMessage: sanitizeStudentPlaceholder(
+              guidedHelp || buildClarifyWhyMessage(answerRaw),
+              preferredFirstName
+            ),
             updates: { nextState },
           });
         }
 
-        // 🚫 Es demasiado vaga
+        // 4) Mensaje de navegación/control residual
+        if (isNonCausalMessage(answerRaw)) {
+          const meta = buildActiveBranchMetaResponse({
+            state: nextState,
+            studentMessage: answerRaw,
+          });
+
+          return ok({
+            assistantMessage: meta.assistantMessage,
+            updates: { nextState: meta.nextState },
+          });
+        }
+        // 3) Muy vaga todavía
         if (isVagueWhyAnswer(answerRaw)) {
           return ok({
             assistantMessage: buildClarifyWhyMessage(answerRaw),
@@ -1231,8 +2164,25 @@ export async function POST(req: Request) {
           });
         }
 
-        // ✅ Recién aquí es una causa válida
-        const answer = normalizeWhyText(answerRaw);
+        // 4) Sanitizar antes de persistir
+        const cleanWhy = sanitizeWhyCandidate(answerRaw);
+        if (!cleanWhy) {
+          return ok({
+            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            updates: { nextState },
+          });
+        }
+
+        const answer = normalizeWhyText(cleanWhy);
+
+        // 5) Debe ser una causa accionable real, no texto meta
+        if (!isActionableWhyText(answer)) {
+          return ok({
+            assistantMessage: buildClarifyWhyMessage(answerRaw),
+            updates: { nextState },
+          });
+        }
+
         const alreadyExists = whysArr.some(
           (w) => w.toLowerCase() === answer.toLowerCase()
         );
@@ -1241,7 +2191,6 @@ export async function POST(req: Request) {
           whysArr.push(answer);
         }
 
-        // Guardar de vuelta respetando tipo IshikawaWhy
         sc.whys = whysArr;
 
         const depth = whysArr.length;
@@ -1260,9 +2209,21 @@ export async function POST(req: Request) {
           });
         }
 
-        // Si aún no llegamos, seguimos preguntando “por qué”
+        // Si aún no llegamos, seguimos profundizando con ayuda contextual real
+        const guidedMessage = await buildGuidedWhyStep({
+          studentMessage,
+          categoryName: active.cat.name ?? "Sin categoría",
+          mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
+          subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
+          whys: whysArr,
+          maxWhyDepth: max,
+        });
+
         return ok({
-          assistantMessage: buildVariedFollowUp(studentMessage),
+          assistantMessage: sanitizeStudentPlaceholder(
+            guidedMessage || buildClarifyWhyMessage(studentMessage),
+            preferredFirstName
+          ),
           updates: { nextState },
         });
       }
@@ -1298,13 +2259,61 @@ export async function POST(req: Request) {
     );
 
     if (intent === "HELP" && alreadyInIshikawa) {
-    return ok({
-        assistantMessage:
-            "📌 Estamos en Ishikawa y **no reiniciamos** la etapa.\n" +
-            "¿Quieres que sigamos con la **misma rama** (recomendado) o prefieres cambiar de categoría/causa?",
+      const active = findActiveNodes(ishikawaState);
 
+      // Si hay una rama activa, la ayuda debe ocurrir DENTRO de esa rama,
+      // no redirigir al estudiante fuera del flujo.
+      if (active?.cat && active?.mc && active?.sc) {
+        const catName = active.cat.name ?? "la categoría actual";
+        const mainName = active.mc.name ?? active.mc.text ?? "esta causa principal";
+        const subName = active.sc.name ?? active.sc.text ?? "esta subcausa";
+
+        const currentWhys = sanitizeWhyList(active.sc.whys);
+        const lastWhy = currentWhys.length > 0 ? currentWhys[currentWhys.length - 1] : null;
+
+        const guidancePrompt = `
+    Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
+
+    El estudiante está dentro de una rama activa y pidió ayuda para formular mejor la causa raíz.
+    NO debes sacarlo del flujo ni preguntarle si quiere cambiar de categoría.
+    Debes ayudarlo a aterrizar la MISMA rama actual.
+
+    Contexto de la rama:
+    - Categoría: ${catName}
+    - Causa principal: ${mainName}
+    - Subcausa: ${subName}
+    - Último porqué registrado: ${lastWhy ?? "(ninguno)"}
+
+    Mensaje del estudiante:
+    "${studentMessage}"
+
+    Tu objetivo:
+    - interpretar qué quiso decir,
+    - ayudarle a aterrizar la causa,
+    - proponer 2 o 3 formulaciones plausibles y accionables si hace falta,
+    - mantener la conversación natural,
+    - terminar con una sola pregunta concreta para que el estudiante elija o precise.
+
+    Responde SOLO en texto, no JSON.
+    `;
+
+        const guidedHelp = await llmText(guidancePrompt);
+
+        return ok({
+          assistantMessage: sanitizeStudentPlaceholder(
+            String(guidedHelp ?? "").trim(),
+            preferredFirstName
+          ),
+          updates: { nextState: ishikawaState },
+        });
+      }
+
+      return ok({
+        assistantMessage:
+          "Claro. Sigamos paso a paso dentro del Ishikawa.\n\n" +
+          "Cuéntame una causa concreta del problema y yo te ayudo a ubicarla y profundizarla con los porqués.",
         updates: { nextState: ishikawaState },
-    });
+      });
     }
 
     const problemText =
@@ -1313,9 +2322,9 @@ export async function POST(req: Request) {
         : ishikawaState.problem?.text ?? "";
 
     const minimalContext = {
-      product: caseContext?.product ?? caseContext?.producto ?? null,
-      sector: caseContext?.sector ?? caseContext?.rubro ?? null,
-      areas: caseContext?.areas ?? caseContext?.area ?? null,
+      product: getStringField(caseContext, "product", "producto"),
+      sector: getStringField(caseContext, "sector", "rubro"),
+      areas: getStringField(caseContext, "areas", "area"),
       problem: problemText || null,
       cursor: ishikawaState.cursor ?? null,
     };
@@ -1442,9 +2451,12 @@ export async function POST(req: Request) {
     }
 
     Contexto mínimo:
-    ${JSON.stringify(minimalContext)}
+      ${JSON.stringify(minimalContext)}
 
-    Estado Ishikawa (solo lo necesario):
+      Contexto conversacional reciente (máximo 6 mensajes):
+      ${buildRecentMessagesDigest(recentMessages) || "(sin historial reciente)"}
+
+      Estado Ishikawa (solo lo necesario):
     ${JSON.stringify({
       minMainCausesPerCategory: ishikawaState.minMainCausesPerCategory,
       minSubCausesPerMain: ishikawaState.minSubCausesPerMain,
@@ -1551,19 +2563,42 @@ Responde SOLO con JSON válido (sin markdown).
       }
     }
 
-    const merged = mergeIshikawaState(ishikawaState, parsed.updates.nextState as IshikawaState);
+    const merged = mergeIshikawaState(
+      ishikawaState,
+      parsed.updates.nextState as IshikawaState
+    );
+
+    const sanitizedMerged = sanitizeIshikawaStateForWhyQuality(merged);
 
     return ok({
       assistantMessage: sanitizeStudentPlaceholder(
         String(parsed.assistantMessage ?? ""),
         preferredFirstName
       ),
-      updates: { nextState: merged },
+      updates: { nextState: sanitizedMerged },
     });
 
-  } catch (e: any) {
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido.", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
+      );
+    }
+
     const requestId = makeRequestId();
-    console.error("[ISHIKAWA] INTERNAL", { requestId, error: e });
+    console.error("[ISHIKAWA] INTERNAL", { requestId, error: err });
 
     return failResponse(
       "INTERNAL",

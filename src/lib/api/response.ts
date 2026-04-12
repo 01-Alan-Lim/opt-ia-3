@@ -15,8 +15,8 @@ export type ApiErrorCode =
   | "COHORT_INACTIVE"
   | "ACCESS_NOT_STARTED"
   | "ACCESS_EXPIRED"
-  | "PAYLOAD_TOO_LARGE";
-
+  | "PAYLOAD_TOO_LARGE"
+  | "AUTH_UPSTREAM_TIMEOUT";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

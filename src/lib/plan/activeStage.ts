@@ -49,6 +49,54 @@ type LatestArtifactRow = {
   status: string | null;
 };
 
+type FodaQuadrant = "F" | "D" | "O" | "A";
+
+function parseIsoMillis(value: string | null | undefined) {
+  if (!value) return 0;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function parseFodaCount(raw: unknown) {
+  return Array.isArray(raw) ? raw.length : 0;
+}
+
+function getFodaStatePriority(stateJson: JsonMap | null) {
+  if (!stateJson || typeof stateJson !== "object") return -1;
+
+  const state = stateJson as Record<string, unknown>;
+  const rawItems =
+    state.items && typeof state.items === "object"
+      ? (state.items as Record<string, unknown>)
+      : null;
+
+  if (!rawItems) return -1;
+
+  const currentQuadrantRaw = state.currentQuadrant;
+  const currentQuadrant: FodaQuadrant =
+    currentQuadrantRaw === "F" ||
+    currentQuadrantRaw === "D" ||
+    currentQuadrantRaw === "O" ||
+    currentQuadrantRaw === "A"
+      ? currentQuadrantRaw
+      : "F";
+
+  const counts = {
+    F: parseFodaCount(rawItems.F),
+    D: parseFodaCount(rawItems.D),
+    O: parseFodaCount(rawItems.O),
+    A: parseFodaCount(rawItems.A),
+  };
+
+  const totalItems = counts.F + counts.D + counts.O + counts.A;
+  const completedQuadrants = [counts.F, counts.D, counts.O, counts.A].filter(
+    (count) => count >= 3
+  ).length;
+  const currentQuadrantCount = counts[currentQuadrant];
+
+  return totalItems * 100 + completedQuadrants * 10 + currentQuadrantCount;
+}
+
 const RESUME_GATE_BY_STAGE: Partial<
   Record<ActivePlanStage, { requiredStage: number; artifactType: string }>
 > = {
@@ -92,6 +140,31 @@ async function loadLatestStageState(
   userId: string,
   stage: number
 ): Promise<LatestStateRow | null> {
+  if (stage === 2) {
+    const { data, error } = await supabaseServer
+      .from("plan_stage_states")
+      .select("chat_id, state_json, updated_at")
+      .eq("user_id", userId)
+      .eq("stage", stage)
+      .order("updated_at", { ascending: false })
+      .limit(25);
+
+    if (error) throw error;
+    if (!data?.length) return null;
+
+    const bestRow = [...data].sort((a, b) => {
+      const priorityDiff =
+        getFodaStatePriority((b.state_json as JsonMap | null) ?? null) -
+        getFodaStatePriority((a.state_json as JsonMap | null) ?? null);
+
+      if (priorityDiff !== 0) return priorityDiff;
+
+      return parseIsoMillis(b.updated_at) - parseIsoMillis(a.updated_at);
+    })[0];
+
+    return bestRow ? (bestRow as LatestStateRow) : null;
+  }
+
   const { data, error } = await supabaseServer
     .from("plan_stage_states")
     .select("chat_id, state_json, updated_at")

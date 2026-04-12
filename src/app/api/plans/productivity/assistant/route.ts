@@ -5,8 +5,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
-import { ok, fail } from "@/lib/api/response";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { ok, fail, failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -194,7 +194,7 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
 
     const raw = await req.json().catch(() => null);
@@ -291,11 +291,43 @@ export async function POST(req: Request) {
       ),
       signals,
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "INTERNAL";
-    if (msg === "UNAUTHORIZED") {
-      return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
+  } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return NextResponse.json(
+        fail("UNAUTHORIZED", "Sesión inválida o ausente."),
+        { status: 401 }
+      );
     }
-    return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(
+        fail("FORBIDDEN_DOMAIN", "Correo no permitido."),
+        { status: 403 }
+      );
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        fail(
+          "AUTH_UPSTREAM_TIMEOUT",
+          "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+        ),
+        { status: 503 }
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      fail("INTERNAL", "Error interno."),
+      { status: 500 }
+    );
   }
 }

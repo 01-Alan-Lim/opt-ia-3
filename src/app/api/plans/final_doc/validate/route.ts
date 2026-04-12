@@ -2,7 +2,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return fail(403, gate.reason, gate.message);
 
     const raw = await req.json().catch(() => null);
@@ -265,10 +266,38 @@ export async function POST(req: NextRequest) {
       versionSaved: { artifactId: versionArtifactId, versionNumber },
       hint: "Sube la versión 2 cuando ajustes las observaciones.",
     });
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    if (msg === "FORBIDDEN_DOMAIN") return fail(403, "FORBIDDEN_DOMAIN", "Dominio no permitido.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido.", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return failResponse(
+        "BAD_REQUEST",
+        err.issues[0]?.message ?? "Payload inválido.",
+        400,
+        err.flatten()
+      );
+    }
+
+    return failResponse(
+      "INTERNAL",
+      err instanceof Error ? err.message : "Error interno.",
+      500
+    );
   }
 }

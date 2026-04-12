@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { supabaseServer } from "@/lib/supabaseServer";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { ok, fail } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
     const authed = await requireUser(request);
 
     // ✅ Gate server-side (misma fuente de verdad que /api/chat)
-    const gate = await assertChatAccess(request);
+    const gate = await assertChatAccess(request, authed);
     if (!gate.ok) {
       return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
     }
@@ -444,25 +444,35 @@ Texto del plan del estudiante:
       }),
       { status: 200 }
     );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "INTERNAL";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
 
-    if (msg === "UNAUTHORIZED") {
+    if (authCode === "UNAUTHORIZED") {
       return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
     }
-    if (msg === "FORBIDDEN_DOMAIN") {
-      return NextResponse.json(fail("FORBIDDEN", "Acceso restringido a correos autorizados."), {
-        status: 403,
-      });
-    }
-    if (msg === "CHAT_NOT_FOUND") {
-      return NextResponse.json(fail("NOT_FOUND", "Chat no encontrado."), { status: 404 });
-    }
-    if (msg === "FORBIDDEN_CHAT") {
-      return NextResponse.json(fail("FORBIDDEN", "No tienes acceso a este chat."), { status: 403 });
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(fail("FORBIDDEN_DOMAIN", "Correo no permitido."), { status: 403 });
     }
 
-    console.error("Error en /api/plans/review:", e);
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        fail(
+          "AUTH_UPSTREAM_TIMEOUT",
+          "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+        ),
+        { status: 503 }
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten()),
+        { status: 400 }
+      );
+    }
+
+    console.error("Error en /api/plans/review:", err);
     return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
   }
 }

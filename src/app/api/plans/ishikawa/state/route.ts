@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return NextResponse.json({ ok: false, code: "FORBIDDEN", message: gate.message }, { status: 403 });
     }
@@ -195,8 +195,35 @@ export async function GET(req: NextRequest) {
       status: legacyRow.status ?? null,
       source: "legacy_artifact",
     });
-  } catch (e: any) {
-    return NextResponse.json(fail("INTERNAL", e?.message ?? "Error"), { status: 500 });
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(fail("FORBIDDEN_DOMAIN", "Correo no permitido."), { status: 403 });
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        fail(
+          "AUTH_UPSTREAM_TIMEOUT",
+          "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+        ),
+        { status: 503 }
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
   }
 }
 
@@ -347,7 +374,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return NextResponse.json({ ok: false, code: "FORBIDDEN", message: gate.message }, { status: 403 });
     }
@@ -412,7 +439,34 @@ export async function POST(req: NextRequest) {
     }
 
     return ok({ saved: true });
-  } catch (e: any) {
-    return NextResponse.json(fail("INTERNAL", e?.message ?? "Error"), { status: 500 });
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return NextResponse.json(fail("UNAUTHORIZED", "Sesión inválida o ausente."), { status: 401 });
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(fail("FORBIDDEN_DOMAIN", "Correo no permitido."), { status: 403 });
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        fail(
+          "AUTH_UPSTREAM_TIMEOUT",
+          "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+        ),
+        { status: 503 }
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(fail("INTERNAL", "Error interno."), { status: 500 });
   }
 }

@@ -2,7 +2,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -259,7 +260,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return NextResponse.json(
         { ok: false, code: gate.reason, message: gate.message },
@@ -537,27 +538,38 @@ DEVUELVE SOLO JSON con este formato exacto:
     responseData.assistantMessage = shortenAssistantMessage(softenedMessage);
 
     return NextResponse.json({ ok: true, data: responseData }, { status: 200 });
-  } catch (error: unknown) {
-    const err = error as { message?: string };
-    const msg = err?.message ?? "INTERNAL";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
 
-    if (msg === "UNAUTHORIZED") {
-      return NextResponse.json(
-        { ok: false, code: "UNAUTHORIZED", message: "Sesión inválida o ausente." },
-        { status: 401 }
+    if (authCode === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido.", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
       );
     }
 
-    if (msg === "FORBIDDEN_DOMAIN") {
-      return NextResponse.json(
-        { ok: false, code: "FORBIDDEN_DOMAIN", message: "Dominio no permitido." },
-        { status: 403 }
+    if (err instanceof z.ZodError) {
+      return failResponse(
+        "BAD_REQUEST",
+        err.issues[0]?.message ?? "Payload inválido.",
+        400,
+        err.flatten()
       );
     }
 
-    return NextResponse.json(
-      { ok: false, code: "INTERNAL", message: "Error interno.", detail: msg },
-      { status: 500 }
+    return failResponse(
+      "INTERNAL",
+      err instanceof Error ? err.message : "Error interno.",
+      500
     );
   }
 }

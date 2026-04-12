@@ -1,7 +1,8 @@
 // src/app/api/plans/productivity/route.ts
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 
@@ -9,6 +10,8 @@ export const runtime = "nodejs";
 
 type ApiErrorCode =
   | "UNAUTHORIZED"
+  | "FORBIDDEN_DOMAIN"
+  | "AUTH_UPSTREAM_TIMEOUT"
   | "BAD_REQUEST"
   | "DB_ERROR"
   | "FORBIDDEN";
@@ -58,111 +61,157 @@ const ARTIFACT_TYPE = "productivity_report";
 const STAGE = 1;
 
 export async function GET(req: Request) {
-  const authed = await requireUser(req).catch(() => null);
-  if (!authed) return err(401, "UNAUTHORIZED", "No autenticado.");
+  try {
+    const authed = await requireUser(req);
 
-  const url = new URL(req.url);
-  const parsed = GetQuerySchema.safeParse({
-    period: url.searchParams.get("period") ?? undefined,
-    chatId: url.searchParams.get("chatId") ?? undefined,
-  });
-  if (!parsed.success) {
-    return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
-  }
+    const gate = await assertChatAccess(req, authed);
+    if (!gate.ok) {
+      return err(403, "FORBIDDEN", gate.message);
+    }
 
-  const { period, chatId } = parsed.data;
-
-  // Si no mandan period, devolvemos el último (más reciente) por updated_at
-  let query = supabaseServer
-    .from(TABLE)
-    .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
-    .eq("user_id", authed.userId)
-    .eq("stage", STAGE)
-    .eq("artifact_type", ARTIFACT_TYPE)
-    .order("updated_at", { ascending: false })
-    .limit(1);
-
-  if (period) query = query.eq("period_key", period);
-  if (chatId) query = query.eq("chat_id", chatId);
-
-  const { data, error } = await query.maybeSingle();
-
-  if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
-
-  // ✅ Importante UX:
-  // Esta consulta se hace al cargar el chat para ver si ya existe un reporte.
-  // Si no existe aún, NO es un error real: devolvemos ok=true con exists=false
-  // para evitar 404 en el navegador y evitar que el front lo trate como fallo.
-  if (!data) {
-    return ok({
-      exists: false,
-      period_key: period ?? null,
-      chat_id: chatId ?? null,
-      report: null,
+    const url = new URL(req.url);
+    const parsed = GetQuerySchema.safeParse({
+      period: url.searchParams.get("period") ?? undefined,
+      chatId: url.searchParams.get("chatId") ?? undefined,
     });
-  }
+    if (!parsed.success) {
+      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
+    }
 
-  return ok(data);
+    const { period, chatId } = parsed.data;
+
+    let query = supabaseServer
+      .from(TABLE)
+      .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
+      .eq("user_id", authed.userId)
+      .eq("stage", STAGE)
+      .eq("artifact_type", ARTIFACT_TYPE)
+      .order("updated_at", { ascending: false })
+      .limit(1);
+
+    if (period) query = query.eq("period_key", period);
+    if (chatId) query = query.eq("chat_id", chatId);
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
+
+    if (!data) {
+      return ok({
+        exists: false,
+        period_key: period ?? null,
+        chat_id: chatId ?? null,
+        report: null,
+      });
+    }
+
+    return ok(data);
+  } catch (errValue: unknown) {
+    const authCode = getAuthErrorCode(errValue);
+
+    if (authCode === "UNAUTHORIZED") {
+      return err(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return err(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return err(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por timeout de autenticación."
+      );
+    }
+
+    return err(500, "DB_ERROR", "Error interno.");
+  }
 }
 
 export async function POST(req: Request) {
-  const authed = await requireUser(req).catch(() => null);
-  if (!authed) return err(401, "UNAUTHORIZED", "No autenticado.");
-
-  let body: unknown;
   try {
-    body = await req.json();
-  } catch {
-    return err(400, "BAD_REQUEST", "Body inválido (JSON).");
+    const authed = await requireUser(req);
+
+    const gate = await assertChatAccess(req, authed);
+    if (!gate.ok) {
+      return err(403, "FORBIDDEN", gate.message);
+    }
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return err(400, "BAD_REQUEST", "Body inválido (JSON).");
+    }
+
+    const parsed = PostBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+    }
+
+    const { chatId, payload } = parsed.data;
+
+    const costs = payload.costs ?? [];
+    const costTotal =
+      payload.cost_total_bs ??
+      (costs.length ? costs.reduce((acc, c) => acc + c.amount_bs, 0) : undefined);
+
+    const productivity =
+      payload.productivity ??
+      (payload.type === "monetaria" &&
+      typeof payload.income_bs === "number" &&
+      typeof costTotal === "number" &&
+      costTotal > 0
+        ? payload.income_bs / costTotal
+        : undefined);
+
+    const mergedPayload = {
+      ...payload,
+      costs: costs.length ? costs : undefined,
+      cost_total_bs: costTotal,
+      productivity,
+    };
+
+    const { data, error } = await supabaseServer
+      .from(TABLE)
+      .upsert(
+        {
+          user_id: authed.userId,
+          chat_id: chatId ?? null,
+          stage: STAGE,
+          artifact_type: ARTIFACT_TYPE,
+          period_key: payload.period_key,
+          status: "draft",
+          payload: mergedPayload,
+        },
+        { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
+      )
+      .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
+      .single();
+
+    if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
+
+    return ok(data);
+  } catch (errValue: unknown) {
+    const authCode = getAuthErrorCode(errValue);
+
+    if (authCode === "UNAUTHORIZED") {
+      return err(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return err(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return err(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por timeout de autenticación."
+      );
+    }
+
+    return err(500, "DB_ERROR", "Error interno.");
   }
-
-  const parsed = PostBodySchema.safeParse(body);
-  if (!parsed.success) {
-    return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
-  }
-
-  const { chatId, payload } = parsed.data;
-
-  // Normalización mínima en server para evitar inconsistencias
-  const costs = payload.costs ?? [];
-  const costTotal =
-    payload.cost_total_bs ??
-    (costs.length ? costs.reduce((acc, c) => acc + c.amount_bs, 0) : undefined);
-
-  const productivity =
-    payload.productivity ??
-    (payload.type === "monetaria" && typeof payload.income_bs === "number" && typeof costTotal === "number" && costTotal > 0
-      ? payload.income_bs / costTotal
-      : undefined);
-
-  const mergedPayload = {
-    ...payload,
-    costs: costs.length ? costs : undefined,
-    cost_total_bs: costTotal,
-    productivity,
-  };
-
-  // Upsert por (user_id, artifact_type, period_key) usando el índice único parcial que creaste.
-  // Nota: Supabase upsert requiere onConflict con columnas existentes. Como el unique es índice parcial,
-  // igual puede funcionar con onConflict en (user_id, artifact_type, period_key).
-  const { data, error } = await supabaseServer
-    .from(TABLE)
-    .upsert(
-      {
-        user_id: authed.userId,
-        chat_id: chatId ?? null,
-        stage: STAGE,
-        artifact_type: ARTIFACT_TYPE,
-        period_key: payload.period_key,
-        status: "draft",
-        payload: mergedPayload,
-      },
-      { onConflict: PLAN_STAGE_ARTIFACTS_ON_CONFLICT }
-    )
-    .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
-    .single();
-
-  if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
-
-  return ok(data);
 }

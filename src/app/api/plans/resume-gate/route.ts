@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
@@ -125,13 +125,25 @@ export async function GET(req: NextRequest) {
       },
       { status: 200 }
     );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "INTERNAL";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
 
-    if (msg === "UNAUTHORIZED") {
+    if (authCode === "UNAUTHORIZED") {
       return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
     }
 
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }

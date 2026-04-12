@@ -1,7 +1,8 @@
 // src/app/api/plans/productivity/validate/route.ts
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 
@@ -9,6 +10,8 @@ export const runtime = "nodejs";
 
 type ApiErrorCode =
   | "UNAUTHORIZED"
+  | "FORBIDDEN_DOMAIN"
+  | "AUTH_UPSTREAM_TIMEOUT"
   | "BAD_REQUEST"
   | "NOT_FOUND"
   | "DB_ERROR"
@@ -134,62 +137,63 @@ function scoreProductivity(payload: any) {
 }
 
 export async function POST(req: Request) {
-  const authed = await requireUser(req).catch(() => null);
-  if (!authed) return err(401, "UNAUTHORIZED", "No autenticado.");
-
-  let body: unknown;
   try {
-    body = await req.json();
-  } catch {
-    return err(400, "BAD_REQUEST", "Body inválido (JSON).");
-  }
+    const authed = await requireUser(req);
 
-  const parsed = BodySchema.safeParse(body);
-  if (!parsed.success) {
-    return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
-  }
+    const gate = await assertChatAccess(req, authed);
+    if (!gate.ok) {
+      return err(403, gate.reason as ApiErrorCode, gate.message);
+    }
 
-  const { period } = parsed.data;
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return err(400, "BAD_REQUEST", "Body inválido (JSON).");
+    }
 
-  const { data: row, error: getErr } = await supabaseServer
-    .from(TABLE)
-    .select("id,status,payload,period_key,chat_id")
-    .eq("user_id", authed.userId)
-    .eq("stage", STAGE)
-    .eq("artifact_type", ARTIFACT_TYPE)
-    .eq("period_key", period)
-    .maybeSingle();
+    const parsed = BodySchema.safeParse(body);
+    if (!parsed.success) {
+      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+    }
 
-  if (getErr) return err(500, "DB_ERROR", `DB error: ${getErr.message}`);
-  if (!row) return err(404, "NOT_FOUND", "No existe draft para validar en ese periodo.");
+    const { period } = parsed.data;
 
-  const { ready, issues, score } = scoreProductivity(row.payload);
+    const { data: row, error: getErr } = await supabaseServer
+      .from(TABLE)
+      .select("id,status,payload,period_key,chat_id")
+      .eq("user_id", authed.userId)
+      .eq("stage", STAGE)
+      .eq("artifact_type", ARTIFACT_TYPE)
+      .eq("period_key", period)
+      .maybeSingle();
 
-  if (!ready) {
-    return NextResponse.json(
-      {
-        ok: false,
-        code: "NOT_READY",
-        message: "Aún falta información o hay incoherencias.",
-        details: { issues, score },
-      },
-      { status: 422 }
-    );
-  }
+    if (getErr) return err(500, "DB_ERROR", `DB error: ${getErr.message}`);
+    if (!row) return err(404, "NOT_FOUND", "No existe draft para validar en ese periodo.");
 
-  const { data: updated, error: updErr } = await supabaseServer
-    .from(TABLE)
-    .update({ status: "validated", score })
-    .eq("id", row.id)
-    .select("id,status,score,period_key,payload,updated_at")
-    .single();
+    const { ready, issues, score } = scoreProductivity(row.payload);
 
-  if (updErr) return err(500, "DB_ERROR", `DB error: ${updErr.message}`);
+    if (!ready) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "NOT_READY",
+          message: "Aún falta información o hay incoherencias.",
+          details: { issues, score },
+        },
+        { status: 422 }
+      );
+    }
 
-    // -----------------------------
-    // Guardar evaluación IA (rúbrica) para dashboard docente
-    // -----------------------------
-    // versionado: last(version)+1 para user+stage+artifact+period
+    const { data: updated, error: updErr } = await supabaseServer
+      .from(TABLE)
+      .update({ status: "validated", score })
+      .eq("id", row.id)
+      .select("id,status,score,period_key,payload,updated_at")
+      .single();
+
+    if (updErr) return err(500, "DB_ERROR", `DB error: ${updErr.message}`);
+
     const { data: lastEval, error: lastEvalErr } = await supabaseServer
       .from(EVAL_TABLE)
       .select("version")
@@ -207,13 +211,11 @@ export async function POST(req: Request) {
 
     const nextVersion = (lastEval?.version ?? 0) + 1;
 
-    // Tu score ya está ponderado a 100 (40/30/30) => total 0-100
-    const coherenceWeighted = score.coherence;     // 0..40
-    const typeWeighted = score.type_choice;        // 0..30
-    const clarityWeighted = score.clarity;         // 0..30
-    const totalWeighted = score.total;             // 0..100
+    const coherenceWeighted = score.coherence;
+    const typeWeighted = score.type_choice;
+    const clarityWeighted = score.clarity;
+    const totalWeighted = score.total;
 
-    // Labels por criterio usando % interno del criterio
     const coherenceLabel = labelFromPct(pctFromWeighted(coherenceWeighted, 40));
     const typeLabel = labelFromPct(pctFromWeighted(typeWeighted, 30));
     const clarityLabel = labelFromPct(pctFromWeighted(clarityWeighted, 30));
@@ -235,7 +237,7 @@ export async function POST(req: Request) {
       criteria: {
         coherencia_logica: {
           weight: 40,
-          score_weighted: coherenceWeighted, // puntos ya ponderados
+          score_weighted: coherenceWeighted,
           label: coherenceLabel,
         },
         seleccion_tipo: {
@@ -252,17 +254,22 @@ export async function POST(req: Request) {
       issues: issues ?? [],
     };
 
+    const chatId =
+      row && typeof row === "object" && "chat_id" in row
+        ? (row.chat_id as string | null)
+        : null;
+
     const { error: insEvalErr } = await supabaseServer.from(EVAL_TABLE).insert({
       user_id: authed.userId,
-      chat_id: (row as any)?.chat_id ?? null,
+      chat_id: chatId,
       stage: STAGE,
       artifact_type: ARTIFACT_TYPE,
-      artifact_id: updated.id, // referencia al artefacto validado
+      artifact_id: updated.id,
       period_key: period,
       version: nextVersion,
       rubric_json,
       result_json,
-      total_score: totalWeighted, // 0-100
+      total_score: totalWeighted,
       total_label: totalLabel,
     });
 
@@ -272,7 +279,7 @@ export async function POST(req: Request) {
 
     const next = await advancePlanStage({
       userId: authed.userId,
-      chatId: row.chat_id ?? null,
+      chatId: chatId,
       fromStage: STAGE,
     });
 
@@ -285,4 +292,29 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
+  } catch (errValue: unknown) {
+    const authCode = getAuthErrorCode(errValue);
+
+    if (authCode === "UNAUTHORIZED") {
+      return err(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return err(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return err(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    if (errValue instanceof z.ZodError) {
+      return err(400, "BAD_REQUEST", errValue.issues[0]?.message ?? "Payload inválido.");
+    }
+
+    return err(500, "DB_ERROR", "Error interno.");
+  }
 }

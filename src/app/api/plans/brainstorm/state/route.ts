@@ -2,10 +2,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import {
+  mergeBrainstormState,
+  sanitizeBrainstormState,
+} from "@/lib/plan/brainstormFlow";
 
 export const runtime = "nodejs";
 
@@ -48,14 +52,19 @@ export async function GET(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return fail(403, "FORBIDDEN", gate.message);
 
     const parsed = QuerySchema.safeParse(
       Object.fromEntries(new URL(req.url).searchParams)
     );
+
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
+      return fail(
+        400,
+        "BAD_REQUEST",
+        parsed.error.issues[0]?.message ?? "Query inválida."
+      );
     }
 
     const requestedChatId = parsed.data.chatId ?? null;
@@ -63,12 +72,19 @@ export async function GET(req: NextRequest) {
     if (requestedChatId) {
       const access = await assertChatOwner(user.userId, requestedChatId);
       if (!access.ok) {
-        return fail(access.status, access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message);
+        return fail(
+          access.status,
+          access.status === 404 ? "NOT_FOUND" : "FORBIDDEN",
+          access.message
+        );
       }
     }
 
-    // 1) Fuente principal: plan_stage_states
-    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null; updated_at: string | null } | null = null;
+    let stateRow: {
+      state_json: Record<string, unknown> | null;
+      chat_id: string | null;
+      updated_at: string | null;
+    } | null = null;
 
     if (requestedChatId) {
       const direct = await supabaseServer
@@ -109,7 +125,7 @@ export async function GET(req: NextRequest) {
           ok: true,
           exists: true,
           chatId: stateRow.chat_id ?? null,
-          state: stateRow.state_json,
+          state: sanitizeBrainstormState(stateRow.state_json),
           updatedAt: stateRow.updated_at ?? null,
           source: "stage_state",
         },
@@ -117,8 +133,11 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 2) Compatibilidad temporal: fallback legacy desde artifacts
-    let legacyRow: { payload: Record<string, unknown> | null; chat_id: string | null; updated_at: string | null } | null = null;
+    let legacyRow: {
+      payload: Record<string, unknown> | null;
+      chat_id: string | null;
+      updated_at: string | null;
+    } | null = null;
 
     if (requestedChatId) {
       const legacyDirect = await supabaseServer
@@ -132,7 +151,12 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (legacyDirect.error) {
-        return fail(500, "DB_ERROR", "No se pudo leer el estado legacy de Etapa 3.", legacyDirect.error);
+        return fail(
+          500,
+          "DB_ERROR",
+          "No se pudo leer el estado legacy de Etapa 3.",
+          legacyDirect.error
+        );
       }
 
       legacyRow = legacyDirect.data ?? null;
@@ -151,7 +175,12 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (legacyLatest.error) {
-        return fail(500, "DB_ERROR", "No se pudo leer el estado legacy de Etapa 3.", legacyLatest.error);
+        return fail(
+          500,
+          "DB_ERROR",
+          "No se pudo leer el estado legacy de Etapa 3.",
+          legacyLatest.error
+        );
       }
 
       legacyRow = legacyLatest.data ?? null;
@@ -166,16 +195,36 @@ export async function GET(req: NextRequest) {
         ok: true,
         exists: true,
         chatId: legacyRow.chat_id ?? null,
-        state: legacyRow.payload,
+        state: sanitizeBrainstormState(legacyRow.payload),
         updatedAt: legacyRow.updated_at ?? null,
         source: "legacy_artifact",
       },
       { status: 200 }
     );
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+    }
+
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }
 
@@ -183,13 +232,18 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return fail(403, "FORBIDDEN", gate.message);
 
     const raw = await req.json().catch(() => null);
     const parsed = BodySchema.safeParse(raw);
+
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido.");
+      return fail(
+        400,
+        "BAD_REQUEST",
+        parsed.error.issues[0]?.message ?? "Payload inválido."
+      );
     }
 
     const { chatId, state } = parsed.data;
@@ -208,7 +262,11 @@ export async function POST(req: NextRequest) {
 
     const access = await assertChatOwner(user.userId, chatId);
     if (!access.ok) {
-      return fail(access.status, access.status === 404 ? "NOT_FOUND" : "FORBIDDEN", access.message);
+      return fail(
+        access.status,
+        access.status === 404 ? "NOT_FOUND" : "FORBIDDEN",
+        access.message
+      );
     }
 
     const existing = await supabaseServer
@@ -223,15 +281,7 @@ export async function POST(req: NextRequest) {
       return fail(500, "DB_ERROR", "No se pudo leer el estado actual.", existing.error);
     }
 
-    const prev =
-      existing.data?.state_json && typeof existing.data.state_json === "object"
-        ? existing.data.state_json
-        : {};
-
-    const mergedState = {
-      ...prev,
-      ...state,
-    };
+    const mergedState = mergeBrainstormState(existing.data?.state_json ?? null, state);
 
     const { error } = await supabaseServer
       .from("plan_stage_states")
@@ -245,12 +295,41 @@ export async function POST(req: NextRequest) {
         { onConflict: "user_id,chat_id,stage" }
       );
 
-    if (error) return fail(500, "DB_ERROR", "No se pudo guardar el estado de Etapa 3.", error);
+    if (error) {
+      return fail(500, "DB_ERROR", "No se pudo guardar el estado de Etapa 3.", error);
+    }
 
-    return NextResponse.json({ ok: true, saved: true }, { status: 200 });
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    return NextResponse.json(
+      {
+        ok: true,
+        saved: true,
+        state: mergedState,
+      },
+      { status: 200 }
+    );
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+    }
+
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }

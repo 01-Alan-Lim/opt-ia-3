@@ -1,7 +1,7 @@
 // src/app/api/chats/route.ts
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
 
@@ -36,16 +36,29 @@ export async function GET(req: NextRequest) {
     }));
 
     return ok({ chats });
-  } catch (err: any) {
-    if (err?.message === "UNAUTHORIZED") {
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
       return failResponse("UNAUTHORIZED", "No autenticado", 401);
     }
-    if (err?.message === "FORBIDDEN_DOMAIN") {
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
       return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido", 403);
     }
-    if (err?.name === "ZodError") {
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
+      );
+    }
+
+    if (err instanceof z.ZodError) {
       return failResponse("BAD_REQUEST", "Parámetros inválidos", 400);
     }
+
     return failResponse("INTERNAL", "Error interno", 500);
   }
 

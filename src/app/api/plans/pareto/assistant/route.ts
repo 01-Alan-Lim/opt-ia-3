@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -998,7 +998,7 @@ export async function POST(req: NextRequest) {
       email: profile?.email ?? user.email ?? null,
     });
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return NextResponse.json(
         {
@@ -1437,8 +1437,36 @@ DEVUELVE SOLO JSON:
                 },
       },
     });
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Error en Pareto assistant";
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return NextResponse.json(
+        { ok: false, code: "UNAUTHORIZED", message: "Sesión inválida o ausente." },
+        { status: 401 }
+      );
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(
+        { ok: false, code: "FORBIDDEN_DOMAIN", message: "Correo no permitido." },
+        { status: 403 }
+      );
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "AUTH_UPSTREAM_TIMEOUT",
+          message:
+            "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        },
+        { status: 503 }
+      );
+    }
+
+    const message = err instanceof Error ? err.message : "Error en Pareto assistant";
     return NextResponse.json({ ok: false, code: "INTERNAL", message }, { status: 500 });
   }
 }

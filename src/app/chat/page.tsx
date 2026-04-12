@@ -13,6 +13,12 @@ import { Sidebar } from "@/components/chat/Sidebar";
 import { MessageList } from "@/components/chat/MessageList";
 import { MessageInput } from "@/components/chat/MessageInput";
 import { Message } from "@/lib/types";
+import {
+  BrainstormState,
+  sanitizeBrainstormState,
+  resolveBrainstormStep,
+} from "@/lib/plan/brainstormFlow";
+
 
 type ChatMode = "general" | "plan_mejora";
 
@@ -391,46 +397,6 @@ export default function ChatPage() {
     };
   }
 
-  
-
-  type BrainstormIdea = { text: string };
-
-  type BrainstormState = {
-    strategy: { type: "FO" | "DO" | "FA" | "DA"; rationale?: string } | null;
-    problem: { text: string } | null;
-    ideas: BrainstormIdea[];
-    minIdeas: number;
-  };
-
-  //-----------
-  function sanitizeBrainstormState(raw: any): BrainstormState {
-    const strategyType = raw?.strategy?.type;
-    const strategyOk =
-      strategyType === "FO" || strategyType === "DO" || strategyType === "FA" || strategyType === "DA";
-
-    const problemText =
-      typeof raw?.problem === "string"
-        ? raw.problem
-        : (typeof raw?.problem?.text === "string" ? raw.problem.text : "");
-
-    const ideas: BrainstormIdea[] = Array.isArray(raw?.ideas)
-      ? raw.ideas
-          .map((x: any) => ({ text: typeof x?.text === "string" ? x.text : String(x ?? "").trim() }))
-          .filter((x: BrainstormIdea) => x.text.trim().length > 0)
-      : [];
-
-    const minIdeas = typeof raw?.minIdeas === "number" ? raw.minIdeas : 10;
-
-    return {
-      strategy: strategyOk
-        ? { type: strategyType, rationale: typeof raw?.strategy?.rationale === "string" ? raw.strategy.rationale : undefined }
-        : null,
-      problem: problemText.trim() ? { text: problemText.trim().slice(0, 240) } : null,
-      ideas,
-      minIdeas,
-    };
-  }
-  //-----------
 
   type IshikawaSubCause = {
     id: string;
@@ -996,18 +962,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
   function isBrainstormReadyToClose(st: BrainstormState | null) {
     if (!st) return false;
-
-    const problemText =
-      typeof (st as any).problem === "string"
-        ? (st as any).problem
-        : (typeof (st as any).problem?.text === "string" ? (st as any).problem.text : "");
-
-    const hasProblem = problemText.trim().length >= 10;
-
-    const ideasCount = Array.isArray(st.ideas) ? st.ideas.length : 0;
-    const min = typeof st.minIdeas === "number" ? st.minIdeas : 10;
-
-    return hasProblem && ideasCount >= min;
+    return resolveBrainstormStep(st) === "review";
   }
 
   function isObjectivesReadyForValidation(st: {
@@ -1995,28 +1950,33 @@ function looksLikeProgressClosureRequest(text: string) {
   // -----------------------------
   // 2.x Guardar estado FODA (debounce)
   // -----------------------------
-  useEffect(() => {
-    if (!ready || !authenticated) return;
-    if (mode !== "plan_mejora") return;
-    if (!fodaState) return;
+    useEffect(() => {
+      if (!ready || !authenticated) return;
+      if (mode !== "plan_mejora") return;
+      if (!fodaState) return;
 
-    // debounce
-    if (saveFodaTimerRef.current) {
-      window.clearTimeout(saveFodaTimerRef.current);
-    }
-
-    saveFodaTimerRef.current = window.setTimeout(() => {
-      saveFodaState(fodaState).catch(() => {
-        // silencioso: no rompemos UX
-      });
-    }, 400);
-
-    return () => {
       if (saveFodaTimerRef.current) {
         window.clearTimeout(saveFodaTimerRef.current);
       }
-    };
-  }, [ready, authenticated, mode, fodaState]);
+
+      saveFodaTimerRef.current = window.setTimeout(() => {
+        saveFodaState(fodaState)
+          .then((result) => {
+            if (!result.ok) {
+              console.error("[FODA] autosave failed", result);
+            }
+          })
+          .catch((error) => {
+            console.error("[FODA] autosave crashed", error);
+          });
+      }, 400);
+
+      return () => {
+        if (saveFodaTimerRef.current) {
+          window.clearTimeout(saveFodaTimerRef.current);
+        }
+      };
+    }, [ready, authenticated, mode, fodaState]);
 
   // 2.x Guardar estado Ishikawa
   useEffect(() => {
@@ -2903,6 +2863,29 @@ function looksLikeProgressClosureRequest(text: string) {
     }
   }
 
+  function syncResumeFlagsForAdvisorStage(stage: AdvisorRuntimeStage) {
+    if (stage == null) return;
+
+    // Si ya retomamos cualquier etapa real del asesor,
+    // no debemos volver a disparar el arranque pendiente de Productividad.
+    if (stage >= 1) {
+      setAwaitingStage1Start(clientId, false);
+    }
+  }
+
+  function shouldPreserveAdvisorStateOnRefreshFailure(args: {
+    currentStage: AdvisorRuntimeStage;
+    status: number;
+    errorCode?: string | null;
+  }) {
+    if (args.currentStage == null || args.currentStage <= 0) return false;
+
+    if (args.status >= 500) return true;
+    if (args.errorCode === "AUTH_UPSTREAM_TIMEOUT") return true;
+
+    return false;
+  }
+
   // -----------------------------
   // API helpers (fetch backend)
   // -----------------------------
@@ -2916,12 +2899,18 @@ function looksLikeProgressClosureRequest(text: string) {
 
     const json = await res.json().catch(() => null);
     const isOk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
+    const payload = json?.data ?? null;
+    const error = !isOk && json && json.ok === false ? json : null;
 
-    return { ok: isOk, payload };
+    return {
+      ok: isOk,
+      status: res.status,
+      payload,
+      error,
+    };
   }
 
-  async function refreshActiveAdvisorStage() {
+    async function refreshActiveAdvisorStage() {
     const resolved = await getActiveAdvisorStage();
 
     if (resolved.ok && resolved.payload?.found) {
@@ -2930,6 +2919,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
       clearAdvisorStageStatesLocal();
       setActiveAdvisorStage(stage);
+      syncResumeFlagsForAdvisorStage(stage);
 
       if (stage === 10 && stateJson) {
         setFinalDocState(stateJson as FinalDocState);
@@ -2947,7 +2937,7 @@ function looksLikeProgressClosureRequest(text: string) {
           setParetoState(normalizedPareto);
         }
       } else if (stage === 4 && stateJson) {
-      setIshikawaState(stateJson as IshikawaState);
+        setIshikawaState(stateJson as IshikawaState);
       } else if (stage === 3 && stateJson) {
         setBrainstormState(stateJson as BrainstormState);
       } else if (stage === 2 && stateJson) {
@@ -2970,6 +2960,28 @@ function looksLikeProgressClosureRequest(text: string) {
 
       return stage;
     }
+
+    const errorCode =
+      resolved.error && typeof resolved.error.code === "string"
+        ? resolved.error.code
+        : null;
+
+    if (
+      shouldPreserveAdvisorStateOnRefreshFailure({
+        currentStage: activeAdvisorStage,
+        status: resolved.status,
+        errorCode,
+      })
+    ) {
+      console.warn("refreshActiveAdvisorStage: se preserva estado local por fallo temporal", {
+        status: resolved.status,
+        errorCode,
+        currentStage: activeAdvisorStage,
+      });
+
+      return activeAdvisorStage;
+    }
+
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(0);
     return 0 as AdvisorRuntimeStage;
@@ -3033,26 +3045,54 @@ function looksLikeProgressClosureRequest(text: string) {
   function formatAssistantMessageForReadability(message: string): string {
     let text = String(message ?? "")
       .replace(/\r\n/g, "\n")
+      .replace(/\t/g, " ")
       .trim();
 
     if (!text) return text;
 
-    // Separar visualmente encabezados o bloques con emoji si vienen pegados
+    // 1) Espacio antes de bloques con emoji / encabezados
     text = text.replace(
       /([^\n])\n(?=(?:✅|📄|🧩|👉|⚠️|🎯|📌|📊|📝))/g,
       "$1\n\n"
     );
 
-    // Dar aire a listas numeradas
+    // 2) Si una lista numerada viene pegada después de ":" o de una frase,
+    // forzamos bloque aparte para que Markdown la renderice bien.
+    text = text.replace(/:\s*(\d+\.\s)/g, ":\n\n$1");
+    text = text.replace(/([^\n])(\d+\.\s)/g, (match, prev, itemStart) => {
+      if (/\s/.test(prev)) {
+        return `${prev}\n\n${itemStart}`;
+      }
+      return match;
+    });
+
+    // 3) Cada ítem numerado debe iniciar en línea propia
     text = text.replace(/([^\n])\n(?=\d+\.\s)/g, "$1\n\n");
 
-    // Dar aire a bullets
-    text = text.replace(/([^\n])\n(?=(?:-|\*)\s)/g, "$1\n\n");
+    // 4) Cada bullet debe iniciar en línea propia
+    text = text.replace(/([^\n])\n(?=(?:-|\*|•)\s)/g, "$1\n\n");
 
-    // Mejorar el caso específico de Versiones
+    // 5) Si el modelo junta dos ítems numerados en el mismo párrafo, separarlos
+    // Ej: "1. Causa A 2. Causa B"
+    text = text.replace(/(\d+\.\s.*?)(\s)(?=\d+\.\s)/g, "$1\n");
+
+    // 6) Si después de un ítem viene una frase normal tipo cierre o pregunta,
+    // dar aire para que no choque con la lista.
+    text = text.replace(
+      /([^\n])\n(?=(?:Estamos|Ahora|Con esto|En resumen|Por tanto|Entonces|Si quieres|¿))/g,
+      "$1\n\n"
+    );
+
+    // 7) Mejorar caso específico de Versiones
     text = text.replace(/\*\*(Versión\s+\d+)\*\*\s*:\s*/gi, "**$1**\n");
 
-    // Evitar demasiados saltos seguidos
+    // 8) Limpiar espacios sobrantes por línea
+    text = text
+      .split("\n")
+      .map((line) => line.replace(/[ \u00A0]+$/g, ""))
+      .join("\n");
+
+    // 9) Reducir exceso de saltos
     text = text.replace(/\n{3,}/g, "\n\n");
 
     return text.trim();
@@ -3780,6 +3820,17 @@ function looksLikeProgressClosureRequest(text: string) {
     return injected + base;
   }
 
+  function buildRecentMessagesForIshikawa(maxMessages = 6) {
+    return messagesRef.current
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-maxMessages)
+      .map((m) => ({
+        role: m.role === "assistant" ? "assistant" as const : "user" as const,
+        content: String(m.content ?? "").trim(),
+      }))
+      .filter((m) => m.content.length > 0);
+  }
+
   function mergeCosts(existing: any, add: ProdAssistantCost[], requiredCosts: number) {
     const prev: ProdAssistantCost[] = Array.isArray(existing) ? existing : [];
 
@@ -3863,8 +3914,6 @@ function looksLikeProgressClosureRequest(text: string) {
   }
 
 
-
-
   async function saveFodaState(state: FodaState, chatIdArg?: string | null) {
     if (!accessToken) {
       return { ok: false as const, skipped: true as const, reason: "NO_ACCESS_TOKEN" as const };
@@ -3895,6 +3944,37 @@ function looksLikeProgressClosureRequest(text: string) {
     }
 
     return { ok, status: res.status, json };
+  }
+
+  function getFodaSaveErrorMessage(result: {
+    ok?: boolean;
+    skipped?: boolean;
+    reason?: string;
+    status?: number;
+    json?: any;
+  }) {
+    if (result?.skipped && result?.reason === "NO_ACCESS_TOKEN") {
+      return "⚠️ No pude guardar tu avance del FODA porque no encontré una sesión válida. Recarga la página e inténtalo nuevamente.";
+    }
+
+    if (result?.skipped && result?.reason === "NO_CHAT_ID") {
+      return "⚠️ No pude guardar tu avance del FODA porque el chat aún no estaba inicializado. Vuelve a enviar tu último mensaje.";
+    }
+
+    const backendMessage =
+      typeof result?.json?.message === "string" && result.json.message.trim().length > 0
+        ? result.json.message.trim()
+        : null;
+
+    if (backendMessage) {
+      return `⚠️ No pude guardar tu avance del FODA. ${backendMessage}`;
+    }
+
+    if (typeof result?.status === "number" && result.status >= 400) {
+      return `⚠️ No pude guardar tu avance del FODA (HTTP ${result.status}).`;
+    }
+
+    return "⚠️ No pude guardar tu avance del FODA. No continúes todavía; primero recarga la página y vuelve a intentarlo.";
   }
 
   async function callFodaAssistant(input: {
@@ -4589,7 +4669,8 @@ function looksLikeProgressClosureRequest(text: string) {
     caseContext: any;
     stage1Summary: any;
     brainstormState: any;
-  }) {
+    recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  }){
     const authHeaders = await getAuthHeaders();
     const res = await fetch("/api/plans/ishikawa/assistant", {
       method: "POST",
@@ -4615,7 +4696,11 @@ function looksLikeProgressClosureRequest(text: string) {
 
 
     if (!assistantMessage || !nextState) {
-      return { ok: true as const, assistantMessage: "⚠️ No pude ubicar tu respuesta. ¿Puedes describir una causa concreta?", nextState: args.ishikawaState };
+      return {
+        ok: true as const,
+        assistantMessage: "⚠️ No pude interpretar bien este turno de Ishikawa. Vuelve a escribir tu idea y seguimos desde la misma rama.",
+        nextState: args.ishikawaState,
+      };
     }
 
     return { ok: true as const, assistantMessage, nextState: nextState as IshikawaState };
@@ -4637,6 +4722,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(stage);
+    syncResumeFlagsForAdvisorStage(stage);
 
 
     if (stage === 10 && stateJson) {
@@ -4794,12 +4880,23 @@ function looksLikeProgressClosureRequest(text: string) {
           };
 
           setFodaState(initial);
-          await saveFodaState(initial, effectiveChatId);
+          const saveInitial = await saveFodaState(initial, effectiveChatId);
+
+          if (!saveInitial.ok) {
+            await appendAssistant(getFodaSaveErrorMessage(saveInitial));
+            return true;
+          }
+
           return true;
         }
 
         setFodaState(foda2);
-        await saveFodaState(foda2, effectiveChatId);
+
+        const saveRestored = await saveFodaState(foda2, effectiveChatId);
+        if (!saveRestored.ok) {
+          await appendAssistant(getFodaSaveErrorMessage(saveRestored));
+          return true;
+        }
 
         const currentLabel =
           foda2.currentQuadrant === "F"
@@ -4810,22 +4907,6 @@ function looksLikeProgressClosureRequest(text: string) {
                 ? "Oportunidades"
                 : "Amenazas";
 
-        const pendingLabel =
-          foda2.pendingEvidence?.quadrant === "F"
-            ? "Fortalezas"
-            : foda2.pendingEvidence?.quadrant === "D"
-              ? "Debilidades"
-              : foda2.pendingEvidence?.quadrant === "O"
-                ? "Oportunidades"
-                : foda2.pendingEvidence?.quadrant === "A"
-                  ? "Amenazas"
-                  : null;
-
-        const pendingMsg =
-          foda2.pendingEvidence && pendingLabel
-            ? `\n- Evidencia pendiente: **sí**, en **${pendingLabel}** #${foda2.pendingEvidence.index + 1}`
-            : "\n- Evidencia pendiente: **no**";
-
         const msg =
           "📌 Abrí un nuevo chat, pero mantendremos tu avance.\n\n" +
           "Estabas en **Etapa 2 (FODA)**.\n\n" +
@@ -4833,8 +4914,7 @@ function looksLikeProgressClosureRequest(text: string) {
           `- Fortalezas: **${foda2.items.F.length}**\n` +
           `- Debilidades: **${foda2.items.D.length}**\n` +
           `- Oportunidades: **${foda2.items.O.length}**\n` +
-          `- Amenazas: **${foda2.items.A.length}**` +
-          `${pendingMsg}\n\n` +
+          `- Amenazas: **${foda2.items.A.length}**\n\n` +
           `👉 Continuemos exactamente desde **${currentLabel}**.`;
 
         setMessages([createMessage("assistant", msg)]);
@@ -4974,6 +5054,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (fromStage === 2 && toStage === 3) {
       const initial: BrainstormState = {
+        step: "choose_strategy",
         strategy: null,
         problem: null,
         ideas: [],
@@ -5799,6 +5880,7 @@ function looksLikeProgressClosureRequest(text: string) {
                   caseContext: ctx?.contextJson ?? null,
                   stage1Summary: null,
                   brainstormState: null,
+                  recentMessages: buildRecentMessagesForIshikawa(6),
                 });
 
                 if (ai.ok) {
@@ -5820,7 +5902,7 @@ function looksLikeProgressClosureRequest(text: string) {
             // ✅ Caso real de inicio (no hay conversación): aquí sí tomamos el primer mensaje como problema.
             const next: IshikawaState = {
               ...ishikawaState,
-              problem: { text: text.trim().slice(0, 240) },
+              problem: { text: text.trim().slice(0, 1200) },
             };
             setIshikawaState(next);
             await saveIshikawaState(next, effectiveChatId);
@@ -5906,6 +5988,7 @@ function looksLikeProgressClosureRequest(text: string) {
             caseContext: ctx.contextJson ?? null,
             stage1Summary: lastReport.ok ? lastReport.payload ?? null : null,
             brainstormState: brainstormState ?? null,
+            recentMessages: buildRecentMessagesForIshikawa(6),
           });
 
           const nextState = assistant.nextState ?? ishikawaState;
@@ -5931,7 +6014,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
         if (activeAdvisorStage === 3 && brainstormState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
           const readyToClose = isBrainstormReadyToClose(brainstormState);
-          const isNewIdea = looksLikeNewCause(text);
 
           // Si ya completó el mínimo y estamos esperando confirmación del estudiante:
           if (brainstormClosePending && readyToClose) {
@@ -5998,7 +6080,15 @@ function looksLikeProgressClosureRequest(text: string) {
           });
 
           if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant("⚠️ No pude procesar tu idea con claridad. ¿Puedes reformularla en una causa concreta y entendible?");
+            const backendMessage =
+              typeof assistant.payload?.message === "string" && assistant.payload.message.trim().length > 0
+                ? assistant.payload.message.trim()
+                : null;
+
+            await appendAssistant(
+              backendMessage ??
+                "⚠️ Tuve un problema momentáneo para interpretar este turno de la Etapa 3. Vuelve a enviarlo y continuamos desde aquí."
+            );
             return;
           }
 
@@ -6024,7 +6114,7 @@ function looksLikeProgressClosureRequest(text: string) {
         // ================================
         // ETAPA 3: Enganche inicial (si no existe estado)
         // ================================
-        if (activeAdvisorStage === 3 && ctx.ok && ctx.status === "confirmed" && isStage1Validated && !brainstormState) {
+        if (activeAdvisorStage === 3 && ctx.ok && ctx.status === "confirmed" && diagUnlocked && !brainstormState) {
           // Si el usuario escribe "etapa 3" o "lluvia" o "ideas", iniciamos.
           const t = text.toLowerCase();
           const wantsE3 = t.includes("etapa 3") || t.includes("lluvia") || t.includes("ideas") || t.includes("brainstorm");
@@ -6035,6 +6125,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
             if (!exists) {
               const initial: BrainstormState = {
+                step: "choose_strategy",
                 strategy: null,
                 problem: null,
                 ideas: [],
@@ -6053,16 +6144,51 @@ function looksLikeProgressClosureRequest(text: string) {
               return;
             }
 
-            const existing = (resBS.payload?.state ?? null) as BrainstormState | null;
+            const existingRaw = resBS.payload?.state ?? null;
+            const existing = existingRaw ? sanitizeBrainstormState(existingRaw) : null;
+
             if (existing) {
               setBrainstormState(existing);
+
               const n = Array.isArray(existing.ideas) ? existing.ideas.length : 0;
+              const step = resolveBrainstormStep(existing);
+
+              if (step === "choose_strategy") {
+                await appendAssistant(
+                  "📌 Retomemos tu **Etapa 3: Lluvia de ideas**.\n\n" +
+                    "Primero debemos elegir la **estrategia obligatoria**: **FO / DO / FA / DA**.\n\n" +
+                    "Si quieres, puedo ayudarte a escoger la más conveniente según tu FODA."
+                );
+                return;
+              }
+
+              if (step === "define_problem") {
+                await appendAssistant(
+                  `📌 Retomemos tu **Etapa 3**.\n\n` +
+                    `Estrategia elegida: **${existing.strategy?.type ?? "-"}**.\n\n` +
+                    "Ahora falta aterrizar la **problemática principal** que vas a trabajar.\n\n" +
+                    "Puedes escribirme tu propuesta y yo te ayudo a formularla mejor."
+                );
+                return;
+              }
+
+              if (step === "review") {
+                await appendAssistant(
+                  `📌 Retomemos tu **Etapa 3**.\n\n` +
+                    `Estrategia: **${existing.strategy?.type ?? "-"}**\n` +
+                    `Problema: **${existing.problem?.text ?? "(pendiente)"}**\n` +
+                    `Causas registradas: **${n}**.\n\n` +
+                    "✅ Ya cumples el mínimo. Puedes agregar más causas o decirme que pasemos a Ishikawa."
+                );
+                return;
+              }
 
               await appendAssistant(
-                `📌 Retomemos tu **Etapa 3 (Lluvia de ideas)**.\n\n` +
-                  `Problema: ${existing.problem?.text ? `**${existing.problem.text}**` : "**(aún no definido)**"}\n` +
-                  `Ideas registradas: **${n}**.\n\n` +
-                  "👉 Continúa con la siguiente idea (causa) o escribe **\"validar\"** cuando cumplas el mínimo."
+                `📌 Retomemos tu **Etapa 3**.\n\n` +
+                  `Estrategia: **${existing.strategy?.type ?? "-"}**\n` +
+                  `Problema: **${existing.problem?.text ?? "(pendiente)"}**\n` +
+                  `Causas registradas: **${n}**.\n\n` +
+                  "👉 Continúa con otra causa y yo te ayudo a pulirla si hace falta."
               );
               return;
             }
@@ -6147,7 +6273,12 @@ function looksLikeProgressClosureRequest(text: string) {
 
           // 2) aplicar estado y guardar
           setFodaState(nextState);
-          await saveFodaState(nextState);
+
+          const saveResult = await saveFodaState(nextState, advisorChatId);
+          if (!saveResult.ok) {
+            await appendAssistant(getFodaSaveErrorMessage(saveResult));
+            return;
+          }
 
           // 3) ✅ Si ya está completo (o el LLM lo marca como complete) → VALIDAR y saltar a Etapa 3
           const completed = action === "complete" || isFodaComplete(nextState);
@@ -6202,7 +6333,13 @@ function looksLikeProgressClosureRequest(text: string) {
 
 
         // ✅ Si acabamos de confirmar Etapa 0: arrancar Productividad (Etapa 1) sin /review
-        if (ctx.ok && ctx.status === "confirmed" && !hasWizard && isAwaitingStage1Start(clientId)) {
+        if (
+          ctx.ok &&
+          ctx.status === "confirmed" &&
+          !hasWizard &&
+          isAwaitingStage1Start(clientId) &&
+          (activeAdvisorStage == null || activeAdvisorStage <= 1)
+        ) {
           // si el usuario pregunta (no robótico), respondemos y re-preguntamos el paso actual
           if (isProdQuestion(text) && !isReadyIntent(text)) {
             await appendAssistant(

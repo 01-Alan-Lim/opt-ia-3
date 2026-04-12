@@ -1,13 +1,14 @@
 // src/app/api/plans/brainstorm/validate/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { sanitizeBrainstormState } from "@/lib/plan/brainstormFlow";
 
 export const runtime = "nodejs";
 
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
   try {
     const authed = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, authed);
     if (!gate.ok) {
       return NextResponse.json(
         { ok: false, code: "FORBIDDEN", message: gate.message },
@@ -146,30 +147,58 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const st = (stateRow?.state_json ?? legacyRow?.payload ?? null) as any;
+    const rawState = stateRow?.state_json ?? legacyRow?.payload ?? null;
     const stateChatId = stateRow?.chat_id ?? legacyRow?.chat_id ?? null;
 
-
-    if (!st) {
-      return NextResponse.json({ ok: false, message: "Etapa 3 no iniciada" }, { status: 400 });
+    if (!rawState) {
+      return NextResponse.json(
+        { ok: false, code: "BAD_REQUEST", message: "Etapa 3 no iniciada" },
+        { status: 400 }
+      );
     }
 
-    const problemText = String(st?.problem?.text ?? "").trim();
-    const ideas = Array.isArray(st?.ideas) ? st.ideas : [];
-    const minIdeas = Number(st?.minIdeas ?? 10);
+    const st = sanitizeBrainstormState(rawState);
+
+    const strategyType = st.strategy?.type ?? null;
+    const strategyRationale = String(st.strategy?.rationale ?? "").trim();
+    const problemText = String(st.problem?.text ?? "").trim();
+    const ideas = Array.isArray(st.ideas) ? st.ideas : [];
+    const minIdeas = Number(st.minIdeas ?? 10);
+
+    if (!strategyType) {
+      return NextResponse.json(
+        { ok: false, code: "BAD_REQUEST", message: "Falta elegir la estrategia FO / DO / FA / DA." },
+        { status: 400 }
+      );
+    }
 
     if (!problemText) {
-      return NextResponse.json({ ok: false, message: "Falta definir la problemática principal." }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, code: "BAD_REQUEST", message: "Falta definir la problemática principal." },
+        { status: 400 }
+      );
     }
+
     if (ideas.length < minIdeas) {
       return NextResponse.json(
-        { ok: false, message: `Faltan ideas: tienes ${ideas.length} y el mínimo es ${minIdeas}.` },
+        {
+          ok: false,
+          code: "BAD_REQUEST",
+          message: `Faltan causas: tienes ${ideas.length} y el mínimo es ${minIdeas}.`,
+        },
         { status: 400 }
       );
     }
 
     // 2) Guardar artefacto final (validated)
-    const finalPayload = { problem: { text: problemText }, ideas };
+    const finalPayload = {
+      strategy: {
+        type: strategyType,
+        ...(strategyRationale ? { rationale: strategyRationale } : {}),
+      },
+      problem: { text: problemText },
+      ideas,
+    };
 
     const effectiveChatId = chatId ?? stateChatId ?? null;
 
@@ -231,6 +260,8 @@ Devuelve JSON:
 
 ENTREGA DEL ESTUDIANTE:
 ${JSON.stringify(finalPayload, null, 2)}
+
+Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente con la problemática y con las causas planteadas.
 `;
 
     const result = await model.generateContent(prompt);
@@ -305,7 +336,49 @@ ${JSON.stringify(finalPayload, null, 2)}
       feedback: evaluation.feedback,
       next,
     });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, message: e.message || "Error validando Etapa 3" }, { status: 500 });
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return NextResponse.json(
+        { ok: false, code: "UNAUTHORIZED", message: "Sesión inválida o ausente." },
+        { status: 401 }
+      );
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return NextResponse.json(
+        { ok: false, code: "FORBIDDEN_DOMAIN", message: "Correo no permitido." },
+        { status: 403 }
+      );
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "AUTH_UPSTREAM_TIMEOUT",
+          message:
+            "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        },
+        { status: 503 }
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        { ok: false, code: "BAD_REQUEST", message: err.issues[0]?.message ?? "Payload inválido." },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "INTERNAL",
+        message: err instanceof Error ? err.message : "Error validando Etapa 3",
+      },
+      { status: 500 }
+    );
   }
 }

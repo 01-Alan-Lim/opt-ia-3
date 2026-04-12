@@ -2,7 +2,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return failResponse(gate.reason, gate.message, 403);
     }
@@ -81,14 +81,29 @@ export async function GET(req: NextRequest) {
           }
         : null,
     });
-  } catch (err: unknown) {
-    const e = err as { message?: string };
-    if (e?.message === "UNAUTHORIZED") {
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
       return failResponse("UNAUTHORIZED", "No autenticado", 401);
     }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
+      );
+    }
+
     if (err instanceof z.ZodError) {
       return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 7.", 400, err.flatten());
     }
+
     return failResponse("INTERNAL", "Error interno", 500);
   }
 }
@@ -97,7 +112,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) {
       return failResponse(gate.reason, gate.message, 403);
     }
@@ -153,14 +168,29 @@ export async function POST(req: NextRequest) {
         state_json: data.state_json ? normalizeStageState(STAGE, data.state_json) : null,
       },
     });
-  } catch (err: unknown) {
-    const e = err as { message?: string };
-    if (e?.message === "UNAUTHORIZED") {
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
       return failResponse("UNAUTHORIZED", "No autenticado", 401);
     }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN_DOMAIN", "Correo no permitido", 403);
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return failResponse(
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación.",
+        503
+      );
+    }
+
     if (err instanceof z.ZodError) {
       return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 7.", 400, err.flatten());
     }
+
     return failResponse("INTERNAL", "Error interno", 500);
   }
 }

@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { requireUser } from "@/lib/auth/supabase";
+import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
@@ -46,6 +46,54 @@ const QuerySchema = z.object({
   chatId: z.string().uuid().optional(),
 });
 
+type FodaStateRow = {
+  state_json: Record<string, unknown> | null;
+  chat_id: string | null;
+  updated_at: string | null;
+};
+
+function parseIsoMillis(value: string | null | undefined) {
+  if (!value) return 0;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function getStatePriority(stateJson: Record<string, unknown> | null) {
+  if (!stateJson || typeof stateJson !== "object") return -1;
+
+  const rawItems =
+    stateJson.items && typeof stateJson.items === "object"
+      ? (stateJson.items as Record<string, unknown>)
+      : null;
+
+  if (!rawItems) return -1;
+
+  const count = (value: unknown) => (Array.isArray(value) ? value.length : 0);
+
+  const counts = {
+    F: count(rawItems.F),
+    D: count(rawItems.D),
+    O: count(rawItems.O),
+    A: count(rawItems.A),
+  };
+
+  const totalItems = counts.F + counts.D + counts.O + counts.A;
+  const completedQuadrants = [counts.F, counts.D, counts.O, counts.A].filter(
+    (items) => items >= 3
+  ).length;
+
+  return totalItems * 100 + completedQuadrants * 10;
+}
+
+function pickBestRow(rows: FodaStateRow[]) {
+  return [...rows].sort((a, b) => {
+    const priorityDiff = getStatePriority(b.state_json) - getStatePriority(a.state_json);
+    if (priorityDiff !== 0) return priorityDiff;
+
+    return parseIsoMillis(b.updated_at) - parseIsoMillis(a.updated_at);
+  })[0] ?? null;
+}
+
 function fail(status: number, code: string, message: string, detail?: unknown) {
   return NextResponse.json({ ok: false, code, message, detail }, { status });
 }
@@ -72,7 +120,7 @@ export async function GET(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return fail(403, "FORBIDDEN", gate.message);
 
     const parsed = QuerySchema.safeParse(
@@ -92,7 +140,7 @@ export async function GET(req: NextRequest) {
     }
 
     // 1) Fuente principal: plan_stage_states
-    let stateRow: { state_json: Record<string, unknown> | null; chat_id: string | null; updated_at: string | null } | null = null;
+    let stateRow: FodaStateRow | null = null;
 
     if (requestedChatId) {
       const direct = await supabaseServer
@@ -110,22 +158,21 @@ export async function GET(req: NextRequest) {
       stateRow = direct.data ?? null;
     }
 
-    // 2) Fallback al último state de la etapa (cualquier chat del usuario)
-        if (!stateRow && !requestedChatId) {
+    // 2) Fallback al mejor state de la etapa (cualquier chat del usuario)
+    if (!stateRow && !requestedChatId) {
       const latest = await supabaseServer
         .from("plan_stage_states")
         .select("state_json, chat_id, updated_at")
         .eq("user_id", user.userId)
         .eq("stage", STAGE)
         .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(25);
 
       if (latest.error) {
         return fail(500, "DB_ERROR", "No se pudo leer el estado FODA.", latest.error);
       }
 
-      stateRow = latest.data ?? null;
+      stateRow = latest.data?.length ? pickBestRow(latest.data as FodaStateRow[]) : null;
     }
 
     if (stateRow?.state_json) {
@@ -197,11 +244,30 @@ export async function GET(req: NextRequest) {
       },
       { status: 200 }
     );
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    if (msg === "FORBIDDEN_DOMAIN") return fail(403, "FORBIDDEN", "Acceso restringido.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+    }
+
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }
 
@@ -209,7 +275,7 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
-    const gate = await assertChatAccess(req);
+    const gate = await assertChatAccess(req, user);
     if (!gate.ok) return fail(403, "FORBIDDEN", gate.message);
 
     const raw = await req.json().catch(() => null);
@@ -266,10 +332,29 @@ export async function POST(req: NextRequest) {
     if (error) return fail(500, "DB_ERROR", "No se pudo guardar el estado FODA.", error);
 
     return NextResponse.json({ ok: true, saved: true }, { status: 200 });
-  } catch (e: any) {
-    const msg = e?.message ?? "INTERNAL";
-    if (msg === "UNAUTHORIZED") return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
-    if (msg === "FORBIDDEN_DOMAIN") return fail(403, "FORBIDDEN", "Acceso restringido.");
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    } catch (err: unknown) {
+    const authCode = getAuthErrorCode(err);
+
+    if (authCode === "UNAUTHORIZED") {
+      return fail(401, "UNAUTHORIZED", "Sesión inválida o ausente.");
+    }
+
+    if (authCode === "FORBIDDEN_DOMAIN") {
+      return fail(403, "FORBIDDEN_DOMAIN", "Correo no permitido.");
+    }
+
+    if (authCode === "AUTH_UPSTREAM_TIMEOUT") {
+      return fail(
+        503,
+        "AUTH_UPSTREAM_TIMEOUT",
+        "No se pudo validar tu sesión por un timeout temporal con el servicio de autenticación."
+      );
+    }
+
+    if (err instanceof z.ZodError) {
+      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+    }
+
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }
