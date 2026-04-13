@@ -2202,8 +2202,13 @@ export async function POST(req: Request) {
 
           return ok({
             assistantMessage:
-              `Tiene sentido: esto explica la causa a un nivel ya **accionable** (impacta en paros/tiempo muerto y OEE).\n` +
-              `✅ Ya llegamos a profundidad suficiente (${depth}). ¿Te parece si **cerramos esta subcausa** como causa raíz candidata y agregamos otra subcausa dentro de **"${active.mc.name ?? active.mc.text ?? "esta causa"}"**?`,
+              `Bien, con esto ya llegamos a una causa raíz suficientemente clara dentro de esta línea.\n\n` +
+              `Voy a dejar cerrada esta subcausa como candidata dentro de **"${active.mc.name ?? active.mc.text ?? "esta causa"}"**.\n\n` +
+              `Ahora podemos hacer una de estas tres cosas:\n` +
+              `• profundizar otra subcausa en esta misma causa principal\n` +
+              `• pasar a otra categoría del Ishikawa\n` +
+              `• o, si ya lo ves suficiente, revisar si estamos listos para pasar a Pareto\n\n` +
+              `Dime cómo quieres continuar y te guío.`,
             updates: { nextState },
           });
         }

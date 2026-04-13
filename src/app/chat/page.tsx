@@ -1092,6 +1092,27 @@ function looksLikeProgressClosureRequest(text: string) {
 
   }
 
+  function shouldOfferIshikawaStageClose(
+      st: IshikawaState | null,
+      assistantMessage: string
+    ) {
+      if (!isIshikawaReadyToClose(st)) return false;
+
+      const msg = normalizeText(assistantMessage ?? "");
+
+      // Si el mensaje todavía está cerrando una subcausa/rama,
+      // no debemos meter además el cierre de etapa.
+      if (
+        msg.includes("cerramos esta subcausa") ||
+        msg.includes("agregamos otra subcausa dentro de") ||
+        msg.includes("ya llegamos a profundidad suficiente")
+      ) {
+        return false;
+      }
+
+      return true;
+  }
+
   function isProgressQuestion(text: string) {
     const raw = (text ?? "").trim();
     const t = normalizeText(raw);
@@ -5976,7 +5997,14 @@ function looksLikeProgressClosureRequest(text: string) {
               setIshikawaClosePending(false);
               // seguimos normal para refinar
             } else {
-              await appendAssistant("¿Quieres **pasar a Pareto (Etapa 5)** o **seguir refinando** Ishikawa?");
+              await appendAssistant(
+                "Ya tenemos una base suficiente del Ishikawa.\n\n" +
+                  "Ahora tú decides cómo seguir:\n" +
+                  "• podemos revisar o ajustar alguna causa\n" +
+                  "• agregar otra subcausa o ir a otra categoría\n" +
+                  "• o pasar a Pareto (Etapa 5)\n\n" +
+                  "Dime qué prefieres."
+              );
               return;
             }
           }
@@ -5997,13 +6025,15 @@ function looksLikeProgressClosureRequest(text: string) {
 
           await appendAssistant(assistant.assistantMessage);
 
-          // ✅ Si ya cumple mínimos, pedimos confirmación natural para pasar a Pareto
-          if (isIshikawaReadyToClose(nextState)) {
+          // ✅ Solo ofrecemos pasar de etapa si el mensaje anterior NO está cerrando aún una subcausa
+          if (shouldOfferIshikawaStageClose(nextState, assistant.assistantMessage)) {
             setIshikawaClosePending(true);
             await appendAssistant(
-              "✅ Ya tienes una estructura suficiente en Ishikawa. " +
-                "¿Quieres **pasar a la Etapa 5 (Pareto)** o **seguir refinando** causas?"
+              "✅ Ya tenemos una base suficiente del Ishikawa. " +
+                "Si quieres, podemos **seguir refinando**, **revisar otra causa o categoría**, o **pasar a la Etapa 5 (Pareto)**."
             );
+          } else {
+            setIshikawaClosePending(false);
           }
           return;
         }
