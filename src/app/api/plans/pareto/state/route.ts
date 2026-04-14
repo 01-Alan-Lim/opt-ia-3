@@ -93,8 +93,8 @@ function defaultCriterionName(index: number): string {
 function normalizeCriteria(input: unknown): ParetoCriterion[] {
   const raw = Array.isArray(input) ? input : [];
 
-  const cleaned = raw
-    .map((item, index) => {
+  return raw
+    .map((item) => {
       const record =
         typeof item === "object" && item !== null
           ? (item as Record<string, unknown>)
@@ -104,25 +104,16 @@ function normalizeCriteria(input: unknown): ParetoCriterion[] {
       const id = String(record.id ?? "").trim() || crypto.randomUUID();
       const weight = normalizeWeight(record.weight);
 
+      if (!name) return null;
+
       return {
         id,
-        name: name || defaultCriterionName(index),
+        name,
         ...(weight !== undefined ? { weight } : {}),
       };
     })
-    .filter((item) => item.name.length > 0);
-
-  const out = cleaned.slice(0, 3);
-
-  while (out.length < 3) {
-    const index = out.length;
-    out.push({
-      id: crypto.randomUUID(),
-      name: defaultCriterionName(index),
-    });
-  }
-
-  return out;
+    .filter((item): item is ParetoCriterion => Boolean(item))
+    .slice(0, 3);
 }
 
 function normalizeStep(input: unknown): ParetoStep {

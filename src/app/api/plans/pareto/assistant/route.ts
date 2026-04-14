@@ -346,8 +346,8 @@ function defaultCriterionName(index: number): string {
 function normalizeCriteria(input: unknown) {
   const raw = Array.isArray(input) ? input : [];
 
-  const cleaned = raw
-    .map((item, index) => {
+  return raw
+    .map((item) => {
       const record =
         typeof item === "object" && item !== null
           ? (item as Record<string, unknown>)
@@ -357,24 +357,16 @@ function normalizeCriteria(input: unknown) {
       const id = String(record.id ?? "").trim() || crypto.randomUUID();
       const weight = normalizeWeight(record.weight);
 
+      if (!name) return null;
+
       return {
         id,
-        name: name || defaultCriterionName(index),
+        name,
         ...(weight !== undefined ? { weight } : {}),
       };
     })
-    .filter((item) => item.name.length > 0)
+    .filter((item): item is { id: string; name: string; weight?: number } => Boolean(item))
     .slice(0, 3);
-
-  while (cleaned.length < 3) {
-    const index = cleaned.length;
-    cleaned.push({
-      id: crypto.randomUUID(),
-      name: defaultCriterionName(index),
-    });
-  }
-
-  return cleaned;
 }
 
 function normalizeStep(input: unknown): ParetoStep {
@@ -862,6 +854,53 @@ function parseWeightsFromMessage(
   return updates > 0 ? parsed : null;
 }
 
+function parseCriteriaFromMessage(
+  studentMessage: string,
+  currentCriteria: ParetoState["criteria"]
+): ParetoState["criteria"] | null {
+  const text = String(studentMessage ?? "").trim();
+  if (!text) return null;
+
+  const existing = Array.isArray(currentCriteria) ? [...currentCriteria] : [];
+  const existingKeys = new Set(existing.map((c) => normalizeText(c.name)));
+
+  const lines = text
+    .split(/\n|;/g)
+    .flatMap((line) => line.split(","))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^[-*•\d.)\s]+/, "")
+        .replace(/^criterio\s*\d*\s*:\s*/i, "")
+        .replace(/^ser[ií]a\s*/i, "")
+        .replace(/^podr[ií]a\s+ser\s*/i, "")
+        .replace(/^uno\s+ser[ií]a\s*/i, "")
+        .trim()
+    )
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+
+  const out = [...existing];
+
+  for (const line of lines) {
+    const key = normalizeText(line);
+    if (!key) continue;
+    if (existingKeys.has(key)) continue;
+
+    out.push({
+      id: crypto.randomUUID(),
+      name: line,
+    });
+    existingKeys.add(key);
+
+    if (out.length >= 3) break;
+  }
+
+  return out.length !== existing.length ? out.slice(0, 3) : null;
+}
+
+
 function buildMissingWeightsTeacherMessage(state: ParetoState, studentMessage: string) {
   const askedForRoots = isAskingForCriticalRoots(studentMessage);
   const askedForCriteria = isAskingForCriteriaWeights(studentMessage);
@@ -975,6 +1014,62 @@ DEVUELVE SOLO JSON:
   return assistantMessage;
 }
 
+async function buildTeacherCriteriaReply(input: {
+  studentMessage: string;
+  paretoState: ParetoState;
+  caseContext: Record<string, unknown> | null;
+  recentHistory: string;
+}) {
+  const model = getGeminiModel();
+
+  const prompt = `
+Eres un DOCENTE asesor de Ingeniería de Métodos guiando la ETAPA 5: PARETO.
+
+OBJETIVO:
+Ayudar al estudiante a definir criterios de priorización útiles y contextualizados para su caso.
+No seas robótico. No des una lista cerrada salvo que sea necesario.
+Guía como asesor real.
+
+REGLAS:
+- Usa el contexto del caso y las causas raíz seleccionadas.
+- No inventes datos fuera del estado recibido.
+- Si el estudiante pide ideas, propone 2 o 3 criterios adecuados para SU caso.
+- Si el estudiante propone un criterio, evalúa si sirve y ayúdalo a formularlo mejor.
+- Si ya tiene 1 o 2 criterios, ayúdale a completar el siguiente.
+- Si pregunta por pesos, explica de forma breve qué significa dar más o menos peso.
+- Máximo 2 párrafos.
+- No cierres la etapa aquí.
+
+CONTEXTO DEL CASO:
+${JSON.stringify(input.caseContext ?? {}, null, 2)}
+
+ESTADO PARETO:
+${JSON.stringify(input.paretoState, null, 2)}
+
+HISTORIAL RECIENTE:
+${input.recentHistory}
+
+MENSAJE DEL ESTUDIANTE:
+"""${input.studentMessage}"""
+
+DEVUELVE SOLO JSON:
+{
+  "assistantMessage": "string"
+}
+`;
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+  const json = extractJsonSafe(text);
+
+  const assistantMessage =
+    typeof json?.assistantMessage === "string" && json.assistantMessage.trim()
+      ? json.assistantMessage.trim()
+      : null;
+
+  return assistantMessage;
+}
+
 
 export async function POST(req: NextRequest) {
   try {
@@ -1078,17 +1173,29 @@ export async function POST(req: NextRequest) {
 
     const rootsForMatching = selectedRoots.length > 0 ? selectedRoots : roots;
 
-        const parsedCriteriaFromMessage = parseWeightsFromMessage(
+        const parsedCriteriaNames = parseCriteriaFromMessage(
       studentMessage,
       paretoState.criteria
     );
 
-    const paretoStateWithParsedWeights: ParetoState = parsedCriteriaFromMessage
+    const paretoStateWithParsedCriteria: ParetoState = parsedCriteriaNames
       ? {
           ...paretoState,
-          criteria: parsedCriteriaFromMessage,
+          criteria: parsedCriteriaNames,
         }
       : paretoState;
+
+    const parsedCriteriaFromMessage = parseWeightsFromMessage(
+      studentMessage,
+      paretoStateWithParsedCriteria.criteria
+    );
+
+    const paretoStateWithParsedWeights: ParetoState = parsedCriteriaFromMessage
+      ? {
+          ...paretoStateWithParsedCriteria,
+          criteria: parsedCriteriaFromMessage,
+        }
+      : paretoStateWithParsedCriteria;
 
     const effectiveParetoState: ParetoState = {
       ...paretoStateWithParsedWeights,
@@ -1104,10 +1211,24 @@ export async function POST(req: NextRequest) {
       : 15;
 
         if (!hasThreeCriteria(effectiveParetoState)) {
+      const teacherCriteriaReply = await buildTeacherCriteriaReply({
+        studentMessage,
+        paretoState: effectiveParetoState,
+        caseContext,
+        recentHistory,
+      });
+
+      const criteriaCount = effectiveParetoState.criteria.length;
+
       return assistantResponse(
-        "Aún no has definido correctamente tus 3 criterios de Pareto.\n\n" +
-          "👉 Antes de continuar, escribe exactamente 3 criterios de priorización, por ejemplo:\n" +
-          "- Impacto\n- Frecuencia\n- Controlabilidad",
+        teacherCriteriaReply ||
+          (
+            criteriaCount === 0
+              ? "Antes de poner pesos, primero definamos tus 3 criterios de priorización para este caso. No quiero que sean genéricos, sino útiles para tus causas raíz. Propón el primero y yo te ayudo a afinarlo."
+              : criteriaCount === 1
+              ? `Bien, ya tienes 1 criterio: **${effectiveParetoState.criteria[0]?.name}**.\n\nAhora propón el segundo y te ayudo a ver si realmente sirve para priorizar tus causas en este caso.`
+              : `Ya tienes 2 criterios: **${effectiveParetoState.criteria.map((c) => c.name).join("** y **")}**.\n\nPropón el tercero y revisamos si el conjunto queda sólido para tu Pareto.`
+          ),
         {
           ...effectiveParetoState,
           step: "define_criteria",
@@ -1118,8 +1239,16 @@ export async function POST(req: NextRequest) {
     }
 
     if (!hasWeights(paretoStateWithParsedWeights)) {
+      const teacherCriteriaReply = await buildTeacherCriteriaReply({
+        studentMessage,
+        paretoState: paretoStateWithParsedWeights,
+        caseContext,
+        recentHistory,
+      });
+
       return assistantResponse(
-        buildMissingWeightsTeacherMessage(paretoStateWithParsedWeights, studentMessage),
+        teacherCriteriaReply ||
+          buildMissingWeightsTeacherMessage(paretoStateWithParsedWeights, studentMessage),
         {
           ...paretoStateWithParsedWeights,
           step: "set_weights",
@@ -1158,12 +1287,9 @@ export async function POST(req: NextRequest) {
         }
 
         return assistantResponse(
-          "Perfecto ✅ La lista de causas está lista.\n\n" +
-            "Ahora define **exactamente 3 criterios** para priorizar (por ejemplo: Impacto, Frecuencia y Controlabilidad).\n" +
-            "Escríbelos así:\n" +
-            "- Criterio 1: ...\n" +
-            "- Criterio 2: ...\n" +
-            "- Criterio 3: ...",
+          "Perfecto ✅ La lista de causas ya quedó lista.\n\n" +
+            "Ahora vamos con los criterios de priorización. Aquí no quiero que pongamos criterios genéricos por poner, sino criterios que realmente te ayuden a decidir cuáles causas pesan más en tu caso.\n\n" +
+            "Propón el primer criterio que consideres importante y yo te ayudo a afinarlo antes de pasar al siguiente.",
           { ...effectiveParetoState, step: "define_criteria" },
           "define_criteria"
         );
@@ -1174,11 +1300,9 @@ export async function POST(req: NextRequest) {
         hasThreeCriteria(effectiveParetoState)
       ) {
         return assistantResponse(
-          "Perfecto ✅ Ahora asigna **pesos (1–10)** a cada criterio.\n\n" +
-            "Escríbelos así:\n" +
-            "- Criterio 1: 8\n" +
-            "- Criterio 2: 6\n" +
-            "- Criterio 3: 9",
+          "Perfecto ✅ Ya tenemos los 3 criterios.\n\n" +
+            "Ahora vamos a ponderarlos. Puedes hacerlo uno por uno si quieres, y yo te ayudo a justificar si conviene darle más o menos peso según el caso.\n\n" +
+            "Empieza por el que consideres más importante y dime qué peso le pondrías entre 1 y 10.",
           { ...effectiveParetoState, step: "set_weights" },
           "set_weights"
         );
