@@ -262,8 +262,8 @@ function isAskingForCriteriaWeights(msg: string) {
 function hasThreeCriteria(state: ParetoState) {
   return (
     Array.isArray(state.criteria) &&
-    state.criteria.length === 3 &&
-    state.criteria.every((c) => c.name.trim().length > 0)
+    state.criteria.length >= 3 &&
+    state.criteria.every((c) => c.name.trim().length > 3)
   );
 }
 
@@ -365,8 +365,7 @@ function normalizeCriteria(input: unknown) {
         ...(weight !== undefined ? { weight } : {}),
       };
     })
-    .filter((item): item is { id: string; name: string; weight?: number } => Boolean(item))
-    .slice(0, 3);
+    .filter((item): item is { id: string; name: string; weight?: number } => Boolean(item));
 }
 
 function normalizeStep(input: unknown): ParetoStep {
@@ -773,12 +772,12 @@ function buildCurrentCriteriaWeightsMessage(state: ParetoState) {
   if (criteria.length === 0) {
     return (
       "Aún no tienes criterios registrados en Pareto.\n\n" +
-      "👉 Primero debemos definir exactamente 3 criterios de priorización, por ejemplo:\n" +
-      "- Impacto\n- Frecuencia\n- Controlabilidad"
+      "En esta etapa vamos a construir 3 criterios cortos y útiles para tu caso. " +
+      "La idea es que te sirvan para comparar tus causas raíz, no poner criterios genéricos por cumplir."
     );
   }
 
-  const lines = criteria.map((criterion, index) => {
+  const lines = criteria.map((criterion) => {
     const weight =
       typeof criterion.weight === "number" && Number.isFinite(criterion.weight)
         ? criterion.weight
@@ -803,14 +802,14 @@ function buildCurrentCriteriaWeightsMessage(state: ParetoState) {
     return (
       "Claro. Estos son tus criterios y pesos actuales en Pareto:\n\n" +
       lines.join("\n") +
-      "\n\nSi quieres, ahora puedo ayudarte a interpretar cómo usar estos pesos para priorizar tus causas."
+      "\n\nSi quieres, ahora te explico cómo usarlos en tu Excel o planilla para identificar el grupo crítico."
     );
   }
 
   return (
     "Claro. Estos son tus criterios actuales en Pareto:\n\n" +
     lines.join("\n") +
-    "\n\nTodavía faltan algunos pesos por completar. Cada criterio debe tener un peso entre 1 y 10."
+    "\n\nTodavía faltan pesos por completar. Recuerda: un peso más alto significa que ese criterio tendrá más influencia en la priorización."
   );
 }
 
@@ -854,12 +853,47 @@ function parseWeightsFromMessage(
   return updates > 0 ? parsed : null;
 }
 
+function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
+  const raw = String(studentMessage ?? "").trim();
+  if (!raw) return false;
+
+  const normalized = normalizeText(raw);
+  const compact = raw.replace(/[¿?]/g, "").trim();
+  const wordCount = compact.split(/\s+/).filter(Boolean).length;
+
+  if (isOkConfirm(raw)) return false;
+  if (isAskingForCriticalRoots(raw)) return false;
+  if (isAskingForCriteriaWeights(raw)) return false;
+  if (isAskingHowToDoPareto(raw)) return false;
+
+  const looksLikeQuestionOrHelp =
+    raw.includes("?") ||
+    raw.includes("¿") ||
+    normalized.includes("que es") ||
+    normalized.includes("que significa") ||
+    normalized.includes("para que") ||
+    normalized.includes("por que") ||
+    normalized.includes("como hago") ||
+    normalized.includes("como seria") ||
+    normalized.includes("como deberia") ||
+    normalized.includes("no se") ||
+    normalized.includes("ayudame") ||
+    normalized.includes("ayuda");
+
+  if (looksLikeQuestionOrHelp && wordCount > 3) {
+    return false;
+  }
+
+  return true;
+}
+
 function parseCriteriaFromMessage(
   studentMessage: string,
   currentCriteria: ParetoState["criteria"]
 ): ParetoState["criteria"] | null {
   const text = String(studentMessage ?? "").trim();
   if (!text) return null;
+  if (!shouldTreatMessageAsCriteriaProposal(text)) return null;
 
   const existing = Array.isArray(currentCriteria) ? [...currentCriteria] : [];
   const existingKeys = new Set(existing.map((c) => normalizeText(c.name)));
@@ -875,6 +909,7 @@ function parseCriteriaFromMessage(
         .replace(/^ser[ií]a\s*/i, "")
         .replace(/^podr[ií]a\s+ser\s*/i, "")
         .replace(/^uno\s+ser[ií]a\s*/i, "")
+        .replace(/[.?!]+$/g, "")
         .trim()
     )
     .filter(Boolean);
@@ -884,6 +919,9 @@ function parseCriteriaFromMessage(
   const out = [...existing];
 
   for (const line of lines) {
+    const words = line.split(/\s+/).filter(Boolean);
+    if (words.length > 4) continue;
+
     const key = normalizeText(line);
     if (!key) continue;
     if (existingKeys.has(key)) continue;
@@ -915,13 +953,17 @@ function buildMissingWeightsTeacherMessage(state: ParetoState, studentMessage: s
     })
     .join("\n");
 
+  const exampleText = state.criteria
+    .map((criterion, index) => `- ${criterion.name}: ${Math.max(8 - index * 2, 1)}`)
+    .join("\n");
+
   if (askedForRoots) {
     return (
-      "Claro, te recuerdo tus causas raíz; pero antes necesitamos completar correctamente los pesos del Pareto para que la priorización quede bien hecha.\n\n" +
+      "Puedo recordarte tus causas, pero antes conviene cerrar bien los pesos del Pareto para que la priorización tenga fundamento.\n\n" +
       "Tus criterios actuales son:\n" +
       `${criteriaText}\n\n` +
-      "👉 Envíame los pesos así, uno por criterio:\n" +
-      "- Impacto: 8\n- Frecuencia: 6\n- Controlabilidad: 9"
+      "Ahora asígnales un peso entre 1 y 10. Un peso más alto significa mayor importancia al comparar causas. Puedes escribírmelos con este formato:\n" +
+      `${exampleText}`
     );
   }
 
@@ -929,16 +971,15 @@ function buildMissingWeightsTeacherMessage(state: ParetoState, studentMessage: s
     return (
       "Claro. Estos son tus criterios actuales de Pareto:\n\n" +
       `${criteriaText}\n\n` +
-      "Todavía faltan pesos válidos. Asigna un valor entre 1 y 10 a cada criterio."
+      "Ahora falta asignarles peso. Usa un valor entre 1 y 10 según la importancia que tendrá cada criterio en tu priorización."
     );
   }
 
   return (
-    "Todavía no están completos tus pesos de Pareto.\n\n" +
-    "Tus criterios actuales son:\n" +
+    "Ya tenemos tus criterios. Ahora falta ponderarlos.\n\n" +
     `${criteriaText}\n\n` +
-    "👉 Asigna un peso entre 1 y 10 a cada criterio. Por ejemplo:\n" +
-    "- Impacto: 8\n- Frecuencia: 6\n- Controlabilidad: 9"
+    "Pon un peso entre 1 y 10 a cada criterio. Un peso más alto significa mayor influencia en la priorización. Puedes escribírmelos con este formato:\n" +
+    `${exampleText}`
   );
 }
 
@@ -1023,22 +1064,28 @@ async function buildTeacherCriteriaReply(input: {
   const model = getGeminiModel();
 
   const prompt = `
-Eres un DOCENTE asesor de Ingeniería de Métodos guiando la ETAPA 5: PARETO.
+Eres un DOCENTE asesor de Ingeniería de Métodos guiando la ETAPA 5: PARETO de un Plan de Mejora.
 
-OBJETIVO:
-Ayudar al estudiante a definir criterios de priorización útiles y contextualizados para su caso.
-No seas robótico. No des una lista cerrada salvo que sea necesario.
-Guía como asesor real.
+TU PAPEL:
+Acompañar al estudiante de manera conversacional, breve y útil, como en una asesoría real.
+No respondas como robot, checklist rígido ni manual largo.
 
-REGLAS:
-- Usa el contexto del caso y las causas raíz seleccionadas.
+CÓMO DEBES ACTUAR EN ESTA ETAPA:
+- Primero ayudan a definir 3 criterios de priorización alineados al caso.
+- Los criterios deben ser cortos: idealmente 1 o 2 palabras; máximo 4 palabras.
+- No impongas criterios genéricos como lista fija.
+- Si el estudiante no sabe qué poner, propone solo 2 opciones contextualizadas y pregúntale con cuál se queda o cómo lo adaptaría.
+- Si el estudiante propone un criterio, evalúa rápidamente si sirve para comparar causas raíz y, si hace falta, ayúdale a reformularlo en una versión más corta y clara.
+- Si ya tiene 1 o 2 criterios, enfócate solo en completar el siguiente. No expliques de más.
+- Si ya tiene 3 criterios pero faltan pesos, deja de proponer criterios nuevos. Explica brevemente que el peso va de 1 a 10 y que un peso mayor significa mayor importancia para priorizar.
+- Si el estudiante pregunta qué sigue después de criterios y pesos, indícale de forma breve que debe llevar sus causas a Excel o a su planilla de Pareto, calificarlas con esos criterios, ordenarlas y volver con el grupo crítico.
+- Si pregunta por el 80/20, explica en una sola frase que se busca identificar el pequeño grupo de causas que concentra la mayor parte del efecto.
+- Si el mensaje es ambiguo, haz una sola pregunta corta para destrabar el avance.
 - No inventes datos fuera del estado recibido.
-- Si el estudiante pide ideas, propone 2 o 3 criterios adecuados para SU caso.
-- Si el estudiante propone un criterio, evalúa si sirve y ayúdalo a formularlo mejor.
-- Si ya tiene 1 o 2 criterios, ayúdale a completar el siguiente.
-- Si pregunta por pesos, explica de forma breve qué significa dar más o menos peso.
-- Máximo 2 párrafos.
 - No cierres la etapa aquí.
+- Máximo 2 párrafos cortos.
+- Evita listas salvo que el estudiante pida opciones; en ese caso usa máximo 2 viñetas.
+- Termina con una sola pregunta o una sola acción concreta.
 
 CONTEXTO DEL CASO:
 ${JSON.stringify(input.caseContext ?? {}, null, 2)}
@@ -1210,7 +1257,7 @@ export async function POST(req: NextRequest) {
       ? Math.max(minSelected, effectiveParetoState.maxSelected)
       : 15;
 
-        if (!hasThreeCriteria(effectiveParetoState)) {
+    if (!hasThreeCriteria(effectiveParetoState)) {
       const teacherCriteriaReply = await buildTeacherCriteriaReply({
         studentMessage,
         paretoState: effectiveParetoState,
@@ -1257,6 +1304,24 @@ export async function POST(req: NextRequest) {
         "set_weights"
       );
     }
+
+    if (
+      effectiveParetoState.step === "set_weights" &&
+      hasWeights(effectiveParetoState) &&
+      isAskingHowToDoPareto(studentMessage)
+    ) {
+      return assistantResponse(
+        "Perfecto. Ya tienes tus 3 criterios con peso.\n\n" +
+          "Ahora lleva tus causas raíz a tu Excel o planilla de Pareto: califica cada causa con esos criterios, obtén el puntaje total, ordénalas de mayor a menor y revisa el acumulado. La lógica 80/20 te ayuda a identificar el grupo pequeño de causas que concentra la mayor parte del problema. Cuando termines, vuelve con tus causas críticas.",
+        {
+          ...effectiveParetoState,
+          step: "excel_work",
+          criticalRoots: [],
+        },
+        "instruct_excel"
+      );
+    }
+
     
     if (isAskingForCriteriaWeights(studentMessage)) {
       return assistantResponse(
@@ -1313,8 +1378,8 @@ export async function POST(req: NextRequest) {
         hasWeights(effectiveParetoState)
       ) {
         return assistantResponse(
-          "Listo ✅ Ahora haz el **Pareto en Excel (80/20)** con tus causas.\n\n" +
-            "👉 Cuando termines, vuelve y envíame la lista de **causas críticas (Top 20%)**.",
+          "Listo ✅ Ya quedaron definidos tus criterios y pesos.\n\n" +
+          "Ahora haz el Pareto en tu Excel o planilla: califica cada causa raíz, ordénalas de mayor a menor, revisa el acumulado y detecta el grupo crítico. La idea del 80/20 es quedarte con las pocas causas que más concentran el efecto. Cuando termines, vuelve y envíame tus causas críticas.",
           { ...effectiveParetoState, step: "excel_work" },
           "instruct_excel"
         );
@@ -1336,21 +1401,24 @@ export async function POST(req: NextRequest) {
     ) {
 
       if (isAskingHowToDoPareto(studentMessage)) {
-        return assistantResponse(
-          "Te guío. En esta etapa debes priorizar tus causas raíz con el criterio de Pareto.\n\n" +
-            "Haz esto:\n" +
-            "1. Toma la lista de causas que ya tienes.\n" +
-            "2. Asígnales un valor en tu Excel según frecuencia, impacto o el criterio que te hayan pedido.\n" +
-            "3. Ordena de mayor a menor.\n" +
-            "4. Calcula el acumulado.\n" +
-            "5. Identifica cuáles entran en el top 20% o en el grupo crítico.\n\n" +
-            "Cuando termines, pégame solo las causas críticas exactamente como aparecen en tu lista y yo te ayudo a cerrar la etapa.",
-          {
-            ...effectiveParetoState,
-            step: "collect_critical",
-          },
-          "collect_critical"
-        );
+        const criteriaNames = effectiveParetoState.criteria
+            .map((criterion) => criterion.name.trim())
+            .filter(Boolean);
+
+          const criteriaText =
+            criteriaNames.length > 0 ? criteriaNames.join(", ") : "tus criterios definidos";
+
+          return assistantResponse(
+            "Te guío. En esta etapa debes priorizar tus causas raíz en tu Excel o planilla usando " +
+              `${criteriaText}` +
+              ".\n\n" +
+              "Califica cada causa, ordénalas de mayor a menor, calcula el acumulado y detecta el grupo crítico. La lógica del 80/20 busca identificar el pequeño grupo de causas que concentra la mayor parte del efecto. Cuando termines, pégame solo las causas críticas y yo te ayudo a revisarlas.",
+            {
+              ...effectiveParetoState,
+              step: "collect_critical",
+            },
+            "collect_critical"
+          );
       }
 
       const parsedCritical = parseCriticalRootsFromMessage(studentMessage);

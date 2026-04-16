@@ -433,7 +433,7 @@ export default function ChatPage() {
   type ParetoState = {
     roots: string[];              // viene de ishikawa_final.validate
     selectedRoots: string[];      // 10-15 (para trabajar en Excel)
-    criteria: ParetoCriterion[];  // exactamente 3
+    criteria: ParetoCriterion[];  // 0..3 durante la conversación; 3 al validar
     criticalRoots: string[];      // top 20% (el estudiante vuelve del Excel y lo pega)
     minSelected: number;          // 10
     maxSelected: number;          // 15
@@ -495,7 +495,7 @@ export default function ChatPage() {
 
     const rawCriteria = Array.isArray(source.criteria) ? source.criteria : [];
     const criteria: ParetoCriterion[] = rawCriteria
-      .map((item, index) => {
+      .map((item) => {
         const record =
           typeof item === "object" && item !== null
             ? (item as Record<string, unknown>)
@@ -509,25 +509,16 @@ export default function ChatPage() {
             ? weightRaw
             : undefined;
 
-        const fallbackName =
-          index === 0 ? "Impacto" : index === 1 ? "Frecuencia" : "Controlabilidad";
+        if (!name) return null;
 
         return {
           id,
-          name: name || fallbackName,
+          name,
           ...(weight !== undefined ? { weight } : {}),
         };
       })
-      .filter((item) => item.name.length > 0)
+      .filter((item): item is ParetoCriterion => Boolean(item))
       .slice(0, 3);
-
-    while (criteria.length < 3) {
-      const index = criteria.length;
-      criteria.push({
-        id: crypto.randomUUID(),
-        name: index === 0 ? "Impacto" : index === 1 ? "Frecuencia" : "Controlabilidad",
-      });
-    }
 
     const rawStep = String(source.step ?? "").trim();
     const step = (PARETO_STEPS as readonly string[]).includes(rawStep)
@@ -544,7 +535,6 @@ export default function ChatPage() {
       step,
     };
   }
-
 
 
   type ObjectivesState = {
@@ -5146,11 +5136,7 @@ function looksLikeProgressClosureRequest(text: string) {
       const initialPareto: ParetoState = {
         roots,
         selectedRoots: selected,
-        criteria: [
-          { id: crypto.randomUUID(), name: "Impacto" },
-          { id: crypto.randomUUID(), name: "Frecuencia" },
-          { id: crypto.randomUUID(), name: "Controlabilidad" },
-        ],
+        criteria: [],
         criticalRoots: [],
         minSelected: 10,
         maxSelected: 15,
