@@ -337,16 +337,34 @@ function normalizeWeight(input: unknown): number | undefined {
   return n;
 }
 
-function defaultCriterionName(index: number): string {
-  if (index === 0) return "Impacto";
-  if (index === 1) return "Frecuencia";
-  return "Controlabilidad";
+const LEGACY_AUTO_CRITERIA_KEYS = [
+  "impacto",
+  "frecuencia",
+  "controlabilidad",
+] as const;
+
+function isLegacyAutoCriteria(
+  criteria: Array<{ id: string; name: string; weight?: number }>
+) {
+  if (criteria.length !== 3) return false;
+
+  const names = criteria.map((item) => normalizeText(item.name)).sort();
+  const expected = [...LEGACY_AUTO_CRITERIA_KEYS].sort();
+
+  const sameNames = names.every((value, index) => value === expected[index]);
+
+  const hasAnyWeight = criteria.some((item) => {
+    const weight = Number(item.weight);
+    return Number.isFinite(weight) && weight >= 1 && weight <= 10;
+  });
+
+  return sameNames && !hasAnyWeight;
 }
 
 function normalizeCriteria(input: unknown) {
   const raw = Array.isArray(input) ? input : [];
 
-  return raw
+  const criteria = raw
     .map((item) => {
       const record =
         typeof item === "object" && item !== null
@@ -365,7 +383,10 @@ function normalizeCriteria(input: unknown) {
         ...(weight !== undefined ? { weight } : {}),
       };
     })
-    .filter((item): item is { id: string; name: string; weight?: number } => Boolean(item));
+    .filter((item): item is { id: string; name: string; weight?: number } => Boolean(item))
+    .slice(0, 3);
+
+  return isLegacyAutoCriteria(criteria) ? [] : criteria;
 }
 
 function normalizeStep(input: unknown): ParetoStep {

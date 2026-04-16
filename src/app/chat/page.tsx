@@ -472,6 +472,31 @@ export default function ChatPage() {
     return out;
   }
 
+  function normalizeParetoCriterionKey(input: string) {
+    return String(input ?? "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isLegacyAutoParetoCriteria(criteria: ParetoCriterion[]) {
+    if (criteria.length !== 3) return false;
+
+    const names = criteria.map((item) => normalizeParetoCriterionKey(item.name)).sort();
+    const expected = ["impacto", "frecuencia", "controlabilidad"].sort();
+
+    const sameNames = names.every((value, index) => value === expected[index]);
+
+    const hasAnyWeight = criteria.some((item) => {
+      const weight = Number(item.weight);
+      return Number.isFinite(weight) && weight >= 1 && weight <= 10;
+    });
+
+    return sameNames && !hasAnyWeight;
+  }
+
   function normalizeParetoStateClient(input: unknown): ParetoState | null {
     if (!input || typeof input !== "object") return null;
 
@@ -481,12 +506,20 @@ export default function ChatPage() {
     const minSelectedRaw = Number(source.minSelected);
     const maxSelectedRaw = Number(source.maxSelected);
 
-    const minSelected = Number.isFinite(minSelectedRaw) && minSelectedRaw > 0 ? Math.round(minSelectedRaw) : 10;
-    const maxSelectedBase = Number.isFinite(maxSelectedRaw) && maxSelectedRaw > 0 ? Math.round(maxSelectedRaw) : 15;
+    const minSelected =
+      Number.isFinite(minSelectedRaw) && minSelectedRaw > 0
+        ? Math.round(minSelectedRaw)
+        : 10;
+    const maxSelectedBase =
+      Number.isFinite(maxSelectedRaw) && maxSelectedRaw > 0
+        ? Math.round(maxSelectedRaw)
+        : 15;
     const maxSelected = Math.max(minSelected, maxSelectedBase);
 
     const selectedRootsRaw = normalizeParetoStringArray(source.selectedRoots);
-    const selectedRoots = (selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected)).slice(0, maxSelected);
+    const selectedRoots = (
+      selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected)
+    ).slice(0, maxSelected);
 
     const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
     const criticalRoots = normalizeParetoStringArray(source.criticalRoots).filter((item) =>
@@ -494,7 +527,7 @@ export default function ChatPage() {
     );
 
     const rawCriteria = Array.isArray(source.criteria) ? source.criteria : [];
-    const criteria: ParetoCriterion[] = rawCriteria
+    const parsedCriteria: ParetoCriterion[] = rawCriteria
       .map((item) => {
         const record =
           typeof item === "object" && item !== null
@@ -519,6 +552,8 @@ export default function ChatPage() {
       })
       .filter((item): item is ParetoCriterion => Boolean(item))
       .slice(0, 3);
+
+    const criteria = isLegacyAutoParetoCriteria(parsedCriteria) ? [] : parsedCriteria;
 
     const rawStep = String(source.step ?? "").trim();
     const step = (PARETO_STEPS as readonly string[]).includes(rawStep)
