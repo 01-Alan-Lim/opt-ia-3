@@ -874,6 +874,20 @@ function parseWeightsFromMessage(
   return updates > 0 ? parsed : null;
 }
 
+function hasExplicitCriterionProposalSignal(studentMessage: string) {
+  const normalized = normalizeText(studentMessage);
+
+  return (
+    normalized.includes("criterio") ||
+    normalized.includes("seria") ||
+    normalized.includes("podria ser") ||
+    normalized.includes("defini") ||
+    normalized.includes("propongo") ||
+    normalized.includes("otro factor") ||
+    normalized.includes("otro aspecto")
+  );
+}
+
 function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
   const raw = String(studentMessage ?? "").trim();
   if (!raw) return false;
@@ -881,6 +895,7 @@ function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
   const normalized = normalizeText(raw);
   const compact = raw.replace(/[¿?]/g, "").trim();
   const wordCount = compact.split(/\s+/).filter(Boolean).length;
+  const explicitProposal = hasExplicitCriterionProposalSignal(raw);
 
   if (isOkConfirm(raw)) return false;
   if (isAskingForCriticalRoots(raw)) return false;
@@ -901,7 +916,7 @@ function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
     normalized.includes("ayudame") ||
     normalized.includes("ayuda");
 
-  if (looksLikeQuestionOrHelp && wordCount > 3) {
+  if (looksLikeQuestionOrHelp && !explicitProposal && wordCount > 3) {
     return false;
   }
 
@@ -945,6 +960,27 @@ function cleanCriterionCandidateText(input: string) {
   if (words.length === 0 || words.length > 4) return "";
 
   return value;
+}
+
+function extractCriterionFromExplicitProposal(studentMessage: string) {
+  const text = String(studentMessage ?? "").trim();
+  if (!text) return "";
+
+  const patterns = [
+    /(?:el\s+otro\s+criterio|otro\s+criterio|el\s+primer\s+criterio|primer\s+criterio|el\s+segundo\s+criterio|segundo\s+criterio|el\s+tercer\s+criterio|tercer\s+criterio|un\s+criterio|criterio)\s+(?:que\s+defin[ií]|ser[ií]a|es|podr[ií]a\s+ser)\s*[:,]?\s*([^\n?.!]+)/i,
+    /^(?:ser[ií]a|podr[ií]a\s+ser)\s*[:,]?\s*([^\n?.!]+)/i,
+    /^(?:propongo|propongo\s+como\s+criterio)\s*[:,]?\s*([^\n?.!]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+
+    const candidate = cleanCriterionCandidateText(match[1]);
+    if (candidate) return candidate;
+  }
+
+  return "";
 }
 
 async function extractCriteriaCandidatesWithAI(input: {
@@ -1035,15 +1071,24 @@ async function parseCriteriaFromMessage(input: {
     : [];
   const existingKeys = new Set(existing.map((c) => normalizeText(c.name)));
 
-  const aiResult = await extractCriteriaCandidatesWithAI({
-    studentMessage: text,
-    currentCriteria: existing,
-    caseContext: input.caseContext,
-    recentHistory: input.recentHistory,
-    selectedRoots: input.selectedRoots,
-  });
+  let candidates: string[] = [];
 
-  let candidates = aiResult.shouldCapture ? aiResult.criteria : [];
+  const explicitCandidate = extractCriterionFromExplicitProposal(text);
+  if (explicitCandidate) {
+    candidates = [explicitCandidate];
+  }
+
+  if (candidates.length === 0) {
+    const aiResult = await extractCriteriaCandidatesWithAI({
+      studentMessage: text,
+      currentCriteria: existing,
+      caseContext: input.caseContext,
+      recentHistory: input.recentHistory,
+      selectedRoots: input.selectedRoots,
+    });
+
+    candidates = aiResult.shouldCapture ? aiResult.criteria : [];
+  }
 
   if (candidates.length === 0) {
     const fallback = cleanCriterionCandidateText(text);
@@ -1127,6 +1172,49 @@ function buildMissingWeightsTeacherMessage(state: ParetoState, studentMessage: s
   );
 }
 
+function buildCriteriaGuidanceFallback(input: {
+  previousCriteria: ParetoState["criteria"];
+  currentState: ParetoState;
+}) {
+  const previousCount = input.previousCriteria.length;
+  const currentCount = input.currentState.criteria.length;
+  const names = input.currentState.criteria
+    .map((item) => item.name.trim())
+    .filter(Boolean);
+
+  const addedCriterion =
+    currentCount > previousCount
+      ? input.currentState.criteria[currentCount - 1]?.name?.trim() ?? ""
+      : "";
+
+  if (currentCount === 0) {
+    return "Antes de poner pesos, primero definamos tus 3 criterios de priorización para este caso. Propón el primero y yo te ayudo a ver si realmente sirve para comparar tus causas raíz.";
+  }
+
+  if (currentCount < 3) {
+    if (addedCriterion) {
+      return currentCount === 1
+        ? `Sí, **${addedCriterion}** puede funcionar como criterio si te ayuda a comparar tus causas raíz en este caso. Ahora pensemos el segundo criterio.`
+        : `Sí, **${addedCriterion}** puede ser un criterio válido si aporta una mirada distinta para priorizar tus causas. Hasta ahora tienes **${names.join("** y **")}**. Propón el tercer criterio y lo revisamos.`;
+    }
+
+    if (currentCount === 1) {
+      return `Bien, ya tienes 1 criterio: **${names[0]}**. Ahora propón el segundo y revisamos si complementa bien tu análisis.`;
+    }
+
+    return `Ya tienes 2 criterios: **${names.join("** y **")}**. Propón el tercero y revisamos si el conjunto queda sólido para tu Pareto.`;
+  }
+
+  if (!hasWeights(input.currentState)) {
+    if (addedCriterion) {
+      return `Sí, **${addedCriterion}** puede servir como criterio porque aporta otra dimensión para priorizar causas. Con **${names.join("**, **")}** ya tienes tus 3 criterios base. Ahora asígnales un peso entre 1 y 10 según su importancia.`;
+    }
+
+    return `Ya tienes tus 3 criterios: **${names.join("**, **")}**. Ahora asígnales un peso entre 1 y 10 según la importancia que tendrá cada uno en la priorización.`;
+  }
+
+  return `Ya tienes criterios y pesos definidos. Ahora pasa a tu Excel o planilla de Pareto, califica las causas, ordénalas y vuelve con el grupo crítico.`;
+}
 
 async function buildTeacherParetoReply(input: {
   studentMessage: string;
@@ -1365,6 +1453,8 @@ export async function POST(req: NextRequest) {
 
     const rootsForMatching = selectedRoots.length > 0 ? selectedRoots : roots;
 
+    const previousCriteriaBeforeParse = paretoState.criteria;
+
     const parsedCriteriaNames = await parseCriteriaFromMessage({
       studentMessage,
       currentCriteria: paretoState.criteria,
@@ -1413,17 +1503,16 @@ export async function POST(req: NextRequest) {
         recentHistory,
       });
 
-      const criteriaCount = effectiveParetoState.criteria.length;
-
       return assistantResponse(
         teacherCriteriaReply ||
-          (
-            criteriaCount === 0
-              ? "Antes de poner pesos, primero definamos tus 3 criterios de priorización para este caso. No quiero que sean genéricos, sino útiles para tus causas raíz. Propón el primero y yo te ayudo a afinarlo."
-              : criteriaCount === 1
-              ? `Bien, ya tienes 1 criterio: **${effectiveParetoState.criteria[0]?.name}**.\n\nAhora propón el segundo y te ayudo a ver si realmente sirve para priorizar tus causas en este caso.`
-              : `Ya tienes 2 criterios: **${effectiveParetoState.criteria.map((c) => c.name).join("** y **")}**.\n\nPropón el tercero y revisamos si el conjunto queda sólido para tu Pareto.`
-          ),
+          buildCriteriaGuidanceFallback({
+            previousCriteria: previousCriteriaBeforeParse,
+            currentState: {
+              ...effectiveParetoState,
+              step: "define_criteria",
+              criticalRoots: [],
+            },
+          }),
         {
           ...effectiveParetoState,
           step: "define_criteria",
@@ -1443,7 +1532,14 @@ export async function POST(req: NextRequest) {
 
       return assistantResponse(
         teacherCriteriaReply ||
-          buildMissingWeightsTeacherMessage(paretoStateWithParsedWeights, studentMessage),
+          buildCriteriaGuidanceFallback({
+            previousCriteria: previousCriteriaBeforeParse,
+            currentState: {
+              ...paretoStateWithParsedWeights,
+              step: "set_weights",
+              criticalRoots: [],
+            },
+          }),
         {
           ...paretoStateWithParsedWeights,
           step: "set_weights",
