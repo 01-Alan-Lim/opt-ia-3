@@ -908,48 +908,171 @@ function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
   return true;
 }
 
-function parseCriteriaFromMessage(
-  studentMessage: string,
-  currentCriteria: ParetoState["criteria"]
-): ParetoState["criteria"] | null {
-  const text = String(studentMessage ?? "").trim();
+function cleanCriterionCandidateText(input: string) {
+  let value = String(input ?? "")
+    .trim()
+    .replace(/[.?!]+$/g, "")
+    .replace(/^[-*•\d.)\s]+/, "")
+    .trim();
+
+  value = value
+    .replace(/^(si|sí)\s*,?\s*/i, "")
+    .replace(/^(un|una)\s+criterio\s+podr[ií]a\s+ser\s*,?\s*/i, "")
+    .replace(/^criterio\s*\d*\s*:\s*/i, "")
+    .replace(/^(podr[ií]a\s+ser|ser[ií]a)\s*,?\s*/i, "")
+    .replace(/^uno\s+ser[ií]a\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!value) return "";
+
+  const normalized = normalizeText(value);
+  const blocked = new Set([
+    "si",
+    "sí",
+    "criterio",
+    "un criterio",
+    "una criterio",
+    "podria ser",
+    "seria",
+    "un criterio podria ser",
+    "una criterio podria ser",
+  ]);
+
+  if (blocked.has(normalized)) return "";
+
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 4) return "";
+
+  return value;
+}
+
+async function extractCriteriaCandidatesWithAI(input: {
+  studentMessage: string;
+  currentCriteria: ParetoState["criteria"];
+  caseContext: Record<string, unknown> | null;
+  recentHistory: string;
+  selectedRoots: string[];
+}) {
+  try {
+    const model = getGeminiModel();
+
+    const prompt = `
+Eres un docente asesor de Ingeniería de Métodos.
+Tu tarea NO es responder al estudiante, sino identificar si su mensaje realmente propone uno o más criterios de Pareto.
+
+CONTEXTO:
+- Etapa: Pareto
+- Los criterios deben servir para comparar causas raíz.
+- Deben ser cortos: ideal 1 o 2 palabras, máximo 4.
+- NO debes capturar frases envoltorio como: "sí", "un criterio podría ser", "podría ser", "sería".
+- NO debes capturar preguntas, explicaciones largas, dudas genéricas ni frases de cortesía.
+- Si el mensaje NO propone claramente un criterio, devuelve shouldCapture=false.
+- Si sí propone, devuelve solo el criterio limpio.
+- Máximo 3 criterios.
+
+CAUSAS RAÍZ SELECCIONADAS:
+${JSON.stringify(input.selectedRoots, null, 2)}
+
+CRITERIOS ACTUALES:
+${JSON.stringify(input.currentCriteria, null, 2)}
+
+CONTEXTO DEL CASO:
+${JSON.stringify(input.caseContext ?? {}, null, 2)}
+
+HISTORIAL RECIENTE:
+${input.recentHistory}
+
+MENSAJE DEL ESTUDIANTE:
+"""${input.studentMessage}"""
+
+DEVUELVE SOLO JSON:
+{
+  "shouldCapture": true,
+  "criteria": ["Método de trabajo"]
+}
+`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    const json = extractJsonSafe(text);
+
+    const shouldCapture = Boolean(json?.shouldCapture);
+    const rawCriteria: unknown[] = Array.isArray(json?.criteria)
+      ? (json.criteria as unknown[])
+      : [];
+
+    const criteria = rawCriteria
+      .map((item: unknown) => cleanCriterionCandidateText(String(item ?? "")))
+      .filter((item): item is string => item.length > 0)
+      .slice(0, 3);
+
+    return {
+      shouldCapture: shouldCapture && criteria.length > 0,
+      criteria,
+    };
+  } catch {
+    return {
+      shouldCapture: false,
+      criteria: [] as string[],
+    };
+  }
+}
+
+async function parseCriteriaFromMessage(input: {
+  studentMessage: string;
+  currentCriteria: ParetoState["criteria"];
+  caseContext: Record<string, unknown> | null;
+  recentHistory: string;
+  selectedRoots: string[];
+}): Promise<ParetoState["criteria"] | null> {
+  const text = String(input.studentMessage ?? "").trim();
   if (!text) return null;
   if (!shouldTreatMessageAsCriteriaProposal(text)) return null;
 
-  const existing = Array.isArray(currentCriteria) ? [...currentCriteria] : [];
+  const existing = Array.isArray(input.currentCriteria)
+    ? [...input.currentCriteria]
+    : [];
   const existingKeys = new Set(existing.map((c) => normalizeText(c.name)));
 
-  const lines = text
-    .split(/\n|;/g)
-    .flatMap((line) => line.split(","))
-    .map((line) =>
-      line
-        .trim()
-        .replace(/^[-*•\d.)\s]+/, "")
-        .replace(/^criterio\s*\d*\s*:\s*/i, "")
-        .replace(/^ser[ií]a\s*/i, "")
-        .replace(/^podr[ií]a\s+ser\s*/i, "")
-        .replace(/^uno\s+ser[ií]a\s*/i, "")
-        .replace(/[.?!]+$/g, "")
-        .trim()
-    )
-    .filter(Boolean);
+  const aiResult = await extractCriteriaCandidatesWithAI({
+    studentMessage: text,
+    currentCriteria: existing,
+    caseContext: input.caseContext,
+    recentHistory: input.recentHistory,
+    selectedRoots: input.selectedRoots,
+  });
 
-  if (lines.length === 0) return null;
+  let candidates = aiResult.shouldCapture ? aiResult.criteria : [];
+
+  if (candidates.length === 0) {
+    const fallback = cleanCriterionCandidateText(text);
+    const fallbackWords = fallback.split(/\s+/).filter(Boolean);
+
+    if (
+      fallback &&
+      !text.includes("?") &&
+      !text.includes("¿") &&
+      fallbackWords.length >= 1 &&
+      fallbackWords.length <= 4 &&
+      normalizeText(fallback) !== "si"
+    ) {
+      candidates = [fallback];
+    }
+  }
+
+  if (candidates.length === 0) return null;
 
   const out = [...existing];
 
-  for (const line of lines) {
-    const words = line.split(/\s+/).filter(Boolean);
-    if (words.length > 4) continue;
-
-    const key = normalizeText(line);
+  for (const candidate of candidates) {
+    const key = normalizeText(candidate);
     if (!key) continue;
     if (existingKeys.has(key)) continue;
 
     out.push({
       id: crypto.randomUUID(),
-      name: line,
+      name: candidate,
     });
     existingKeys.add(key);
 
@@ -1097,6 +1220,7 @@ CÓMO DEBES ACTUAR EN ESTA ETAPA:
 - No impongas criterios genéricos como lista fija.
 - Si el estudiante no sabe qué poner, propone solo 2 opciones contextualizadas y pregúntale con cuál se queda o cómo lo adaptaría.
 - Si el estudiante propone un criterio, evalúa rápidamente si sirve para comparar causas raíz y, si hace falta, ayúdale a reformularlo en una versión más corta y clara.
+- Ignora frases envoltorio como "sí", "un criterio podría ser", "podría ser" o "sería"; solo considera el concepto real que el estudiante propone.
 - Si ya tiene 1 o 2 criterios, enfócate solo en completar el siguiente. No expliques de más.
 - Si ya tiene 3 criterios pero faltan pesos, deja de proponer criterios nuevos. Explica brevemente que el peso va de 1 a 10 y que un peso mayor significa mayor importancia para priorizar.
 - Si el estudiante pregunta qué sigue después de criterios y pesos, indícale de forma breve que debe llevar sus causas a Excel o a su planilla de Pareto, calificarlas con esos criterios, ordenarlas y volver con el grupo crítico.
@@ -1241,10 +1365,13 @@ export async function POST(req: NextRequest) {
 
     const rootsForMatching = selectedRoots.length > 0 ? selectedRoots : roots;
 
-        const parsedCriteriaNames = parseCriteriaFromMessage(
+    const parsedCriteriaNames = await parseCriteriaFromMessage({
       studentMessage,
-      paretoState.criteria
-    );
+      currentCriteria: paretoState.criteria,
+      caseContext,
+      recentHistory,
+      selectedRoots: paretoState.selectedRoots,
+    });
 
     const paretoStateWithParsedCriteria: ParetoState = parsedCriteriaNames
       ? {
