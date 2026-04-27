@@ -109,8 +109,24 @@ type ParetoIntent =
 
 async function classifyStudentIntent(message: string): Promise<ParetoIntent> {
   const text = message.trim();
-
   if (!text) return "OTHER";
+
+  const normalized = normalizeText(text);
+
+  if (
+    isOkConfirm(text) ||
+    normalized.includes("son esas") ||
+    normalized.includes("esas son") ||
+    normalized.includes("correcto son esas") ||
+    normalized.includes("si son esas") ||
+    normalized.includes("sí son esas") ||
+    normalized.includes("pasamos a la otra etapa") ||
+    normalized.includes("pasamos a otra etapa") ||
+    normalized.includes("pasamos de etapa") ||
+    normalized.includes("continuemos")
+  ) {
+    return "CONFIRM";
+  }
 
   try {
     const model = getGeminiModel();
@@ -134,7 +150,7 @@ Reglas:
 - ASK_METHOD: pregunta cómo hacer Pareto o qué debe hacer en esta etapa.
 - DELIVER_CRITICAL_ROOTS: está entregando o pegando causas críticas resultantes de su análisis.
 - ANALYTICAL_QUESTION: hace una pregunta analítica sobre sus causas, cuál impacta más, cómo justificar, etc.
-- CONFIRM: solo confirma brevemente, por ejemplo "ok", "sí", "listo", "continuemos".
+- CONFIRM: solo confirma brevemente, por ejemplo "ok", "sí", "listo", "continuemos", "sí, son esas", "correcto, esas son", "ok, pasamos".
 - OTHER: ambiguo o no clasifica claramente.
 
 Mensaje:
@@ -1732,6 +1748,36 @@ export async function POST(req: NextRequest) {
       }
 
       const intent = await classifyStudentIntent(studentMessage);
+
+      if (intent === "CONFIRM") {
+        const currentMatched = matchAgainstSelectedRoots(
+          effectiveParetoState.criticalRoots,
+          rootsForMatching
+        ).matched;
+
+        const minCritical = ceil20Percent(rootsForMatching.length);
+
+        if (currentMatched.length >= minCritical) {
+          return assistantResponse(
+            "Perfecto. Entonces dejo confirmadas esas causas como tu grupo crítico del Pareto. Con esto la etapa queda lista para validarse y pasar a la definición de objetivos.",
+            {
+              ...effectiveParetoState,
+              criticalRoots: currentMatched,
+              step: "done",
+            },
+            "done"
+          );
+        }
+
+        return assistantResponse(
+          "Todavía no tengo registrada una lista crítica suficiente para cerrar el Pareto. Pégame nuevamente solo tus causas críticas (top 20%) y las revisamos.",
+          {
+            ...effectiveParetoState,
+            step: "collect_critical",
+          },
+          "ask_clarify"
+        );
+      }
 
       if (intent === "ASK_SHOW_CRITERIA_WEIGHTS") {
         return assistantResponse(
