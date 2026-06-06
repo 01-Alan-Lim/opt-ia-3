@@ -22,7 +22,10 @@ const BodySchema = z.object({
 });
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function extractJsonSafe(text: string) {
@@ -182,7 +185,8 @@ ${JSON.stringify(
       evaluation = extractJsonSafe(llmText);
 
       if (!evaluation || typeof evaluation.total_score !== "number") {
-        evalWarning = { warning: "Etapa 9 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+        console.error("[plans] progress/validate: evaluación IA sin JSON válido", llmText);
+        evalWarning = { warning: "Etapa 9 validada, pero la IA no devolvió un JSON válido." };
         evaluation = null;
       }
     } catch {
@@ -274,7 +278,7 @@ ${JSON.stringify(
       score,
       progressPercent,
       evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
-      ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+      ...(evalWarning ? { warning: evalWarning.warning } : {}),
       next,
     });
     } catch (err: unknown) {
@@ -305,9 +309,10 @@ ${JSON.stringify(
       );
     }
 
+    console.error("[plans] progress/validate: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

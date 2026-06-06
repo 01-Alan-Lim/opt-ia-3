@@ -365,12 +365,13 @@ export async function POST(req: NextRequest) {
 
     const planningStateParse = PlanningStateSchema.safeParse(planningState);
     if (!planningStateParse.success) {
+      console.error("[plans] planning/assistant: planningState zod inválido", planningStateParse.error.flatten());
       return NextResponse.json(
         {
           ok: false,
           code: "BAD_REQUEST",
           message: "planningState inválido.",
-          detail: planningStateParse.error.flatten(),
+          detail: null,
         },
         { status: 400 }
       );
@@ -411,12 +412,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!improvementResult.ok) {
+      console.error("[plans] planning/assistant: lectura de Plan de Mejora final", improvementResult.error);
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Plan de Mejora final (Etapa 7).",
-          detail: improvementResult.error,
+          detail: null,
         },
         { status: 500 }
       );
@@ -665,13 +667,13 @@ DEVUELVE SOLO JSON con este formato exacto:
     const llmResult = await generatePlanningJson(prompt);
 
     if (!llmResult.json) {
+      console.error("[plans] planning/assistant: LLM sin JSON válido", llmResult.raw);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "LLM no devolvió JSON válido.",
-          raw: llmResult.raw,
-          repairedRaw: llmResult.repairedRaw ?? null,
+          detail: null,
         },
         { status: 500 }
       );
@@ -679,14 +681,13 @@ DEVUELVE SOLO JSON con este formato exacto:
 
     const responseParse = PlanningAssistantResponseSchema.safeParse(llmResult.json);
     if (!responseParse.success) {
+      console.error("[plans] planning/assistant: respuesta LLM con estructura inválida", responseParse.error.flatten(), llmResult.raw);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "El assistant devolvió JSON, pero no con la estructura esperada en Etapa 8.",
-          detail: responseParse.error.flatten(),
-          raw: llmResult.raw,
-          repairedRaw: llmResult.repairedRaw ?? null,
+          detail: null,
         },
         { status: 500 }
       );
@@ -738,17 +739,18 @@ DEVUELVE SOLO JSON con este formato exacto:
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] planning/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         err.issues[0]?.message ?? "Payload inválido.",
-        400,
-        err.flatten()
+        400
       );
     }
 
+    console.error("[plans] planning/assistant: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

@@ -23,7 +23,10 @@ const BodySchema = z.object({
 });
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function nonEmptyTrimmed(v: unknown): string {
@@ -260,7 +263,8 @@ ${JSON.stringify(finalPayload, null, 2)}
       evaluation = extractJsonSafe(llmText);
 
       if (!evaluation || typeof evaluation.total_score !== "number") {
-        evalWarning = { warning: "Etapa 8 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+        console.error("[plans] planning/validate: evaluación IA sin JSON válido", llmText);
+        evalWarning = { warning: "Etapa 8 validada, pero la IA no devolvió un JSON válido." };
         evaluation = null;
       }
     } catch {
@@ -350,7 +354,7 @@ ${JSON.stringify(finalPayload, null, 2)}
         final: finalPayload,
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
-        ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+        ...(evalWarning ? { warning: evalWarning.warning } : {}),
         next: {
           ...next,
           hint: "En Etapa 9 debes reportar qué lograste ejecutar, qué quedó pendiente y si hubo desviaciones respecto al cronograma.",
@@ -386,9 +390,10 @@ ${JSON.stringify(finalPayload, null, 2)}
       );
     }
 
+    console.error("[plans] planning/validate: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

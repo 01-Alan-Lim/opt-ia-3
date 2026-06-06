@@ -52,7 +52,10 @@ const ImprovementEvaluationSchema = z.object({
 });
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function nonEmptyTrimmed(v: unknown): string {
@@ -372,9 +375,9 @@ ${JSON.stringify(
 
       const parsedEvaluation = extractJsonSafe(llmText);
       if (!parsedEvaluation) {
+        console.error("[plans] improvement/validate: evaluación IA sin JSON válido", llmText);
         evalWarning = {
           warning: "Etapa 7 validada, pero la IA no devolvió un JSON válido.",
-          raw: llmText,
         };
         evaluation = null;
       } else {
@@ -395,9 +398,12 @@ ${JSON.stringify(
         const evaluationParse = ImprovementEvaluationSchema.safeParse(normalizedEvaluation);
 
         if (!evaluationParse.success) {
+          console.error(
+            "[plans] improvement/validate: evaluación IA con estructura inválida",
+            llmText
+          );
           evalWarning = {
             warning: "Etapa 7 validada, pero la IA devolvió JSON con estructura inválida.",
-            raw: llmText,
           };
           evaluation = null;
         } else {
@@ -491,7 +497,7 @@ ${JSON.stringify(
         final: finalPayload,
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
-        ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+        ...(evalWarning ? { warning: evalWarning.warning } : {}),
         next,
       },
       { status: 200 }
@@ -524,9 +530,10 @@ ${JSON.stringify(
       );
     }
 
+    console.error("[plans] improvement/validate: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

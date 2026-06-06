@@ -104,7 +104,8 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (direct.error) {
-        return NextResponse.json(fail("BAD_REQUEST", direct.error.message), { status: 400 });
+        console.error("[plans] ishikawa/state: lectura de estado", direct.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       stateRow = direct.data ?? null;
@@ -121,7 +122,8 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (latest.error) {
-        return NextResponse.json(fail("BAD_REQUEST", latest.error.message), { status: 400 });
+        console.error("[plans] ishikawa/state: lectura de estado", latest.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       stateRow = latest.data ?? null;
@@ -158,7 +160,8 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (legacyDirect.error) {
-        return NextResponse.json(fail("BAD_REQUEST", legacyDirect.error.message), { status: 400 });
+        console.error("[plans] ishikawa/state: lectura legacy", legacyDirect.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       legacyRow = legacyDirect.data ?? null;
@@ -177,7 +180,8 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
 
       if (legacyLatest.error) {
-        return NextResponse.json(fail("BAD_REQUEST", legacyLatest.error.message), { status: 400 });
+        console.error("[plans] ishikawa/state: lectura legacy", legacyLatest.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       legacyRow = legacyLatest.data ?? null;
@@ -416,7 +420,8 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     if (existing.error) {
-      return NextResponse.json(fail("BAD_REQUEST", existing.error.message), { status: 400 });
+      console.error("[plans] ishikawa/state: lectura previa", existing.error);
+      return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
     }
 
     const mergedStateRaw = mergeIshikawaState(existing.data?.state_json ?? null, state);
@@ -435,7 +440,8 @@ export async function POST(req: NextRequest) {
       );
 
     if (error) {
-      return NextResponse.json(fail("BAD_REQUEST", error.message), { status: 400 });
+      console.error("[plans] ishikawa/state: guardado de estado", error);
+      return NextResponse.json(fail("BAD_REQUEST", "No se pudo guardar el estado de Ishikawa."), { status: 400 });
     }
 
     return ok({ saved: true });

@@ -238,9 +238,7 @@ export async function POST(req: Request) {
     console.error("❌ Error en /api/plans/upload:", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error
-        ? err.message
-        : "Error interno procesando el archivo del plan de mejora.",
+      "Error interno procesando el archivo del plan de mejora.",
       500
     );
   }

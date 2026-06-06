@@ -100,7 +100,10 @@ const QualityAssessmentSchema = z.object({
 type QualityAssessment = z.infer<typeof QualityAssessmentSchema>;
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function getNextQuadrant(q: FodaQuadrant): FodaQuadrant | null {
@@ -1550,7 +1553,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const message = err instanceof Error ? err.message : "Error en FODA assistant";
-    return fail(500, "INTERNAL", "Error interno.", message);
+    console.error("[plans] foda/assistant: error interno", err);
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }

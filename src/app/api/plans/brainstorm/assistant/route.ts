@@ -216,11 +216,11 @@ Recuerda:
     const json = extractJsonSafe(text);
 
     if (!json || typeof json !== "object") {
+      console.error("[plans] brainstorm/assistant: IA sin JSON válido", text);
       return failResponse(
         "INTERNAL",
         "La IA no devolvió un JSON válido para Etapa 3.",
-        500,
-        { raw: text }
+        500
       );
     }
 
@@ -229,11 +229,11 @@ Recuerda:
 
     const actionParsed = AssistantActionSchema.safeParse(json?.updates?.action);
     if (!assistantMessageRaw || !actionParsed.success) {
+      console.error("[plans] brainstorm/assistant: IA con respuesta incompleta", text);
       return failResponse(
         "INTERNAL",
         "La IA devolvió una respuesta incompleta para Etapa 3.",
-        500,
-        { raw: text }
+        500
       );
     }
 
@@ -273,17 +273,18 @@ Recuerda:
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] brainstorm/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         err.issues[0]?.message ?? "Payload inválido.",
-        400,
-        err.flatten()
+        400
       );
     }
 
+    console.error("[plans] brainstorm/assistant: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error en Brainstorm assistant",
+      "Error en Brainstorm assistant",
       500
     );
   }

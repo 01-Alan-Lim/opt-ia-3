@@ -168,7 +168,10 @@ export async function POST(req: Request) {
       .eq("period_key", period)
       .maybeSingle();
 
-    if (getErr) return err(500, "DB_ERROR", `DB error: ${getErr.message}`);
+    if (getErr) {
+      console.error("[plans] productivity/validate: DB error (get draft)", getErr);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
+    }
     if (!row) return err(404, "NOT_FOUND", "No existe draft para validar en ese periodo.");
 
     const { ready, issues, score } = scoreProductivity(row.payload);
@@ -192,7 +195,10 @@ export async function POST(req: Request) {
       .select("id,status,score,period_key,payload,updated_at")
       .single();
 
-    if (updErr) return err(500, "DB_ERROR", `DB error: ${updErr.message}`);
+    if (updErr) {
+      console.error("[plans] productivity/validate: DB error (update)", updErr);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
+    }
 
     const { data: lastEval, error: lastEvalErr } = await supabaseServer
       .from(EVAL_TABLE)
@@ -206,7 +212,8 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (lastEvalErr) {
-      return err(500, "DB_ERROR", `DB error (eval last version): ${lastEvalErr.message}`);
+      console.error("[plans] productivity/validate: DB error (eval last version)", lastEvalErr);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
     }
 
     const nextVersion = (lastEval?.version ?? 0) + 1;
@@ -274,7 +281,8 @@ export async function POST(req: Request) {
     });
 
     if (insEvalErr) {
-      return err(500, "DB_ERROR", `DB error (insert evaluation): ${insEvalErr.message}`);
+      console.error("[plans] productivity/validate: DB error (insert evaluation)", insEvalErr);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
     }
 
     const next = await advancePlanStage({

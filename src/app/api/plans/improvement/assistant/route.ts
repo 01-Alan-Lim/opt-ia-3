@@ -459,12 +459,13 @@ export async function POST(req: NextRequest) {
 
     const stateParse = ImprovementStateSchema.safeParse(improvementState);
     if (!stateParse.success) {
+      console.error("[plans] improvement/assistant: improvementState zod inválido", stateParse.error.flatten());
       return NextResponse.json(
         {
           ok: false,
           code: "BAD_REQUEST",
           message: "improvementState inválido.",
-          detail: stateParse.error.flatten(),
+          detail: null,
         },
         { status: 400 }
       );
@@ -503,12 +504,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!paretoResult.ok) {
+      console.error("[plans] improvement/assistant: lectura de Pareto final", paretoResult.error);
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Pareto final (Etapa 5).",
-          detail: paretoResult.error,
+          detail: null,
         },
         { status: 500 }
       );
@@ -540,12 +542,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!objectivesResult.ok) {
+      console.error("[plans] improvement/assistant: lectura de Objectives final", objectivesResult.error);
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Objectives final (Etapa 6).",
-          detail: objectivesResult.error,
+          detail: null,
         },
         { status: 500 }
       );
@@ -777,13 +780,13 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
     const llmResult = await generateImprovementJson(prompt);
 
     if (!llmResult.json) {
+      console.error("[plans] improvement/assistant: LLM sin JSON válido", llmResult.raw);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "LLM no devolvió JSON válido",
-          raw: llmResult.raw,
-          repairedRaw: llmResult.repairedRaw ?? null,
+          detail: null,
         },
         { status: 500 }
       );
@@ -793,14 +796,13 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
     const responseParse = ImprovementAssistantResponseSchema.safeParse(normalizedJson);
 
     if (!responseParse.success) {
+      console.error("[plans] improvement/assistant: respuesta LLM con estructura inválida", responseParse.error.flatten(), llmResult.raw);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "LLM devolvió JSON, pero no con la estructura esperada en Etapa 7.",
-          detail: responseParse.error.flatten(),
-          raw: llmResult.raw,
-          repairedRaw: llmResult.repairedRaw ?? null,
+          detail: null,
         },
         { status: 500 }
       );
@@ -849,17 +851,18 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] improvement/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         err.issues[0]?.message ?? "Payload inválido.",
-        400,
-        err.flatten()
+        400
       );
     }
 
+    console.error("[plans] improvement/assistant: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

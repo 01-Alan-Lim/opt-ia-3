@@ -21,7 +21,10 @@ const BodySchema = z.object({
 });
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function extractJsonSafe(text: string) {
@@ -231,7 +234,8 @@ ${JSON.stringify(finalPayload, null, 2)}
     const evaluation = extractJsonSafe(text);
 
     if (!evaluation || typeof evaluation.total_score !== "number") {
-      return fail(500, "LLM_ERROR", "La IA no devolvió un JSON válido para la evaluación FODA.", { raw: text });
+      console.error("[plans] foda/validate: evaluación IA sin JSON válido", text);
+      return fail(500, "LLM_ERROR", "La IA no devolvió un JSON válido para la evaluación FODA.");
     }
 
     const insertEval = await supabaseServer.from("plan_stage_evaluations").insert({
@@ -253,7 +257,8 @@ ${JSON.stringify(finalPayload, null, 2)}
 
     if (insertEval.error) {
       // No bloqueamos el flujo: el FODA ya está validado.
-      // Pero devolvemos warning.
+      // Pero devolvemos warning (sin exponer el error interno al cliente).
+      console.error("[plans] foda/validate: no se pudo insertar la evaluación", insertEval.error);
       return NextResponse.json(
         {
           ok: true,
@@ -263,7 +268,6 @@ ${JSON.stringify(finalPayload, null, 2)}
           label: evaluation.total_label,
           feedback: evaluation.feedback,
           warning: "FODA validado, pero no se pudo insertar la evaluación.",
-          warningDetail: insertEval.error,
           next,
         },
         { status: 200 }
@@ -305,7 +309,7 @@ ${JSON.stringify(finalPayload, null, 2)}
       return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
     }
 
-    const msg = err instanceof Error ? err.message : "INTERNAL";
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    console.error("[plans] foda/validate: error interno", err);
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }

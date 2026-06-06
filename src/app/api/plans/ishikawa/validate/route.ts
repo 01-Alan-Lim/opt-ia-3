@@ -134,7 +134,8 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (direct.error) {
-      return NextResponse.json(fail("BAD_REQUEST", direct.error.message), { status: 400 });
+      console.error("[plans] ishikawa/validate: lectura de estado", direct.error);
+      return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
     }
 
     stateRow = direct.data ?? null;
@@ -150,7 +151,8 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (latest.error) {
-        return NextResponse.json(fail("BAD_REQUEST", latest.error.message), { status: 400 });
+        console.error("[plans] ishikawa/validate: lectura de estado", latest.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       stateRow = latest.data ?? null;
@@ -171,7 +173,8 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (legacyDirect.error) {
-        return NextResponse.json(fail("BAD_REQUEST", legacyDirect.error.message), { status: 400 });
+        console.error("[plans] ishikawa/validate: lectura legacy", legacyDirect.error);
+        return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
       }
 
       legacyRow = legacyDirect.data ?? null;
@@ -189,7 +192,8 @@ export async function POST(req: Request) {
           .maybeSingle();
 
         if (legacyLatest.error) {
-          return NextResponse.json(fail("BAD_REQUEST", legacyLatest.error.message), { status: 400 });
+          console.error("[plans] ishikawa/validate: lectura legacy", legacyLatest.error);
+          return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
         }
 
         legacyRow = legacyLatest.data ?? null;
@@ -328,7 +332,8 @@ export async function POST(req: Request) {
       .single();
 
     if (upErr || !finalRow) {
-      return NextResponse.json(fail("BAD_REQUEST", upErr?.message ?? "No se pudo guardar final"), { status: 400 });
+      console.error("[plans] ishikawa/validate: guardado de Ishikawa final", upErr);
+      return NextResponse.json(fail("BAD_REQUEST", "No se pudo guardar el Ishikawa final."), { status: 400 });
     }
 
     const finalArtifactId = finalRow.id as string;
@@ -393,7 +398,8 @@ ${JSON.stringify(
     let evalWarning: { warning: string; raw?: string } | null = null;
 
     if (!evaluation || typeof evaluation.total_score !== "number") {
-      evalWarning = { warning: "Etapa 4 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+      console.error("[plans] ishikawa/validate: evaluación IA sin JSON válido", llmText);
+      evalWarning = { warning: "Etapa 4 validada, pero la IA no devolvió un JSON válido." };
     } else {
       // ✅ Evitar duplicar evaluaciones (patrón E3)
       const { data: existingEval, error: existingEvalErr } = await supabaseServer
@@ -448,7 +454,7 @@ ${JSON.stringify(
       roots,
       score,
       evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
-      ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+      ...(evalWarning ? { warning: evalWarning.warning } : {}),
       next,
     });
     } catch (err: unknown) {

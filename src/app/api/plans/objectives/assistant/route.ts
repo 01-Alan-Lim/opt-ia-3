@@ -431,12 +431,13 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     if (profileError) {
+      console.error("[plans] objectives/assistant: lectura de perfil", profileError);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "No se pudo leer el perfil del estudiante.",
-          detail: profileError,
+          detail: null,
         },
         { status: 500 }
       );
@@ -460,12 +461,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!paretoResult.ok) {
+      console.error("[plans] objectives/assistant: lectura de Pareto final", paretoResult.error);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "No se pudo leer Pareto final (Etapa 5).",
-          detail: paretoResult.error,
+          detail: null,
         },
         { status: 500 }
       );
@@ -599,12 +601,13 @@ REGLAS DEL JSON:
     const json = extractJsonSafe(text);
 
     if (!json?.assistantMessage || !json?.updates?.nextState) {
+      console.error("[plans] objectives/assistant: LLM sin JSON válido", text);
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "LLM no devolvió JSON válido.",
-          detail: text,
+          detail: null,
         },
         { status: 500 }
       );
@@ -612,12 +615,13 @@ REGLAS DEL JSON:
 
         const nextStateParse = ObjectivesStateSchema.safeParse(json.updates.nextState);
     if (!nextStateParse.success) {
+      console.error("[plans] objectives/assistant: nextState zod inválido", nextStateParse.error.flatten());
       return NextResponse.json(
         {
           ok: false,
           code: "INTERNAL",
           message: "El assistant devolvió un nextState inválido.",
-          detail: nextStateParse.error.flatten(),
+          detail: null,
         },
         { status: 500 }
       );
@@ -678,10 +682,10 @@ REGLAS DEL JSON:
       );
     }
 
-    const msg = err instanceof Error ? err.message : "INTERNAL";
+    console.error("[plans] objectives/assistant: error interno", err);
 
     return NextResponse.json(
-      { ok: false, code: "INTERNAL", message: "Error interno.", detail: msg },
+      { ok: false, code: "INTERNAL", message: "Error interno.", detail: null },
       { status: 500 }
     );
   }
