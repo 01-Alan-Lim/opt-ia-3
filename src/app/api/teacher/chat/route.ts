@@ -64,8 +64,10 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // No exponemos el detalle interno (errores de Supabase, etc.) al cliente.
+    console.error("Error interno en chat docente:", error)
     return NextResponse.json(
-      fail("INTERNAL", "Error interno en chat docente.", error),
+      fail("INTERNAL", "Error interno en chat docente."),
       { status: 500 }
     )
   }

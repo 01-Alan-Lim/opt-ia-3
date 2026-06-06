@@ -1,8 +1,21 @@
 import { supabaseServer } from "@/lib/supabaseServer"
 import type { ProfileStudent } from "./types"
 
-type WeeklyHourRow = {
+type HoursEntryRow = {
   hours: number | null
+}
+
+type ChatIdRow = {
+  id: string
+}
+
+/**
+ * Valida que un identificador recibido (p. ej. el studentId del contexto del
+ * chat docente) sea un string no vacío antes de usarlo en consultas
+ * server-side. Evita lanzar consultas con valores vacíos/whitespace.
+ */
+function isNonEmptyId(value: string): boolean {
+  return typeof value === "string" && value.trim().length > 0
 }
 
 export function getStudentDisplayName(student: {
@@ -40,6 +53,8 @@ export async function findStudentsByTerm(term: string): Promise<ProfileStudent[]
 }
 
 export async function loadStudentById(userId: string): Promise<ProfileStudent | null> {
+  if (!isNonEmptyId(userId)) return null
+
   const supabase = supabaseServer
 
   const { data, error } = await supabase
@@ -57,12 +72,16 @@ export async function loadStudentById(userId: string): Promise<ProfileStudent | 
 }
 
 export async function getChatsCount(userId: string): Promise<number> {
+  if (!isNonEmptyId(userId)) return 0
+
   const supabase = supabaseServer
 
+  // La tabla `chats` identifica al estudiante por `client_id` (text), no por
+  // `user_id`. `client_id` coincide con `profiles.user_id`.
   const { count, error } = await supabase
     .from("chats")
     .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
+    .eq("client_id", userId)
 
   if (error) {
     throw error
@@ -72,12 +91,30 @@ export async function getChatsCount(userId: string): Promise<number> {
 }
 
 export async function getMessagesCount(userId: string): Promise<number> {
+  if (!isNonEmptyId(userId)) return 0
+
   const supabase = supabaseServer
+
+  // `messages` no tiene `user_id`: se relaciona con el estudiante vía
+  // `messages.chat_id` -> `chats.id`, y `chats.client_id` = profiles.user_id.
+  const { data: chatRows, error: chatErr } = await supabase
+    .from("chats")
+    .select("id")
+    .eq("client_id", userId)
+
+  if (chatErr) {
+    throw chatErr
+  }
+
+  const chatIds = (chatRows ?? []).map((row: ChatIdRow) => row.id)
+  if (chatIds.length === 0) {
+    return 0
+  }
 
   const { count, error } = await supabase
     .from("messages")
     .select("*", { count: "exact", head: true })
-    .eq("user_id", userId)
+    .in("chat_id", chatIds)
 
   if (error) {
     throw error
@@ -87,10 +124,14 @@ export async function getMessagesCount(userId: string): Promise<number> {
 }
 
 export async function getHoursTotal(userId: string): Promise<number> {
+  if (!isNonEmptyId(userId)) return 0
+
   const supabase = supabaseServer
 
+  // La tabla real de horas es `hours_entries` (no existe `weekly_hours`).
+  // Identifica al estudiante por `user_id` y suma la columna numérica `hours`.
   const { data, error } = await supabase
-    .from("weekly_hours")
+    .from("hours_entries")
     .select("hours")
     .eq("user_id", userId)
 
@@ -98,9 +139,9 @@ export async function getHoursTotal(userId: string): Promise<number> {
     throw error
   }
 
-  const rows = (data ?? []) as WeeklyHourRow[]
+  const rows = (data ?? []) as HoursEntryRow[]
 
-  return rows.reduce((sum: number, row: WeeklyHourRow) => {
+  return rows.reduce((sum: number, row: HoursEntryRow) => {
     return sum + (row.hours ?? 0)
   }, 0)
 }
