@@ -151,11 +151,11 @@ export async function GET(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] stage-state: estado guardado zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         "El estado guardado de la etapa tiene una estructura inválida.",
-        400,
-        err.flatten()
+        400
       );
     }
 
@@ -261,11 +261,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] stage-state: estado recibido zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         "El estado recibido para la etapa tiene una estructura inválida.",
-        400,
-        err.flatten()
+        400
       );
     }
 

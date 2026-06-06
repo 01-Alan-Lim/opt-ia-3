@@ -80,8 +80,9 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (curErr) {
+      console.error("[plans] context/confirm: lectura de contexto", curErr);
       return NextResponse.json(
-        fail("INTERNAL", "No se pudo leer el contexto del caso.", curErr),
+        fail("INTERNAL", "No se pudo leer el contexto del caso."),
         { status: 500 }
       );
     }
@@ -126,8 +127,9 @@ export async function POST(req: Request) {
       .single();
 
     if (saveErr || !saved) {
+      console.error("[plans] context/confirm: guardado de contexto", saveErr);
       return NextResponse.json(
-        fail("INTERNAL", "No se pudo confirmar el contexto del caso.", saveErr),
+        fail("INTERNAL", "No se pudo confirmar el contexto del caso."),
         { status: 500 }
       );
     }
@@ -165,9 +167,10 @@ export async function POST(req: Request) {
       );
     }
 
+    console.error("[plans] context/confirm: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

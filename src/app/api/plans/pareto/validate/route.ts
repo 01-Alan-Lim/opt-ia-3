@@ -23,7 +23,10 @@ const BodySchema = z.object({
 });
 
 function fail(status: number, code: string, message: string, detail?: unknown) {
-  return NextResponse.json({ ok: false, code, message, detail }, { status });
+  if (detail !== undefined && detail !== null) {
+    console.error(`[plans] ${code}: ${message}`, detail);
+  }
+  return NextResponse.json({ ok: false, code, message, detail: null }, { status });
 }
 
 function ceil20Percent(n: number) {
@@ -335,7 +338,8 @@ export async function POST(req: NextRequest) {
       evaluation = extractJsonSafe(llmText);
 
       if (!evaluation || typeof evaluation.total_score !== "number") {
-        evalWarning = { warning: "Etapa 5 validada, pero la IA no devolvió un JSON válido.", raw: llmText };
+        console.error("[plans] pareto/validate: evaluación IA sin JSON válido", llmText);
+        evalWarning = { warning: "Etapa 5 validada, pero la IA no devolvió un JSON válido." };
         evaluation = null;
       }
     } catch {
@@ -431,7 +435,7 @@ export async function POST(req: NextRequest) {
         final: finalPayload,
         score,
         evaluation: evaluation && typeof evaluation.total_score === "number" ? evaluation : null,
-        ...(evalWarning ? { warning: evalWarning.warning, warningRaw: evalWarning.raw } : {}),
+        ...(evalWarning ? { warning: evalWarning.warning } : {}),
         next,
       },
       { status: 200 }
@@ -459,7 +463,7 @@ export async function POST(req: NextRequest) {
       return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
     }
 
-    const msg = err instanceof Error ? err.message : "INTERNAL";
-    return fail(500, "INTERNAL", "Error interno.", msg);
+    console.error("[plans] pareto/validate: error interno", err);
+    return fail(500, "INTERNAL", "Error interno.");
   }
 }

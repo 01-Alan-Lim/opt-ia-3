@@ -46,7 +46,8 @@ export async function GET(req: Request) {
 
     const { data, error } = await getRow(authed.userId);
     if (error) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo leer el contexto del caso.", error), {
+      console.error("[plans] context: lectura de contexto", error);
+      return NextResponse.json(fail("INTERNAL", "No se pudo leer el contexto del caso."), {
         status: 500,
       });
     }
@@ -79,9 +80,10 @@ export async function GET(req: Request) {
       );
     }
 
+    console.error("[plans] context: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }
@@ -123,7 +125,8 @@ export async function POST(req: Request) {
     // 1) Leemos contexto actual (para merge)
     const { data: current, error: curErr } = await getRow(authed.userId);
     if (curErr) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo leer el contexto actual.", curErr), {
+      console.error("[plans] context: lectura de contexto actual", curErr);
+      return NextResponse.json(fail("INTERNAL", "No se pudo leer el contexto actual."), {
         status: 500,
       });
     }
@@ -155,8 +158,9 @@ export async function POST(req: Request) {
         .single();
 
       if (chatErr || !createdChat?.id) {
+        console.error("[plans] context: creación de chat", chatErr);
         return NextResponse.json(
-          fail("INTERNAL", "No se pudo crear el chat para el asesor.", chatErr),
+          fail("INTERNAL", "No se pudo crear el chat para el asesor."),
           { status: 500 }
         );
       }
@@ -193,8 +197,9 @@ export async function POST(req: Request) {
         .single();
 
       if (syncErr || !synced) {
+        console.error("[plans] context: sincronización de chat", syncErr);
         return NextResponse.json(
-          fail("INTERNAL", "No se pudo sincronizar el chat del asesor.", syncErr),
+          fail("INTERNAL", "No se pudo sincronizar el chat del asesor."),
           { status: 500 }
         );
       }
@@ -246,7 +251,8 @@ export async function POST(req: Request) {
       .single();
 
     if (error || !data) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo guardar el contexto del caso.", error), {
+      console.error("[plans] context: guardado de contexto", error);
+      return NextResponse.json(fail("INTERNAL", "No se pudo guardar el contexto del caso."), {
         status: 500,
       });
     }
@@ -297,9 +303,10 @@ export async function POST(req: Request) {
       );
     }
 
+    console.error("[plans] context: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

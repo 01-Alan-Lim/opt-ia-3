@@ -1478,12 +1478,13 @@ export async function POST(req: NextRequest) {
     const stateParsed = ParetoStateSchema.safeParse(paretoStateNormalized);
 
     if (!stateParsed.success) {
+      console.error("[plans] pareto/assistant: estado zod inválido", stateParsed.error.flatten());
       return NextResponse.json(
         {
           ok: false,
           code: "BAD_REQUEST",
           message: "Estado de Pareto inválido después de normalizar.",
-          detail: stateParsed.error.flatten(),
+          detail: null,
         },
         { status: 400 }
       );
@@ -1948,8 +1949,9 @@ DEVUELVE SOLO JSON:
     const json = extractJsonSafe(text);
 
     if (!json?.assistantMessage || !json?.updates?.nextState) {
+      console.error("[plans] pareto/assistant: LLM sin JSON válido", text);
       return NextResponse.json(
-        { ok: false, code: "INVALID_LLM_JSON", message: "LLM no devolvió JSON válido", detail: text },
+        { ok: false, code: "INVALID_LLM_JSON", message: "LLM no devolvió JSON válido", detail: null },
         { status: 500 }
       );
     }
@@ -1958,12 +1960,13 @@ DEVUELVE SOLO JSON:
     const nextStateParsed = ParetoStateSchema.safeParse(nextStateNormalized);
 
     if (!nextStateParsed.success) {
+      console.error("[plans] pareto/assistant: nextState zod inválido", nextStateParsed.error.flatten());
       return NextResponse.json(
         {
           ok: false,
           code: "INVALID_NEXT_STATE",
           message: "nextState inválido devuelto por el assistant.",
-          detail: nextStateParsed.error.flatten(),
+          detail: null,
         },
         { status: 500 }
       );
@@ -2013,7 +2016,7 @@ DEVUELVE SOLO JSON:
       );
     }
 
-    const message = err instanceof Error ? err.message : "Error en Pareto assistant";
-    return NextResponse.json({ ok: false, code: "INTERNAL", message }, { status: 500 });
+    console.error("[plans] pareto/assistant: error interno", err);
+    return NextResponse.json({ ok: false, code: "INTERNAL", message: "Error interno." }, { status: 500 });
   }
 }

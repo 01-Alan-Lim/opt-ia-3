@@ -161,12 +161,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (!stage9Result.ok) {
+      console.error("[plans] final_doc/assistant: lectura de Etapa 9 validada", stage9Result.error);
       return NextResponse.json(
         {
           ok: false,
           code: "DB_ERROR",
           message: "No se pudo leer Etapa 9 (Reporte de avances) validada.",
-          detail: stage9Result.error,
+          detail: null,
         },
         { status: 500 }
       );
@@ -557,12 +558,13 @@ ${String(recentHistory ?? "")}
       json = extractJsonSafe(repairedText);
 
       if (!isValidFinalDocAssistantResponse(json)) {
+        console.error("[plans] final_doc/assistant: IA sin JSON válido", llmText);
         return NextResponse.json(
           {
             ok: false,
             code: "INTERNAL",
             message: "IA no devolvió JSON válido.",
-            raw: llmText,
+            detail: null,
           },
           { status: 500 }
         );
@@ -622,17 +624,18 @@ ${String(recentHistory ?? "")}
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] final_doc/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
         err.issues[0]?.message ?? "Payload inválido.",
-        400,
-        err.flatten()
+        400
       );
     }
 
+    console.error("[plans] final_doc/assistant: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

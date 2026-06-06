@@ -70,8 +70,9 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (direct.error) {
+        console.error("[plans] brainstorm/validate: lectura de estado", direct.error);
         return NextResponse.json(
-          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: direct.error.message },
+          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: null },
           { status: 500 }
         );
       }
@@ -90,8 +91,9 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
 
       if (latest.error) {
+        console.error("[plans] brainstorm/validate: lectura de estado", latest.error);
         return NextResponse.json(
-          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: latest.error.message },
+          { ok: false, message: "No se pudo leer el estado de Etapa 3", detail: null },
           { status: 500 }
         );
       }
@@ -115,8 +117,9 @@ export async function POST(req: NextRequest) {
           .maybeSingle();
 
         if (legacyDirect.error) {
+          console.error("[plans] brainstorm/validate: lectura legacy", legacyDirect.error);
           return NextResponse.json(
-            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: legacyDirect.error.message },
+            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: null },
             { status: 500 }
           );
         }
@@ -137,8 +140,9 @@ export async function POST(req: NextRequest) {
           .maybeSingle();
 
         if (legacyLatest.error) {
+          console.error("[plans] brainstorm/validate: lectura legacy", legacyLatest.error);
           return NextResponse.json(
-            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: legacyLatest.error.message },
+            { ok: false, message: "No se pudo leer el estado legacy de Etapa 3", detail: null },
             { status: 500 }
           );
         }
@@ -223,8 +227,9 @@ export async function POST(req: NextRequest) {
     const finalArtifactId = finalArtifact?.id;
 
     if (finalErr || !finalArtifactId) {
+      console.error("[plans] brainstorm/validate: guardado de artefacto final", finalErr);
       return NextResponse.json(
-        { ok: false, message: "No se pudo guardar el artefacto final de Etapa 3", detail: finalErr?.message },
+        { ok: false, message: "No se pudo guardar el artefacto final de Etapa 3", detail: null },
         { status: 500 }
       );
     }
@@ -269,8 +274,9 @@ Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente
     const evaluation = extractJsonSafe(text);
 
     if (!evaluation || typeof evaluation.total_score !== "number") {
+      console.error("[plans] brainstorm/validate: evaluación IA sin JSON válido", text);
       return NextResponse.json(
-        { ok: false, message: "La IA no devolvió un JSON válido para la evaluación de Etapa 3", raw: text },
+        { ok: false, message: "La IA no devolvió un JSON válido para la evaluación de Etapa 3", detail: null },
         { status: 500 }
       );
     }
@@ -287,8 +293,9 @@ Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente
       .maybeSingle();
 
     if (existingEvalErr) {
+      console.error("[plans] brainstorm/validate: verificación de evaluación existente", existingEvalErr);
       return NextResponse.json(
-        { ok: false, message: "No se pudo verificar evaluación existente", detail: existingEvalErr.message },
+        { ok: false, message: "No se pudo verificar evaluación existente", detail: null },
         { status: 500 }
       );
     }
@@ -312,8 +319,9 @@ Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente
       });
 
       if (evalInsErr) {
+        console.error("[plans] brainstorm/validate: inserción de evaluación", evalInsErr);
         return NextResponse.json(
-          { ok: false, message: "No se pudo insertar evaluación de Etapa 3", detail: evalInsErr.message },
+          { ok: false, message: "No se pudo insertar evaluación de Etapa 3", detail: null },
           { status: 500 }
         );
       }
@@ -372,11 +380,12 @@ Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente
       );
     }
 
+    console.error("[plans] brainstorm/validate: error interno", err);
     return NextResponse.json(
       {
         ok: false,
         code: "INTERNAL",
-        message: err instanceof Error ? err.message : "Error validando Etapa 3",
+        message: "Error validando Etapa 3.",
       },
       { status: 500 }
     );

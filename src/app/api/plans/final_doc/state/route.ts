@@ -101,7 +101,8 @@ export async function GET(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 10.", 400, err.flatten());
+      console.error("[plans] final_doc/state: estado zod inválido", err.flatten());
+      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 10.", 400);
     }
 
     return failResponse("INTERNAL", "Error interno", 500);
@@ -188,7 +189,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 10.", 400, err.flatten());
+      console.error("[plans] final_doc/state: estado zod inválido", err.flatten());
+      return failResponse("BAD_REQUEST", "Estado inválido para la Etapa 10.", 400);
     }
 
     return failResponse("INTERNAL", "Error interno", 500);

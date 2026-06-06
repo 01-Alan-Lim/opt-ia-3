@@ -217,9 +217,10 @@ export async function POST(req: Request) {
       );
     }
 
+    console.error("[plans] context/interpret: error interno", err);
     return failResponse(
       "INTERNAL",
-      err instanceof Error ? err.message : "Error interno.",
+      "Error interno.",
       500
     );
   }

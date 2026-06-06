@@ -112,7 +112,8 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (ctxErr) {
-      return NextResponse.json(fail("INTERNAL", "No se pudo validar el contexto del caso.", ctxErr), {
+      console.error("[plans] review: validación de contexto", ctxErr);
+      return NextResponse.json(fail("INTERNAL", "No se pudo validar el contexto del caso."), {
         status: 500,
       });
     }
@@ -466,8 +467,9 @@ Texto del plan del estudiante:
     }
 
     if (err instanceof z.ZodError) {
+      console.error("[plans] review: payload zod inválido", err.flatten());
       return NextResponse.json(
-        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten()),
+        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
         { status: 400 }
       );
     }

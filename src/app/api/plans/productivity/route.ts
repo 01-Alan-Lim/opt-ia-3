@@ -94,7 +94,10 @@ export async function GET(req: Request) {
 
     const { data, error } = await query.maybeSingle();
 
-    if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
+    if (error) {
+      console.error("[plans] productivity: DB error", error);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
+    }
 
     if (!data) {
       return ok({
@@ -190,7 +193,10 @@ export async function POST(req: Request) {
       .select("id,user_id,chat_id,stage,artifact_type,period_key,status,payload,score,created_at,updated_at")
       .single();
 
-    if (error) return err(500, "DB_ERROR", `DB error: ${error.message}`);
+    if (error) {
+      console.error("[plans] productivity: DB error", error);
+      return err(500, "DB_ERROR", "No se pudo acceder a la base de datos.");
+    }
 
     return ok(data);
   } catch (errValue: unknown) {
