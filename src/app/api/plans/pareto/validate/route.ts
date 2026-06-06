@@ -149,48 +149,43 @@ export async function POST(req: NextRequest) {
 
 
     // 2) Resolver raíces oficiales para Pareto
-    // Primero usamos las raíces congeladas dentro del propio estado de Pareto.
-    // Solo si no existen, hacemos fallback a Ishikawa final validado.
-    const rootsFromState: string[] = Array.isArray(s?.roots)
-      ? s.roots.map((x: unknown) => String(x).trim()).filter(Boolean)
-      : [];
+    // La fuente de verdad es Ishikawa final validado (Etapa 4).
+    const ishResult = await loadLatestValidatedArtifact({
+      userId: user.userId,
+      preferredChatId: chatId,
+      stage: 4,
+      artifactType: "ishikawa_final",
+      periodKey: PERIOD_KEY,
+    });
 
-    let rootsOfficial: string[] = rootsFromState;
-    let ishikawaUpdatedAt: string | null = null;
-
-    if (rootsOfficial.length === 0) {
-      const ishResult = await loadLatestValidatedArtifact({
-        userId: user.userId,
-        preferredChatId: chatId,
-        stage: 4,
-        artifactType: "ishikawa_final",
-        periodKey: PERIOD_KEY,
-      });
-
-      if (!ishResult.ok) {
-        return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishResult.error);
-      }
-
-      const ishFinal = ishResult.row;
-      ishikawaUpdatedAt = ishFinal?.updated_at ?? null;
-
-      rootsOfficial = Array.isArray(ishFinal?.payload?.roots)
-        ? ishFinal.payload.roots.map((x: unknown) => String(x).trim()).filter(Boolean)
-        : [];
+    if (!ishResult.ok) {
+      return fail(500, "DB_ERROR", "No se pudo leer Ishikawa final (Etapa 4).", ishResult.error);
     }
+
+    const ishFinal = ishResult.row;
+    const ishikawaUpdatedAt = ishFinal?.updated_at ?? null;
+
+    const rootsOfficial = Array.isArray(ishFinal?.payload?.roots)
+      ? normalizeStringArray(ishFinal.payload.roots)
+      : [];
 
     if (rootsOfficial.length === 0) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "No pude resolver la lista base de causas raíz para validar Pareto.",
+        message: "No pude resolver la lista oficial de causas raíz desde Ishikawa final.",
       });
     }
 
     
 
     // 3) Validaciones Pareto (MVP)
-    const selectedRoots = normalizeStringArray(s?.selectedRoots);
+    const rootsSet = new Set(rootsOfficial.map((r) => normalizeText(r)));
+
+    const selectedRoots = normalizeStringArray(s?.selectedRoots).filter((r) =>
+      rootsSet.has(normalizeText(r))
+    );
+
     const minSelected = typeof s?.minSelected === "number" ? s.minSelected : 10;
     const maxSelected = typeof s?.maxSelected === "number" ? s.maxSelected : 15;
 
@@ -203,8 +198,9 @@ export async function POST(req: NextRequest) {
     }
 
     // asegurar que selectedRoots exista dentro de rootsOfficial
-    const rootsSet = new Set(rootsOfficial.map((r) => normalizeText(r)));
-    const invalidSelected = selectedRoots.filter((r) => !rootsSet.has(normalizeText(r)));
+    const invalidSelected = normalizeStringArray(s?.selectedRoots).filter(
+      (r) => !rootsSet.has(normalizeText(r))
+    );
     if (invalidSelected.length > 0) {
       return NextResponse.json({
         ok: true,

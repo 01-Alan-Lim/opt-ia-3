@@ -7,6 +7,7 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
@@ -500,6 +501,64 @@ const ROOT_MATCH_STOPWORDS = new Set([
   "existen",
   "hay",
 ]);
+
+async function loadOfficialIshikawaRoots(
+  userId: string,
+  preferredChatId: string | null
+) {
+  const result = await loadLatestValidatedArtifact({
+    userId,
+    preferredChatId,
+    stage: 4,
+    artifactType: "ishikawa_final",
+    periodKey: PERIOD_KEY,
+  });
+
+  if (!result.ok) {
+    throw new Error("No se pudo leer Ishikawa final para sanear Pareto.");
+  }
+
+  const rawRoots = Array.isArray(result.row?.payload?.roots)
+    ? result.row?.payload?.roots
+    : [];
+
+  return dedupeStrings(
+    rawRoots.map((item: unknown) => String(item ?? "").trim()).filter(Boolean)
+  );
+}
+
+function sanitizeParetoStateWithOfficialRoots(
+  state: ParetoState,
+  officialRoots: string[]
+): ParetoState {
+  if (officialRoots.length === 0) return state;
+
+  const officialSet = new Set(officialRoots.map((item) => normalizeText(item)));
+
+  const selectedRoots = dedupeStrings(
+    state.selectedRoots.filter((item) => officialSet.has(normalizeText(item)))
+  ).slice(0, state.maxSelected);
+
+  const selectedSet = new Set(selectedRoots.map((item) => normalizeText(item)));
+
+  const criticalRoots = dedupeStrings(
+    state.criticalRoots.filter((item) => selectedSet.has(normalizeText(item)))
+  );
+
+  return {
+    ...state,
+    roots: officialRoots,
+    selectedRoots,
+    criticalRoots,
+    step: resolveParetoStepFromState({
+      ...state,
+      roots: officialRoots,
+      selectedRoots,
+      criticalRoots,
+    }),
+  };
+}
+
 
 function tokenizeRootForMatch(input: string): string[] {
   return normalizeText(input)
@@ -1451,8 +1510,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const officialRoots = await loadOfficialIshikawaRoots(user.userId, chatId);
+
     const persistedParetoState = await loadPersistedParetoState(user.userId, chatId);
-    const mergedParetoState = mergeAssistantParetoState(persistedParetoState, stateParsed.data);
+
+    const mergedParetoState = sanitizeParetoStateWithOfficialRoots(
+      mergeAssistantParetoState(persistedParetoState, stateParsed.data),
+      officialRoots
+    );
 
     const paretoState: ParetoState = {
       ...mergedParetoState,

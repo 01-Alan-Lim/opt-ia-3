@@ -5,6 +5,7 @@ import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
 
@@ -213,6 +214,67 @@ function normalizeParetoState(input: unknown): ParetoState {
   };
 }
 
+function normalizeRootKey(input: string) {
+  return String(input ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function loadOfficialIshikawaRoots(
+  userId: string,
+  preferredChatId: string | null
+) {
+  const result = await loadLatestValidatedArtifact({
+    userId,
+    preferredChatId,
+    stage: 4,
+    artifactType: "ishikawa_final",
+    periodKey: PERIOD_KEY,
+  });
+
+  if (!result.ok) {
+    throw new Error("No se pudo leer Ishikawa final para sanear Pareto.");
+  }
+
+  const rawRoots = Array.isArray(result.row?.payload?.roots)
+    ? result.row?.payload?.roots
+    : [];
+
+  return dedupeStrings(
+    rawRoots.map((item: unknown) => String(item ?? "").trim()).filter(Boolean)
+  );
+}
+
+function sanitizeParetoStateWithOfficialRoots(
+  state: ParetoState,
+  officialRoots: string[]
+): ParetoState {
+  if (officialRoots.length === 0) return state;
+
+  const officialSet = new Set(officialRoots.map((item) => normalizeRootKey(item)));
+
+  const selectedRoots = dedupeStrings(
+    state.selectedRoots.filter((item) => officialSet.has(normalizeRootKey(item)))
+  ).slice(0, state.maxSelected);
+
+  const selectedSet = new Set(selectedRoots.map((item) => normalizeRootKey(item)));
+
+  const criticalRoots = dedupeStrings(
+    state.criticalRoots.filter((item) => selectedSet.has(normalizeRootKey(item)))
+  );
+
+  return {
+    ...state,
+    roots: officialRoots,
+    selectedRoots,
+    criticalRoots,
+    step: normalizeStep(state.step),
+  };
+}
+
 function mergeParetoState(baseRaw: unknown, incomingRaw: unknown): ParetoState {
   const base = normalizeParetoState(baseRaw);
   const incoming =
@@ -311,7 +373,10 @@ export async function GET(req: NextRequest) {
           ok: true,
           exists: true,
           chatId: stateRow.chat_id ?? null,
-          state: normalizeParetoState(stateRow.state_json),
+          state: sanitizeParetoStateWithOfficialRoots(
+            normalizeParetoState(stateRow.state_json),
+            await loadOfficialIshikawaRoots(user.userId, stateRow.chat_id ?? requestedChatId ?? null)
+          ),
           updatedAt: stateRow.updated_at ?? null,
           source: "stage_state",
         },
@@ -365,7 +430,10 @@ export async function GET(req: NextRequest) {
         ok: true,
         exists: true,
         chatId: legacyRow.chat_id ?? null,
-        state: normalizeParetoState(legacyRow.payload),
+        state: sanitizeParetoStateWithOfficialRoots(
+          normalizeParetoState(legacyRow.payload),
+          await loadOfficialIshikawaRoots(user.userId, legacyRow.chat_id ?? requestedChatId ?? null)
+        ),
         updatedAt: legacyRow.updated_at ?? null,
         source: "legacy_artifact",
       },
@@ -432,7 +500,12 @@ export async function POST(req: NextRequest) {
       return fail(500, "DB_ERROR", "No se pudo leer el estado actual de Pareto.", existing.error);
     }
 
-    const mergedState = mergeParetoState(existing.data?.state_json ?? null, state);
+    const officialRoots = await loadOfficialIshikawaRoots(user.userId, chatId);
+
+    const mergedState = sanitizeParetoStateWithOfficialRoots(
+      mergeParetoState(existing.data?.state_json ?? null, state),
+      officialRoots
+    );
 
     const { error } = await supabaseServer
       .from("plan_stage_states")
