@@ -16,7 +16,8 @@ export type ApiErrorCode =
   | "ACCESS_NOT_STARTED"
   | "ACCESS_EXPIRED"
   | "PAYLOAD_TOO_LARGE"
-  | "AUTH_UPSTREAM_TIMEOUT";
+  | "AUTH_UPSTREAM_TIMEOUT"
+  | "FORBIDDEN_IN_PRODUCTION";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

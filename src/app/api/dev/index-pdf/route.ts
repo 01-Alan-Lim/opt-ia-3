@@ -4,6 +4,36 @@ export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
 import { embedText } from "@/lib/embeddings";
+import { requireUser, getAuthErrorCode } from "@/lib/auth/supabase";
+import { failResponse } from "@/lib/api/response";
+
+// Guard: bloqueado en producción; en desarrollo exige docente autenticado.
+// Evita escritura RAG anónima y gasto de embeddings sin control.
+async function guardDev(req: Request): Promise<NextResponse | null> {
+  if (process.env.NODE_ENV === "production") {
+    return failResponse(
+      "FORBIDDEN_IN_PRODUCTION",
+      "Endpoint no disponible en producción.",
+      403
+    );
+  }
+  try {
+    const authed = await requireUser(req);
+    if (authed.role !== "teacher") {
+      return failResponse("FORBIDDEN", "Solo docentes.", 403);
+    }
+  } catch (err) {
+    const code = getAuthErrorCode(err);
+    if (code === "UNAUTHORIZED") {
+      return failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401);
+    }
+    if (code === "FORBIDDEN_DOMAIN") {
+      return failResponse("FORBIDDEN", "Acceso restringido.", 403);
+    }
+    return failResponse("INTERNAL", "No se pudo validar la sesión.", 500);
+  }
+  return null;
+}
 
 // Helper: cortar el texto en chunks (versión simple que ya funcionaba)
 function splitTextIntoChunks(text: string, maxLength = 1000): string[] {
@@ -40,6 +70,9 @@ function splitTextIntoChunks(text: string, maxLength = 1000): string[] {
 //   text: string          // texto ya extraído del PDF (lo manda el cliente)
 // }
 export async function POST(req: NextRequest) {
+  const blocked = await guardDev(req);
+  if (blocked) return blocked;
+
   try {
     const body = await req.json();
 
