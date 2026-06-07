@@ -154,7 +154,7 @@ export async function POST(req: Request) {
 
     const parsed = BodySchema.safeParse(body);
     if (!parsed.success) {
-      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+      return err(400, "BAD_REQUEST", "Body inválido.");
     }
 
     const { period } = parsed.data;
@@ -320,7 +320,7 @@ export async function POST(req: Request) {
     }
 
     if (errValue instanceof z.ZodError) {
-      return err(400, "BAD_REQUEST", errValue.issues[0]?.message ?? "Payload inválido.");
+      return err(400, "BAD_REQUEST", "Payload inválido.");
     }
 
     return err(500, "DB_ERROR", "Error interno.");

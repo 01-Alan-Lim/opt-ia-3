@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
       return fail(
         400,
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Query inválida."
+        "Query inválida."
       );
     }
 

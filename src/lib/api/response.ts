@@ -28,7 +28,10 @@ export function ok<T>(data: T, init?: ResponseInit) {
  * Úsalo con failResponse(...) o NextResponse.json(fail(...), {status})
  */
 export function fail(code: ApiErrorCode, message: string, details: unknown = null) {
-  return { ok: false, code, message, details };
+  if (details !== null && details !== undefined) {
+    console.error(`[api] ${code}: ${message}`, details);
+  }
+  return { ok: false, code, message };
 }
 
 /**

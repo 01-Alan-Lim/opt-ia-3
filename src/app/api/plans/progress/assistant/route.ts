@@ -276,7 +276,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "BAD_REQUEST",
-          message: parsed.error.issues[0]?.message ?? "Body inválido.",
+          message: "Body inválido.",
         },
         { status: 400 }
       );
@@ -562,7 +562,7 @@ DEVUELVE SOLO JSON con este formato exacto:
       console.error("[plans] progress/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
-        err.issues[0]?.message ?? "Payload inválido.",
+        "Payload inválido.",
         400
       );
     }

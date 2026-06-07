@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     const raw = await req.json().catch(() => ({}));
     const parsed = BodySchema.safeParse(raw);
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+      return fail(400, "BAD_REQUEST", "Body inválido.");
     }
 
     const requestedChatId = parsed.data.chatId ?? null;
@@ -306,7 +306,7 @@ ${JSON.stringify(finalPayload, null, 2)}
     }
 
     if (err instanceof z.ZodError) {
-      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+      return fail(400, "BAD_REQUEST", "Payload inválido.", err.flatten());
     }
 
     console.error("[plans] foda/validate: error interno", err);

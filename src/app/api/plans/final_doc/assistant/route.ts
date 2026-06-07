@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     const parsed = BodySchema.safeParse(raw);
     if (!parsed.success) {
       return NextResponse.json(
-        { ok: false, code: "BAD_REQUEST", message: parsed.error.issues[0]?.message ?? "Body inválido." },
+        { ok: false, code: "BAD_REQUEST", message: "Body inválido." },
         { status: 400 }
       );
     }
@@ -627,7 +627,7 @@ ${String(recentHistory ?? "")}
       console.error("[plans] final_doc/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
-        err.issues[0]?.message ?? "Payload inválido.",
+        "Payload inválido.",
         400
       );
     }

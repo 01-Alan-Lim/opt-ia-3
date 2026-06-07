@@ -130,7 +130,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         fail(
           "BAD_REQUEST",
-          parsed.error.issues[0]?.message ?? "Datos de subida inválidos."
+          "Datos de subida inválidos."
         ),
         { status: 400 }
       );

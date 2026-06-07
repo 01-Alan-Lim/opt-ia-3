@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
     if (!parsed.success) {
       return failResponse(
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Query inválida.",
+        "Query inválida.",
         400
       );
     }
@@ -178,7 +178,7 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) {
       return failResponse(
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Body inválido.",
+        "Body inválido.",
         400
       );
     }
@@ -288,7 +288,7 @@ export async function DELETE(req: NextRequest) {
     if (!parsed.success) {
       return failResponse(
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Body inválido.",
+        "Body inválido.",
         400
       );
     }

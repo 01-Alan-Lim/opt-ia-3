@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
       return fail(
         400,
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Query inválida."
+        "Query inválida."
       );
     }
 
@@ -224,7 +224,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+      return fail(400, "BAD_REQUEST", "Payload inválido.", err.flatten());
     }
 
     return fail(500, "INTERNAL", "Error interno.");
@@ -245,7 +245,7 @@ export async function POST(req: NextRequest) {
       return fail(
         400,
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Payload inválido."
+        "Payload inválido."
       );
     }
 
@@ -330,7 +330,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+      return fail(400, "BAD_REQUEST", "Payload inválido.", err.flatten());
     }
 
     return fail(500, "INTERNAL", "Error interno.");
