@@ -8,6 +8,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import { detectParetoIntent } from "@/lib/plan/paretoIntent";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
@@ -966,6 +967,9 @@ function hasExplicitCriterionProposalSignal(studentMessage: string) {
 function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
   const raw = String(studentMessage ?? "").trim();
   if (!raw) return false;
+
+  const paretoIntent = detectParetoIntent(raw);
+  if (paretoIntent !== "propose_criterion") return false;
 
   const normalized = normalizeText(raw);
   const compact = raw.replace(/[¿?]/g, "").trim();
