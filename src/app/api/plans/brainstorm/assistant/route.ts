@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) {
       return failResponse(
         "BAD_REQUEST",
-        parsed.error.issues[0]?.message ?? "Payload inválido.",
+        "Payload inválido.",
         400
       );
     }
@@ -276,7 +276,7 @@ Recuerda:
       console.error("[plans] brainstorm/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
-        err.issues[0]?.message ?? "Payload inválido.",
+        "Payload inválido.",
         400
       );
     }

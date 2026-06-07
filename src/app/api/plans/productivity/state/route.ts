@@ -78,7 +78,7 @@ export async function GET(req: Request) {
       chatId: url.searchParams.get("chatId") ?? undefined,
     });
     if (!parsed.success) {
-      return NextResponse.json(fail("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida."), {
+      return NextResponse.json(fail("BAD_REQUEST", "Query inválida."), {
         status: 400,
       });
     }
@@ -143,7 +143,7 @@ export async function GET(req: Request) {
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }
@@ -171,7 +171,7 @@ export async function POST(req: Request) {
     const parsed = PostBodySchema.safeParse(raw);
     if (!parsed.success) {
       return NextResponse.json(
-        fail("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }
@@ -259,7 +259,7 @@ export async function POST(req: Request) {
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }

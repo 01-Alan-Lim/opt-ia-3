@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
       Object.fromEntries(new URL(req.url).searchParams)
     );
     if (!parsed.success) {
-      return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.", 400);
+      return failResponse("BAD_REQUEST", "Query inválida.", 400);
     }
 
     const { chatId } = parsed.data;
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     const raw = await req.json().catch(() => null);
     const parsed = UpsertBodySchema.safeParse(raw);
     if (!parsed.success) {
-      return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.", 400);
+      return failResponse("BAD_REQUEST", "Body inválido.", 400);
     }
 
     const { chatId, stateJson } = parsed.data;

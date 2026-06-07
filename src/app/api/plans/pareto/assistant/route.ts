@@ -1468,7 +1468,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "BAD_REQUEST",
-          message: parsed.error.issues[0]?.message ?? "Payload inválido.",
+          message: "Payload inválido.",
         },
         { status: 400 }
       );

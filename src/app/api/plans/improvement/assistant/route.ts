@@ -449,7 +449,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "BAD_REQUEST",
-          message: parsed.error.issues[0]?.message ?? "Body inválido.",
+          message: "Body inválido.",
         },
         { status: 400 }
       );
@@ -854,7 +854,7 @@ CRITERIOS INTERNOS (sin decirlos como lista al estudiante):
       console.error("[plans] improvement/assistant: payload zod inválido", err.flatten());
       return failResponse(
         "BAD_REQUEST",
-        err.issues[0]?.message ?? "Payload inválido.",
+        "Payload inválido.",
         400
       );
     }

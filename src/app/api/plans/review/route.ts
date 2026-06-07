@@ -141,7 +141,7 @@ export async function POST(request: Request) {
     const parsed = ReviewBodySchema.safeParse(rawBody);
     if (!parsed.success) {
       return NextResponse.json(
-        fail("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }
@@ -469,7 +469,7 @@ Texto del plan del estudiante:
     if (err instanceof z.ZodError) {
       console.error("[plans] review: payload zod inválido", err.flatten());
       return NextResponse.json(
-        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }

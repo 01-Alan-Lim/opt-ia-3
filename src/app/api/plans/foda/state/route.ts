@@ -130,7 +130,7 @@ export async function GET(req: NextRequest) {
       Object.fromEntries(new URL(req.url).searchParams)
     );
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
+      return fail(400, "BAD_REQUEST", "Query inválida.");
     }
 
     const requestedChatId = parsed.data.chatId ?? null;
@@ -267,7 +267,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+      return fail(400, "BAD_REQUEST", "Payload inválido.", err.flatten());
     }
 
     return fail(500, "INTERNAL", "Error interno.");
@@ -284,7 +284,7 @@ export async function POST(req: NextRequest) {
     const raw = await req.json().catch(() => null);
     const parsed = BodySchema.safeParse(raw);
     if (!parsed.success) {
-      return fail(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido.");
+      return fail(400, "BAD_REQUEST", "Payload inválido.");
     }
 
     const { chatId, state } = parsed.data;
@@ -355,7 +355,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (err instanceof z.ZodError) {
-      return fail(400, "BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido.", err.flatten());
+      return fail(400, "BAD_REQUEST", "Payload inválido.", err.flatten());
     }
 
     return fail(500, "INTERNAL", "Error interno.");

@@ -375,7 +375,7 @@ Ten en cuenta también si la estrategia elegida (FO / DO / FA / DA) es coherente
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        { ok: false, code: "BAD_REQUEST", message: err.issues[0]?.message ?? "Payload inválido." },
+        { ok: false, code: "BAD_REQUEST", message: "Payload inválido." },
         { status: 400 }
       );
     }

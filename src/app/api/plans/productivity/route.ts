@@ -75,7 +75,7 @@ export async function GET(req: Request) {
       chatId: url.searchParams.get("chatId") ?? undefined,
     });
     if (!parsed.success) {
-      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Query inválida.");
+      return err(400, "BAD_REQUEST", "Query inválida.");
     }
 
     const { period, chatId } = parsed.data;
@@ -150,7 +150,7 @@ export async function POST(req: Request) {
 
     const parsed = PostBodySchema.safeParse(body);
     if (!parsed.success) {
-      return err(400, "BAD_REQUEST", parsed.error.issues[0]?.message ?? "Body inválido.");
+      return err(400, "BAD_REQUEST", "Body inválido.");
     }
 
     const { chatId, payload } = parsed.data;

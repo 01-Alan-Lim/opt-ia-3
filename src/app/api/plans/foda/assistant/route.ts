@@ -1094,7 +1094,7 @@ export async function POST(req: NextRequest) {
       return fail(
         400,
         "BAD_REQUEST",
-        parsedBody.error.issues[0]?.message ?? "Body inválido.",
+        "Body inválido.",
         parsedBody.error.flatten()
       );
     }

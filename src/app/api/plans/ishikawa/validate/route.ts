@@ -480,7 +480,7 @@ ${JSON.stringify(
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
-        fail("BAD_REQUEST", err.issues[0]?.message ?? "Payload inválido."),
+        fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
     }

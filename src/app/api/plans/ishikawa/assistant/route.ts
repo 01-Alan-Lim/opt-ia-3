@@ -1767,7 +1767,7 @@ export async function POST(req: Request) {
     if (!parsedBody.success) {
       return failResponse(
         "BAD_REQUEST",
-        parsedBody.error.issues[0]?.message ?? "Payload inválido para Ishikawa.",
+        "Payload inválido para Ishikawa.",
         400
       );
     }
