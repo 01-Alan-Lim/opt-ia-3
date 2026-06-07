@@ -252,6 +252,21 @@ export default function ChatPage() {
   // Etapa 0 Wizard (plan_mejora)
   // -----------------------------
   type Stage0Step = 0 | 1 | 2 | 3; // 0=idle, 1=sector, 2=producto, 3=proceso (listo para confirmar)
+  type Stage0ContextJson = {
+    stage?: string;
+    sector?: string;
+    products?: string[];
+    process_focus?: string[];
+  };
+  type Stage0InterpretPayload = {
+    intent?: "GREETING" | "QUESTION" | "START" | "EDIT" | "CONFIRM" | "ANSWER";
+    sector?: unknown;
+    products?: unknown;
+    process_focus?: unknown;
+    confidence?: unknown;
+    needsClarification?: unknown;
+    clarificationQuestion?: unknown;
+  };
   const [stage0Step, setStage0Step] = useState<Stage0Step>(0);
   const [stage0Draft, setStage0Draft] = useState<{
     sector?: string;
@@ -2703,6 +2718,101 @@ function looksLikeProgressClosureRequest(text: string) {
     );
   }
 
+  function readStage0StringList(value: unknown): string[] | undefined {
+    const source =
+      typeof value === "string"
+        ? [value]
+        : Array.isArray(value)
+          ? value
+          : [];
+
+    const out: string[] = [];
+    const seen = new Set<string>();
+
+    for (const item of source) {
+      const text = String(item ?? "").replace(/\s+/g, " ").trim();
+      const key = normalizeText(text);
+      if (!text || seen.has(key)) continue;
+      seen.add(key);
+      out.push(text);
+    }
+
+    return out.length > 0 ? out.slice(0, 3) : undefined;
+  }
+
+  function readStage0Context(value: Record<string, unknown>): Stage0ContextJson {
+    const sector =
+      typeof value.sector === "string" && value.sector.trim()
+        ? value.sector.trim()
+        : undefined;
+
+    return {
+      stage: typeof value.stage === "string" ? value.stage : "ETAPA_0",
+      sector,
+      products: readStage0StringList(value.products),
+      process_focus: readStage0StringList(value.process_focus),
+    };
+  }
+
+  function readStage0Extraction(payload: Stage0InterpretPayload): Stage0ContextJson {
+    const sector =
+      typeof payload.sector === "string" && payload.sector.trim()
+        ? payload.sector.trim()
+        : undefined;
+
+    return {
+      sector,
+      products: readStage0StringList(payload.products),
+      process_focus: readStage0StringList(payload.process_focus),
+    };
+  }
+
+  function mergeStage0Context(
+    current: Stage0ContextJson,
+    patch: Stage0ContextJson
+  ): Stage0ContextJson {
+    return {
+      stage: current.stage ?? "ETAPA_0",
+      sector: patch.sector ?? current.sector,
+      products: patch.products ?? current.products ?? [],
+      process_focus: patch.process_focus ?? current.process_focus ?? [],
+    };
+  }
+
+  function buildStage0ProgressMessage(
+    captured: Stage0ContextJson,
+    nextContext: Stage0ContextJson
+  ) {
+    const lines: string[] = [];
+
+    if (captured.sector) {
+      lines.push(`- Sector/rubro: **${captured.sector}**`);
+    }
+
+    if (captured.products?.length) {
+      lines.push(`- Producto(s)/servicio(s): **${captured.products.join(", ")}**`);
+    }
+
+    if (captured.process_focus?.length) {
+      lines.push(`- Area/proceso foco: **${captured.process_focus.join(", ")}**`);
+    }
+
+    const nextStep = getNextStage0StepFromContext(nextContext);
+    const intro =
+      lines.length > 1
+        ? "Perfecto. Ya registre estos datos del contexto:"
+        : "Perfecto. Ya registre este dato del contexto:";
+
+    if (nextStep === 0) {
+      return (
+        `${intro}\n\n${lines.join("\n")}\n\n` +
+        "Voy a consolidar tu **Contexto del Caso** para dejarlo listo."
+      );
+    }
+
+    return `${intro}\n\n${lines.join("\n")}\n\n${promptForStep(nextStep)}`;
+  }
+
   function pushAssistantOnce(text: string) {
     setMessages((prev) => {
       const last = [...prev].reverse().find((m) => m.role === "assistant")?.content ?? "";
@@ -2748,6 +2858,13 @@ function looksLikeProgressClosureRequest(text: string) {
     // Si dice "los 3" o "todo"
     if (t.includes("los 3") || t.includes("todo") || t.includes("los tres")) return null;
 
+    return null;
+  }
+
+  function stage0StepForField(field: EditTarget): 1 | 2 | 3 | null {
+    if (field === "sector") return 1;
+    if (field === "products") return 2;
+    if (field === "process_focus") return 3;
     return null;
   }
 
@@ -3434,12 +3551,33 @@ function looksLikeProgressClosureRequest(text: string) {
     const { text, ctx } = input;
     const ctxJson = (ctx.contextJson ?? {}) as Record<string, unknown>;
 
+    const editingStep = stage0StepForField(editingField);
     const nextStep = getNextStage0StepFromContext(ctxJson);
-    const step = (nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3;
+    const step = editingStep ?? ((nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3);
 
     setStage0Step(step);
 
     const localIntent = detectStage0Intent(text);
+
+    if (localIntent === "EDIT") {
+      const target = detectEditingField(text);
+      const targetStep = stage0StepForField(target);
+
+      if (!target || !targetStep) {
+        await appendAssistant(
+          "Claro, podemos corregir el contexto. Dime que dato quieres cambiar: **rubro**, **producto/servicio** o **area/proceso**."
+        );
+        return true;
+      }
+
+      setEditingField(target);
+      setStage0Step(targetStep);
+      await appendAssistant(
+        "Claro. Dime el nuevo dato y lo actualizo sin tocar lo demas.\n\n" +
+          promptForStep(targetStep)
+      );
+      return true;
+    }
 
     if (localIntent === "GREETING" || localIntent === "START") {
       await appendAssistant(buildStage0Welcome(step));
@@ -3469,7 +3607,7 @@ function looksLikeProgressClosureRequest(text: string) {
       return true;
     }
 
-    const result = interpreted.payload;
+    const result = interpreted.payload as Stage0InterpretPayload;
 
     if (
       typeof result.confidence === "number" &&
@@ -3496,9 +3634,98 @@ function looksLikeProgressClosureRequest(text: string) {
       result.intent === "EDIT" ||
       result.needsClarification
     ) {
+      const clarificationQuestion =
+        typeof result.clarificationQuestion === "string"
+          ? result.clarificationQuestion.trim()
+          : "";
+
       await appendAssistant(
-        result.clarificationQuestion?.trim() || stage0HelpMessage(step)
+        clarificationQuestion || stage0HelpMessage(step)
       );
+      return true;
+    }
+
+    const currentStage0Context = readStage0Context(ctxJson);
+    const extractedContext = readStage0Extraction(result);
+    const hasExtractedContext =
+      Boolean(extractedContext.sector) ||
+      Boolean(extractedContext.products?.length) ||
+      Boolean(extractedContext.process_focus?.length);
+
+    if (hasExtractedContext) {
+      const nextContext = mergeStage0Context(currentStage0Context, extractedContext);
+      const nextMissingStep = getNextStage0StepFromContext(nextContext);
+      const assistantMessage = buildStage0ProgressMessage(extractedContext, nextContext);
+
+      const saved = await savePlanContextDraft(
+        extractedContext,
+        { userMessage: text, assistantMessage },
+        currentStage0Context
+      );
+
+      if (!saved.ok) {
+        await appendAssistant("No pude guardar el contexto en este momento. Intenta otra vez.");
+        return true;
+      }
+
+      if (nextMissingStep !== 0) {
+        setStage0Draft(nextContext);
+        setStage0Step(nextMissingStep);
+        setEditingField(null);
+
+        planContextCacheRef.current = {
+          at: Date.now(),
+          data: {
+            ...ctx,
+            exists: true,
+            status: "draft",
+            chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
+            contextJson: nextContext,
+            contextText: (saved.payload?.contextText ?? ctx.contextText) as string | null,
+          },
+        };
+
+        await appendAssistant(assistantMessage);
+        return true;
+      }
+
+      const confirmed = await confirmPlanContext();
+
+      if (!confirmed.ok) {
+        await appendAssistant(
+          confirmed.payload?.message ||
+            "Guarde el contexto, pero no pude confirmarlo todavia. Intenta nuevamente."
+        );
+        return true;
+      }
+
+      const finalContext = (confirmed.payload?.contextJson ?? nextContext) as Record<string, unknown>;
+
+      planContextCacheRef.current = {
+        at: Date.now(),
+        data: {
+          ...ctx,
+          exists: true,
+          status: "confirmed",
+          chatId: (confirmed.payload?.chatId ?? saved.payload?.chatId ?? ctx.chatId) as string | null,
+          contextJson: finalContext,
+          contextText: (confirmed.payload?.contextText ?? ctx.contextText) as string | null,
+        },
+      };
+
+      setStage0Draft(readStage0Context(finalContext));
+      setStage0Step(0);
+      setEditingField(null);
+      setAwaitingStage1Start(clientId, true);
+
+      await appendAssistant(
+        "Etapa 0 completada y confirmada.\n\n" +
+          formatContextSummary(finalContext) +
+          "\n\nYa quedo registrado el contexto base de tu caso.\n\n" +
+          "Responde **ok** si quieres que sigamos con la siguiente etapa.\n" +
+          "O escribe **productividad** si ya tienes datos mensuales."
+      );
+
       return true;
     }
 
