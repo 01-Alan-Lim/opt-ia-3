@@ -1429,6 +1429,16 @@ type IshikawaTurnAction =
 function classifyIntentRules(msgLower: string): IshikawaIntent {
   if (!msgLower.trim()) return "UNKNOWN";
 
+  const whyIntent = classifyWhyIntent(msgLower);
+
+  if (whyIntent === "ask_guidance" || whyIntent === "ask_example") {
+    return "HELP";
+  }
+
+  if (whyIntent === "switch_context" || whyIntent === "meta_process") {
+    return "NON_CAUSAL";
+  }
+
   // MAPA / AVANCE / ESTADO
   if (
     msgLower.includes("situacion actual") ||
@@ -1699,7 +1709,7 @@ function resolveIshikawaTurnAction(args: {
       return "ask_help_inside_branch";
     }
 
-    if (!isNonCausalMessage(text)) {
+    if (whyIntent === "answer_why" && !isNonCausalMessage(text)) {
       return "capture_why_answer";
     }
 
@@ -1880,6 +1890,22 @@ export async function POST(req: Request) {
     );
 
     const activeNodes = findActiveNodes(ishikawaState);
+
+    if (
+      activeNodes?.sc &&
+      turnAction === "fallback_llm" &&
+      classifyWhyIntent(studentMessage) === "unclear"
+    ) {
+      const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
+
+      return ok({
+        assistantMessage: sanitizeStudentPlaceholder(
+          buildClarifyWhyMessage(studentMessage),
+          preferredFirstName
+        ),
+        updates: { nextState },
+      });
+    }
 
     const shouldRunContextualBranchIntent =
       Boolean(activeNodes?.sc) &&
