@@ -42,6 +42,14 @@ function isCategoryOnlyMessage(text: string): boolean {
   return CATEGORY_TERMS.map((term) => normalize(term)).includes(text);
 }
 
+function hasAny(text: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => text.includes(pattern));
+}
+
+function isQuestion(input: string, normalized: string): boolean {
+  return input.includes("?") || input.includes("¿") || normalized.startsWith("por que ");
+}
+
 export function looksLikeMetaWhyMessage(input: string): boolean {
   const t = normalize(input);
 
@@ -75,6 +83,11 @@ export function looksLikeMetaWhyMessage(input: string): boolean {
     "donde ibamos",
     "muestrame el avance",
     "retomemos",
+    "estoy hablando del proceso",
+    "hablo del proceso",
+    "es sobre el proceso",
+    "no estoy respondiendo",
+    "no es una causa",
   ];
 
   return metaSignals.some((signal) => t.includes(signal));
@@ -109,6 +122,23 @@ function looksLikeSwitchContextMessage(input: string): boolean {
     "mejor pasemos a",
   ];
 
+  const categoryNavigationSignals = [
+    "quiero cambiar de categoria",
+    "quiero cambiar categoria",
+    "cambiemos de categoria",
+    "cambiar de categoria",
+    "pasemos a otra categoria",
+    "pasar a otra categoria",
+    "quiero trabajar otra categoria",
+    "trabajar otra categoria",
+    "otra categoria",
+    "siguiente categoria",
+  ];
+
+  if (hasAny(t, categoryNavigationSignals)) {
+    return true;
+  }
+
   if (switchSignals.some((signal) => t.includes(signal)) && mentionsCategory(t)) {
     return true;
   }
@@ -126,57 +156,106 @@ export function classifyWhyIntent(input: string): IshikawaWhyIntent {
 
   if (!t) return "unclear";
 
-  const asksGuidance =
-    t.includes("ayudame") ||
-    t.includes("me ayudas") ||
-    t.includes("puedes ayudarme") ||
-    t.includes("como lo dirias") ||
-    t.includes("como se escribiria") ||
-    t.includes("como encontramos la raiz") ||
-    t.includes("como encontrar la raiz") ||
-    t.includes("como hallamos la raiz") ||
-    t.includes("no se como decirlo") ||
-    t.includes("no se como redactarlo") ||
-    t.includes("no tengo idea") ||
-    t.includes("no se cual seria") ||
-    t.includes("no se que poner") ||
-    t.includes("como lo aterrizo") ||
-    t.includes("como lo planteo") ||
-    t.includes("que me recomiendas poner");
+  if (looksLikeSwitchContextMessage(t)) return "switch_context";
 
-  if (asksGuidance) return "ask_guidance";
-
-  const asksExample =
-    t.includes("dame un ejemplo") ||
-    t.includes("ejemplo") ||
-    t.includes("opciones") ||
-    t.includes("cual seria") ||
-    t.includes("dame ideas") ||
-    t.includes("dame algunas ideas");
+  const asksExample = hasAny(t, [
+    "dame un ejemplo",
+    "dame ejemplo",
+    "un ejemplo",
+    "ejemplo",
+    "dame ideas",
+    "dame algunas ideas",
+    "opciones",
+  ]);
 
   if (asksExample) return "ask_example";
 
-  if (looksLikeSwitchContextMessage(t)) return "switch_context";
+  const asksGuidance = hasAny(t, [
+    "ayudame",
+    "me ayudas",
+    "puedes ayudarme",
+    "orientame",
+    "explicame",
+    "explica",
+    "no entiendo",
+    "no entiendo bien",
+    "no me queda claro",
+    "no se",
+    "no tengo idea",
+    "ni idea",
+    "no estoy seguro",
+    "me falta entender",
+    "me falta claridad",
+    "me falta comprender",
+    "me cuesta entender",
+    "como lo dirias",
+    "como se escribiria",
+    "como encontramos la raiz",
+    "como encontrar la raiz",
+    "como hallamos la raiz",
+    "no se como decirlo",
+    "no se como redactarlo",
+    "no se cual seria",
+    "no se que poner",
+    "que pongo aqui",
+    "que podria poner",
+    "que deberia poner",
+    "por que seria eso",
+    "como lo aterrizo",
+    "como lo planteo",
+    "que me recomiendas poner",
+  ]);
 
-  const isMeta =
-    t.includes("en que vamos") ||
-    t.includes("ya terminamos") ||
-    t.includes("ya llegamos") ||
-    t.includes("cerramos") ||
-    t.includes("pasamos") ||
-    t.includes("como va quedando") ||
-    t.includes("muestrame el avance") ||
-    t.includes("que tenemos") ||
-    t.includes("donde ibamos") ||
-    t.includes("en que parte vamos") ||
-    t.includes("retomemos") ||
-    t.includes("como seguimos");
+  if (asksGuidance) return "ask_guidance";
+
+  const isMeta = hasAny(t, [
+    "en que vamos",
+    "ya terminamos",
+    "ya llegamos",
+    "cerramos",
+    "pasamos",
+    "como va quedando",
+    "muestrame el avance",
+    "que tenemos",
+    "donde ibamos",
+    "en que parte vamos",
+    "retomemos",
+    "como seguimos",
+    "estoy hablando del proceso",
+    "hablo del proceso",
+    "es sobre el proceso",
+  ]);
 
   if (isMeta) return "meta_process";
 
-  const wordCount = raw.split(/\s+/).filter(Boolean).length;
+  if (isQuestion(raw, t)) return "ask_guidance";
 
-  if (wordCount >= 3 && !looksLikeMetaWhyMessage(raw)) {
+  const wordCount = raw.split(/\s+/).filter(Boolean).length;
+  const causalSignals = [
+    "porque",
+    "debido a",
+    "a causa de",
+    "por falta",
+    "falta",
+    "ausencia",
+    "no existe",
+    "no hay",
+    "nadie",
+    "no se controla",
+    "no se revisa",
+    "no se verifica",
+    "no fue asignado",
+    "sin responsable",
+    "sin procedimiento",
+    "sin control",
+    "sin registro",
+  ];
+
+  if (
+    wordCount >= 2 &&
+    hasAny(t, causalSignals) &&
+    !looksLikeMetaWhyMessage(raw)
+  ) {
     return "answer_why";
   }
 
@@ -188,12 +267,7 @@ export function sanitizeWhyCandidate(input: string): string | null {
   if (!raw) return null;
 
   const intent = classifyWhyIntent(raw);
-  if (
-    intent === "switch_context" ||
-    intent === "meta_process" ||
-    intent === "ask_guidance" ||
-    intent === "ask_example"
-  ) {
+  if (intent !== "answer_why") {
     return null;
   }
 
