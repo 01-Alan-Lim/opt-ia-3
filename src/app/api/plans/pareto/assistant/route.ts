@@ -10,6 +10,10 @@ import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { detectParetoIntent } from "@/lib/plan/paretoIntent";
 import {
+  classifyConversationIntent,
+  type ConversationIntentResult,
+} from "@/lib/plan/conversationIntent";
+import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
 } from "@/lib/chat/studentIdentity";
@@ -910,6 +914,158 @@ function buildCurrentCriteriaWeightsMessage(state: ParetoState) {
   );
 }
 
+function hasParetoCorrectionDetails(message: string) {
+  const normalized = normalizeText(message);
+  const mentionsParetoField =
+    normalized.includes("peso") ||
+    normalized.includes("criterio") ||
+    normalized.includes("causa");
+  const hasReplacementSignal =
+    normalized.includes(" por ") ||
+    normalized.includes("reemplazo");
+  const hasAssignmentSignal =
+    normalized.includes(" a ") ||
+    normalized.includes(":") ||
+    /\b\d{1,2}\b/.test(normalized);
+
+  return mentionsParetoField && (hasReplacementSignal || hasAssignmentSignal);
+}
+
+function getCaseHint(caseContext: Record<string, unknown> | null) {
+  if (!caseContext) return "tu caso";
+
+  const serialized = JSON.stringify(caseContext)
+    .replace(/[{}\[\]"]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!serialized) return "tu caso";
+
+  return serialized.length > 140 ? `${serialized.slice(0, 140).trim()}...` : serialized;
+}
+
+function buildSuggestedCriteria(state: ParetoState, caseContext: Record<string, unknown> | null) {
+  const text = normalizeText(
+    [
+      getCaseHint(caseContext),
+      ...state.selectedRoots,
+      ...state.roots.slice(0, 5),
+    ].join(" ")
+  );
+
+  const suggestions: string[] = [];
+
+  if (text.includes("tiempo") || text.includes("demora") || text.includes("espera")) {
+    suggestions.push("Tiempo perdido");
+  }
+  if (text.includes("costo") || text.includes("gasto") || text.includes("merma")) {
+    suggestions.push("Costo generado");
+  }
+  if (text.includes("calidad") || text.includes("defecto") || text.includes("reproceso")) {
+    suggestions.push("Impacto en calidad");
+  }
+  if (text.includes("cliente") || text.includes("entrega") || text.includes("servicio")) {
+    suggestions.push("Impacto en servicio");
+  }
+
+  for (const fallback of ["Impacto operativo", "Frecuencia", "Controlabilidad"]) {
+    if (suggestions.length >= 3) break;
+    if (!suggestions.includes(fallback)) suggestions.push(fallback);
+  }
+
+  return suggestions.slice(0, 3);
+}
+
+function buildParetoSupportMessage(input: {
+  intentResult: ConversationIntentResult;
+  state: ParetoState;
+  caseContext: Record<string, unknown> | null;
+}) {
+  const { intentResult, state, caseContext } = input;
+  const criteria = buildSuggestedCriteria(state, caseContext);
+  const criteriaText = criteria.map((item) => `- ${item}`).join("\n");
+  const currentStep = state.step;
+  const rootExample = state.selectedRoots[0] ?? state.roots[0] ?? "una causa raiz relevante";
+  const caseHint = getCaseHint(caseContext);
+
+  if (intentResult.intent === "example_request") {
+    return (
+      `Ejemplo aplicado a ${caseHint}: si una causa raiz es "${rootExample}", podrias compararla con criterios como:\n\n` +
+      `${criteriaText}\n\n` +
+      "Luego asignas pesos de 1 a 10 segun importancia y calificas tus causas en Excel o en tu planilla. No necesito calcularte toda la matriz aqui; trae tus criterios, pesos o causas criticas y los revisamos."
+    );
+  }
+
+  if (intentResult.intent === "unknown") {
+    return (
+      "No pasa nada. Para destrabar Pareto, elige criterios que te ayuden a comparar tus causas raiz, no criterios genericos por cumplir.\n\n" +
+      `Para tu caso podrias partir con 2 o 3 de estos y adaptarlos:\n${criteriaText}\n\n` +
+      "Escoge uno o ajustalo con tus palabras y lo revisamos."
+    );
+  }
+
+  if (intentResult.intent === "help_request") {
+    if (currentStep === "select_roots") {
+      return "El siguiente micro-paso es quedarte con la lista de causas raiz que vas a priorizar en Pareto. Usa las causas del Ishikawa, elimina duplicadas y envia la lista final que quieres comparar.";
+    }
+
+    if (currentStep === "define_criteria") {
+      return (
+        "El siguiente micro-paso es definir 3 criterios cortos para comparar causas. Deben ayudarte a decidir que causa pesa mas en tu caso.\n\n" +
+        `Puedes empezar con uno de estos y adaptarlo:\n${criteriaText}`
+      );
+    }
+
+    if (currentStep === "set_weights") {
+      return "Ahora asigna peso de 1 a 10 a cada criterio. Un peso alto significa que ese criterio influye mas en la priorizacion. Puedes escribir: Impacto operativo: 9, Frecuencia: 7, Controlabilidad: 6.";
+    }
+
+    return "Ahora usa tus criterios y pesos en Excel o en tu planilla: califica cada causa, ordenala de mayor a menor y vuelve con el grupo de causas criticas que te salio.";
+  }
+
+  if (intentResult.intent === "conceptual_question") {
+    if (intentResult.normalizedMessage.includes("80/20") || intentResult.normalizedMessage.includes("top 20")) {
+      return "En Pareto, la logica 80/20 sirve para identificar el grupo pequeno de causas que concentra la mayor parte del efecto. En OPT-IA no necesitas que la app haga todo el calculo: puedes hacerlo en Excel y traer aqui las causas criticas para revisarlas.";
+    }
+
+    if (intentResult.normalizedMessage.includes("peso") || intentResult.normalizedMessage.includes("ponder")) {
+      return "El peso indica cuanta importancia tiene cada criterio al comparar causas. Usa 1 a 10: un 10 pesa mucho en la decision y un 1 pesa poco. Lo importante es que puedas justificar por que un criterio pesa mas que otro en tu caso.";
+    }
+
+    return "En esta etapa Pareto sirve para priorizar causas raiz. Primero defines criterios utiles, luego pesos, despues calificas en Excel o planilla y finalmente vuelves con las causas criticas para revisar coherencia.";
+  }
+
+  if (intentResult.intent === "meta_process") {
+    return "La etapa Pareto no busca que la app haga obligatoriamente toda la matriz. Busca que tengas criterios, pesos y una seleccion final de causas criticas coherente con Ishikawa y 5 Porques. Si quieres validar avance, dime que parte ya tienes lista.";
+  }
+
+  if (intentResult.intent === "context_change") {
+    return "Cambiar el contexto, la empresa, el problema o el enfoque puede afectar etapas anteriores como FODA, Ishikawa y Pareto. Si realmente necesitas hacerlo, confirmalo explicitamente y retomamos desde el punto que corresponda; no lo cambiare automaticamente desde este mensaje.";
+  }
+
+  if (intentResult.intent === "correction") {
+    return "Podemos corregirlo, pero necesito que indiques exactamente que campo cambia: criterio, peso o causa critica. Por ejemplo: 'cambio el peso de Impacto operativo a 9' o 'reemplazo Frecuencia por Tiempo perdido'.";
+  }
+
+  return "Ese mensaje no parece conectado con Pareto. Volvamos al avance: dime tus criterios, pesos, dudas sobre el calculo en Excel o tus causas criticas.";
+}
+
+function buildConfirmationWithoutPendingMessage(state: ParetoState) {
+  if (state.step === "excel_work" || state.step === "collect_critical") {
+    return "Antes de confirmar, necesito que me pegues las causas criticas que te salieron en tu Excel o planilla. Con solo un 'ok' no tengo una propuesta nueva para consolidar.";
+  }
+
+  if (state.step === "define_criteria") {
+    return "Antes de confirmar, necesito que propongas o ajustes los 3 criterios. Si quieres, dime uno y lo reviso contigo.";
+  }
+
+  if (state.step === "set_weights") {
+    return "Antes de confirmar, faltan pesos claros para los criterios. Escribelos de 1 a 10 para poder consolidarlos.";
+  }
+
+  return "Necesito una propuesta concreta antes de confirmar. Enviame la lista, criterio, peso o causa critica que quieres dejar registrada.";
+}
+
 function parseWeightsFromMessage(
   studentMessage: string,
   currentCriteria: ParetoState["criteria"]
@@ -1539,6 +1695,126 @@ export async function POST(req: NextRequest) {
 
     const rootsForMatching = selectedRoots.length > 0 ? selectedRoots : roots;
 
+    const conversationIntent = classifyConversationIntent({
+      message: studentMessage,
+      stage: STAGE,
+      currentStep: paretoState.step,
+      currentState: paretoState,
+    });
+
+    if (isAskingForCriteriaWeights(studentMessage)) {
+      return assistantResponse(
+        buildCurrentCriteriaWeightsMessage(paretoState),
+        { ...paretoState },
+        actionFromParetoStep(paretoState.step)
+      );
+    }
+
+    if (isAskingForCriticalRoots(studentMessage)) {
+      return assistantResponse(
+        buildCurrentRootsListMessage(paretoState),
+        { ...paretoState },
+        actionFromParetoStep(paretoState.step)
+      );
+    }
+
+    if (conversationIntent.intent === "confirmation") {
+      const currentMinSelected = Number.isFinite(paretoState.minSelected)
+        ? paretoState.minSelected
+        : 10;
+      const currentMaxSelected = Number.isFinite(paretoState.maxSelected)
+        ? Math.max(currentMinSelected, paretoState.maxSelected)
+        : 15;
+
+      if (paretoState.step === "select_roots") {
+        if (
+          selectedRoots.length >= currentMinSelected &&
+          selectedRoots.length <= currentMaxSelected
+        ) {
+          return assistantResponse(
+            "Perfecto. La lista de causas queda como base para Pareto. Ahora definamos 3 criterios utiles para priorizarlas.",
+            { ...paretoState, step: "define_criteria" },
+            "define_criteria"
+          );
+        }
+
+        return assistantResponse(
+          buildConfirmationWithoutPendingMessage(paretoState),
+          { ...paretoState },
+          "ask_clarify"
+        );
+      }
+
+      if (paretoState.step === "define_criteria" && hasThreeCriteria(paretoState)) {
+        return assistantResponse(
+          "Perfecto. Ya hay 3 criterios definidos. Ahora asignales peso de 1 a 10 segun su importancia para priorizar tus causas.",
+          { ...paretoState, step: "set_weights" },
+          "set_weights"
+        );
+      }
+
+      if (paretoState.step === "set_weights" && hasWeights(paretoState)) {
+        return assistantResponse(
+          "Listo. Ya quedaron criterios y pesos. Ahora usa esos criterios en Excel o en tu planilla, ordena tus causas y vuelve con el grupo critico.",
+          { ...paretoState, step: "excel_work", criticalRoots: [] },
+          "instruct_excel"
+        );
+      }
+
+      if (paretoState.step === "collect_critical" || paretoState.step === "done") {
+        const currentMatched = matchAgainstSelectedRoots(
+          paretoState.criticalRoots,
+          rootsForMatching
+        ).matched;
+        const minCritical = ceil20Percent(rootsForMatching.length);
+
+        if (currentMatched.length >= minCritical) {
+          return assistantResponse(
+            "Perfecto. Confirmo esas causas como tu grupo critico del Pareto. Con esto la etapa queda lista para validarse.",
+            {
+              ...paretoState,
+              criticalRoots: currentMatched,
+              step: "done",
+            },
+            "done"
+          );
+        }
+      }
+
+      return assistantResponse(
+        buildConfirmationWithoutPendingMessage(paretoState),
+        { ...paretoState },
+        "ask_clarify"
+      );
+    }
+
+    if (
+      conversationIntent.intent === "correction" &&
+      !hasParetoCorrectionDetails(studentMessage)
+    ) {
+      return assistantResponse(
+        buildParetoSupportMessage({
+          intentResult: conversationIntent,
+          state: paretoState,
+          caseContext,
+        }),
+        { ...paretoState },
+        "ask_clarify"
+      );
+    }
+
+    if (!conversationIntent.shouldMutateStage) {
+      return assistantResponse(
+        buildParetoSupportMessage({
+          intentResult: conversationIntent,
+          state: paretoState,
+          caseContext,
+        }),
+        { ...paretoState },
+        actionFromParetoStep(paretoState.step)
+      );
+    }
+
     const previousCriteriaBeforeParse = paretoState.criteria;
 
     const parsedCriteriaNames = await parseCriteriaFromMessage({
@@ -1618,14 +1894,7 @@ export async function POST(req: NextRequest) {
 
       return assistantResponse(
         teacherCriteriaReply ||
-          buildCriteriaGuidanceFallback({
-            previousCriteria: previousCriteriaBeforeParse,
-            currentState: {
-              ...paretoStateWithParsedWeights,
-              step: "set_weights",
-              criticalRoots: [],
-            },
-          }),
+          buildMissingWeightsTeacherMessage(paretoStateWithParsedWeights, studentMessage),
         {
           ...paretoStateWithParsedWeights,
           step: "set_weights",
