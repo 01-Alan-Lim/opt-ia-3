@@ -1,87 +1,92 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
-import { motion } from "framer-motion";
+import { Suspense } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 
 import { LoginButton } from "@/components/LoginButton";
 import { AuthNotice } from "@/components/auth/AuthNotice";
 import { Spotlight } from "@/components/Spotlight";
-import { MagneticCard } from "@/components/landing/MagneticCard";
-
+import { DotMatrixWord } from "@/components/landing/DotMatrixWord";
+import { PremiumInteractionCard, type PremiumTone } from "@/components/landing/PremiumInteractionCard";
 import { MinimalIcon, type MinimalIconName } from "@/components/landing/MinimalIcon";
+import { OPTIALogo } from "@/components/landing/OPTIALogo";
+import { PartnerLogo } from "@/components/landing/PartnerLogo";
+import { WorkflowPreview } from "@/components/landing/WorkflowPreview";
+import { StagesTimeline } from "@/components/landing/StagesTimeline";
+
+/* ── Animation variants ─────────────────────────────────── */
 
 const fadeUp = {
-  hidden: { opacity: 0, y: 14 },
-  show: { opacity: 1, y: 0 },
+  hidden: { opacity: 0, y: 16 },
+  show:   { opacity: 1, y: 0 },
 };
 
 const stagger = {
   hidden: {},
-  show: { transition: { staggerChildren: 0.08 } },
+  show:   { transition: { staggerChildren: 0.09 } },
 };
 
-export default function Home() {
-  const stages = useMemo(
-    () => [
-      {
-        title: "Avance 1 — Diagnóstico",
-        subtitle: "Base técnica del caso",
-        items: [
-          { n: 1, t: "Productividad", d: "Revisión y medición de productividad" },
-          { n: 2, t: "FODA", d: "Análisis interno/externo" },
-          { n: 3, t: "Lluvia de ideas", d: "Problema y enfoque" },
-          { n: 4, t: "Ishikawa", d: "Causas raíz + 5 Porqués" },
-          { n: 5, t: "Pareto", d: "Priorización 20/80" },
-        ],
-      },
-      {
-        title: "Avance 2 — Propuesta",
-        subtitle: "Convertir diagnóstico en mejora",
-        items: [
-          { n: 6, t: "Objetivos", d: "Objetivos claros y medibles" },
-          { n: 7, t: "Plan de Mejora", d: "Acciones + responsables" },
-          { n: 8, t: "Planificación", d: "Cronograma de implementación" },
-        ],
-      },
-      {
-        title: "Avance 3 — Cierre",
-        subtitle: "Evidencia y revisión académica",
-        items: [
-          { n: 9, t: "Reporte de avance", d: "Resultados y seguimiento" },
-          { n: 10, t: "Revisión del Plan", d: "Subida del documento final" },
-        ],
-      },
-    ],
-    []
-  );
+/* ── Static data ─────────────────────────────────────────── */
 
-  const friendly = useMemo(
-    (): Array<{
-      title: string;
-      subtitle: string;
-      cards: Array<{ icon: MinimalIconName; t: string; d: string }>;
-    }> => [
-      {
-        title: "Lo que suele pasar en las prácticas",
-        subtitle: "OPT-IA existe para ayudarte a ordenarlo.",
-        cards: [
-          { icon: "compass", t: "Inicio confuso", d: "Cuesta arrancar el diagnóstico y definir el enfoque." },
-          { icon: "layers", t: "Partes sueltas", d: "Análisis sin conexión entre causas, datos e indicadores." },
-          { icon: "file", t: "Redacción poco técnica", d: "Estructura metodológica no establecida." },
-        ],
-      },
-      {
-        title: "Cómo te ayuda OPT-IA",
-        subtitle: "Rigor metodológico sin perder tiempo.",
-        cards: [
-          { icon: "spark", t: "Guía paso a paso", d: "Flujo por etapas con estructura esperada." },
-          { icon: "check", t: "Checklist + feedback", d: "Detecta vacíos y te dice qué mejorar." },
-          { icon: "chart", t: "Trazabilidad", d: "Seguimiento y apoyo para la evaluación del docente." },
-        ],
-      },
+const MINI_BADGES = [
+  "Flujo por etapas",
+  "Feedback y checklist",
+  "Panel docente",
+  "Trazabilidad académica",
+] as const;
+
+type FriendlyCard = { icon: MinimalIconName; t: string; d: string };
+type FriendlyVariant = "problem" | "solution";
+
+type FriendlyBlock = {
+  title:    string;
+  subtitle: string;
+  variant:  FriendlyVariant;
+  cards:    FriendlyCard[];
+};
+
+type VariantStyle = { outer: string; icon: string; inner: string };
+
+const VARIANT_STYLES: Record<FriendlyVariant, VariantStyle> = {
+  problem: {
+    outer: "border-amber-500/10 bg-amber-500/5",
+    icon:  "text-amber-400/80",
+    inner: "border-amber-500/10 bg-amber-500/5",
+  },
+  solution: {
+    outer: "border-emerald-500/10 bg-emerald-500/5",
+    icon:  "text-emerald-400/80",
+    inner: "border-emerald-500/10 bg-emerald-500/5",
+  },
+};
+
+const FRIENDLY: FriendlyBlock[] = [
+  {
+    title:    "Lo que suele pasar en las prácticas",
+    subtitle: "OPT-IA existe para ayudarte a ordenarlo.",
+    variant:  "problem",
+    cards: [
+      { icon: "compass", t: "Inicio confuso",        d: "Cuesta arrancar el diagnóstico y definir el enfoque." },
+      { icon: "layers",  t: "Partes sueltas",         d: "Análisis sin conexión entre causas, datos e indicadores." },
+      { icon: "file",    t: "Redacción poco técnica", d: "Estructura metodológica no establecida." },
     ],
-    []
-  );
+  },
+  {
+    title:    "Cómo te ayuda OPT-IA",
+    subtitle: "Rigor metodológico sin perder tiempo.",
+    variant:  "solution",
+    cards: [
+      { icon: "spark", t: "Guía paso a paso",    d: "Flujo por etapas con estructura esperada." },
+      { icon: "check", t: "Checklist + feedback", d: "Detecta vacíos y te dice qué mejorar." },
+      { icon: "chart", t: "Trazabilidad",         d: "Seguimiento y apoyo para la evaluación del docente." },
+    ],
+  },
+];
+
+/* ── Page ────────────────────────────────────────────────── */
+
+export default function Home() {
+  const shouldReduce = useReducedMotion();
 
   return (
     <main className="min-h-screen midnightStars text-slate-100 overflow-x-hidden">
@@ -93,227 +98,198 @@ export default function Home() {
           <AuthNotice />
         </Suspense>
 
-        {/* HERO */}
+        {/* ══════════════════════════════════════════
+            HERO
+        ══════════════════════════════════════════ */}
         <motion.section
           initial="hidden"
           animate="show"
           variants={stagger}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-center"
+          className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center"
         >
-          <motion.div variants={fadeUp}>
-            <h1 className="mt-5 text-4xl sm:text-6xl font-semibold tracking-tight">
-              OPT-IA
-              <span className="block text-slate-200/90 mt-2 text-2xl sm:text-3xl font-medium">
-                Asistente Inteligente Académico para Prácticas Empresariales
+          {/* Left */}
+          <motion.div variants={fadeUp} className="flex flex-col">
+            {/* Badge */}
+            <div className="mb-5 self-start inline-flex items-center gap-2 rounded-full border border-sky-500/25 bg-sky-500/10 px-3.5 py-1.5 text-xs font-semibold text-sky-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-400" aria-hidden />
+              Plataforma académica · Ingeniería Industrial
+            </div>
+
+            {/* Logo + separador + partner */}
+            <motion.div variants={fadeUp} className="flex items-center gap-4 mb-4">
+              <OPTIALogo />
+              <div className="h-4 w-px bg-white/10" aria-hidden />
+              <PartnerLogo />
+            </motion.div>
+
+            {/* Dot matrix brand */}
+            <motion.div variants={fadeUp} className="mb-6">
+              <DotMatrixWord aria-label="OPT-IA" />
+            </motion.div>
+
+            {/* H1 */}
+            <h1 className="text-3xl sm:text-4xl lg:text-[2.55rem] font-bold tracking-tight leading-tight text-slate-100">
+              Convierte las prácticas empresariales en un proceso{" "}
+              <span className="bg-gradient-to-r from-sky-400 via-cyan-300 to-sky-300 bg-clip-text text-transparent">
+                guiado, medible y trazable.
               </span>
             </h1>
 
-            <p className="mt-5 text-sm sm:text-base text-slate-300 leading-relaxed max-w-xl">
-              Sistema académico guiado con lógica metodológica, control por etapas y evaluación formativa.
+            <p className="mt-5 text-sm sm:text-base text-slate-400 leading-relaxed max-w-xl">
+              Para estudiantes y docentes: diagnóstico, horas, avances, feedback IA y plan de mejora
+              en un solo flujo académico estructurado.
             </p>
 
-            <motion.div variants={fadeUp} className="mt-7 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+            {/* CTAs */}
+            <motion.div
+              variants={fadeUp}
+              className="mt-7 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center"
+            >
               <div className="w-full sm:w-auto">
                 <LoginButton className="rounded-2xl w-full sm:w-auto" />
               </div>
               <a
                 href="#como-funciona"
-                className="w-full sm:w-auto inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 h-12 text-sm font-semibold text-slate-200 hover:bg-white/10 transition"
+                className="w-full sm:w-auto inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 h-12 text-sm font-semibold text-slate-200 hover:bg-white/10 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
               >
-                Ver etapas
+                Ver flujo metodológico
               </a>
             </motion.div>
 
-            {/* Mini-cards */}
-            <motion.div variants={stagger} className="mt-7 grid grid-cols-3 gap-3 max-w-xl">
-              {[
-                { k: "Workflow", v: "Por etapas + gates" },
-                { k: "Evaluación", v: "Score + checklist" },
-                { k: "Docente", v: "Métricas + panel" },
-              ].map((x) => (
-                <MagneticCard key={x.k} className="rounded-2xl border border-white/10 bg-white/5 p-3" strength={0.55}>
-                  <motion.div variants={fadeUp}>
-                    <div className="text-xs text-slate-300">{x.k}</div>
-                    <div className="mt-1 text-sm font-semibold">{x.v}</div>
-                  </motion.div>
-                </MagneticCard>
+            {/* Mini-badges */}
+            <motion.div variants={fadeUp} className="mt-6 flex flex-wrap gap-2">
+              {MINI_BADGES.map((badge) => (
+                <span
+                  key={badge}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-400"
+                >
+                  <span className="h-1 w-1 rounded-full bg-sky-400/60" aria-hidden />
+                  {badge}
+                </span>
               ))}
             </motion.div>
           </motion.div>
 
-          {/* Mock visual */}
+          {/* Right — WorkflowPreview */}
           <motion.div variants={fadeUp} className="relative">
-            <div className="absolute -inset-6 rounded-[32px] bg-sky-500/10 blur-2xl" />
-
-            <MagneticCard
-              className="relative rounded-[28px] border border-white/10 bg-white/5 p-5 backdrop-blur-md shadow-2xl"
-              strength={0.45}
-            >
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-slate-300">Vista rápida</div>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <div className="text-xs text-slate-300">Modo guiado</div>
-                  <div className="mt-1 text-sm font-semibold text-slate-200">10 etapas + gates</div>
-                  <div className="mt-2 text-xs text-slate-400">Avanzas solo si cumples criterios mínimos.</div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
-                    <div className="text-xs text-slate-300">Evaluación</div>
-                    <div className="mt-1 text-sm font-semibold text-slate-200">Score + checklist</div>
-                    <div className="mt-2 text-xs text-slate-400">Feedback técnico por etapa</div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
-                    <div className="text-xs text-slate-300">Docente</div>
-                    <div className="mt-1 text-sm font-semibold text-slate-200">Panel</div>
-                    <div className="mt-2 text-xs text-slate-400">Dashboard + Métricas</div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                  <div className="text-xs text-slate-300">Privacidad</div>
-                  <div className="mt-1 text-sm font-semibold text-slate-200">Control académico</div>
-                  <div className="mt-2 text-xs text-slate-400">Roles • Cohortes • RLS</div>
-                </div>
-              </div>
-            </MagneticCard>
+            <div
+              aria-hidden
+              className="absolute -inset-6 rounded-[32px] bg-sky-500/10 blur-3xl"
+            />
+            <WorkflowPreview />
           </motion.div>
         </motion.section>
 
-        {/* Sección amigable */}
+        {/* ══════════════════════════════════════════
+            PROBLEMA / SOLUCIÓN
+        ══════════════════════════════════════════ */}
         <motion.section
-          initial="hidden"
-          whileInView="show"
-          viewport={{ once: true, amount: 0.25 }}
-          variants={stagger}
-          className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-6"
-        >
-          {friendly.map((block) => (
-            <MagneticCard
-              key={block.title}
-              className="rounded-[28px] border border-white/10 bg-white/5 p-6"
-              strength={0.5}
-            >
-              <motion.div variants={fadeUp}>
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">{block.title}</h2>
-                    <p className="mt-1 text-sm text-slate-400">{block.subtitle}</p>
-                  </div>
-                </div>
-
-                <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3 auto-rows-fr">
-                  {block.cards.map((c) => (
-                    <div key={c.t} className="h-full rounded-2xl border border-white/10 bg-black/10 p-4">
-                      <div className="flex h-full flex-col">
-                        <div className="text-sky-200/80">
-                          <MinimalIcon name={c.icon} />
-                        </div>
-                        <div className="mt-2 text-sm font-semibold text-slate-200">{c.t}</div>
-                        <div className="mt-1 text-xs text-slate-400 leading-relaxed">{c.d}</div>
-                        <div className="mt-auto" />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            </MagneticCard>
-          ))}
-        </motion.section>
-
-        {/* CÓMO FUNCIONA / ETAPAS */}
-        <motion.section
-          id="como-funciona"
           initial="hidden"
           whileInView="show"
           viewport={{ once: true, amount: 0.2 }}
           variants={stagger}
-          className="mt-14 rounded-[28px] border border-white/10 bg-white/5 p-6"
+          className="mt-16 grid grid-cols-1 lg:grid-cols-2 gap-6"
         >
-          <motion.div variants={fadeUp} className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Cómo funciona el modo guiado</h2>
-              <p className="mt-2 text-sm text-slate-300 max-w-3xl">
-                No es un Chatbot: es un flujo académico por{" "}
-                <span className="text-slate-200 font-medium">avances</span> y{" "}
-                <span className="text-slate-200 font-medium">etapas</span>, con estructura esperada, checklist y gate.
-              </p>
+          {FRIENDLY.map((block) => {
+            const styles = VARIANT_STYLES[block.variant];
+            const tone: PremiumTone = block.variant === "problem" ? "amber" : "emerald";
+            return (
+              <PremiumInteractionCard
+                key={block.title}
+                title={block.title}
+                description={block.subtitle}
+                tone={tone}
+                eyebrow={block.variant === "problem" ? "Situación actual" : "Solución OPT-IA"}
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 auto-rows-fr">
+                  {block.cards.map((c) => (
+                    <div
+                      key={c.t}
+                      className={`flex flex-col rounded-2xl border p-4 h-full ${styles.inner}`}
+                    >
+                      <div className={styles.icon}>
+                        <MinimalIcon name={c.icon} />
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-slate-200">{c.t}</div>
+                      <div className="mt-1 text-xs text-slate-400 leading-relaxed">{c.d}</div>
+                    </div>
+                  ))}
+                </div>
+              </PremiumInteractionCard>
+            );
+          })}
+        </motion.section>
+
+        {/* ══════════════════════════════════════════
+            CÓMO FUNCIONA / ETAPAS
+        ══════════════════════════════════════════ */}
+        <motion.section
+          id="como-funciona"
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, amount: 0.12 }}
+          variants={stagger}
+          className="mt-16 rounded-[28px] border border-white/10 bg-white/5 p-6 lg:p-8"
+        >
+          <motion.div variants={fadeUp}>
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400 mb-4">
+              <span className="h-1 w-1 rounded-full bg-slate-500" aria-hidden />
+              Flujo metodológico
             </div>
+            <h2 className="text-xl font-bold text-slate-100">Cómo funciona el modo guiado</h2>
+            <p className="mt-2 text-sm text-slate-400 max-w-3xl leading-relaxed">
+              No es un chatbot:{" "}
+              <span className="text-slate-300 font-medium">es un flujo académico</span> por avances y
+              etapas, con estructura esperada, checklist y criterio de avance.
+            </p>
           </motion.div>
 
-          <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {stages.map((block) => (
-              <MagneticCard
-                key={block.title}
-                className="group relative rounded-[24px] border border-white/10 bg-black/10 p-5 hover:bg-black/15"
-                strength={0.55}
-              >
-                <motion.div variants={fadeUp} className="relative">
-                  <div className="pointer-events-none absolute -inset-2 rounded-[26px] bg-sky-500/0 blur-2xl transition group-hover:bg-sky-500/10" />
-                  <div className="relative">
-                    <div className="text-xs text-slate-400">{block.subtitle}</div>
-                    <div className="mt-1 text-base font-semibold text-slate-200">{block.title}</div>
-
-                    {/* ✅ Rendimiento: sin motion por item */}
-                    <div className="mt-4 grid grid-cols-1 gap-2">
-                      {block.items.map((it) => (
-                        <div
-                          key={it.n}
-                          className="rounded-2xl border border-white/10 bg-black/15 p-3 hover:bg-black/20 transition-transform duration-200 hover:scale-[1.01]"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-200">
-                                {it.n}) {it.t}
-                              </div>
-                              <div className="mt-1 text-xs text-slate-400">{it.d}</div>
-                            </div>
-                            <div className="text-[11px] text-slate-500">Etapa</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </motion.div>
-              </MagneticCard>
-            ))}
+          <div className="mt-6">
+            <StagesTimeline />
           </div>
         </motion.section>
 
-        {/* ✅ RECUPERADO: Privacidad / Seguridad / Google Calendar / Términos */}
+        {/* ══════════════════════════════════════════
+            PRIVACIDAD / SEGURIDAD / GOOGLE CALENDAR
+        ══════════════════════════════════════════ */}
         <motion.section
           initial="hidden"
           whileInView="show"
-          viewport={{ once: true, amount: 0.25 }}
+          viewport={{ once: true, amount: 0.2 }}
           variants={fadeUp}
-          className="mt-14 rounded-[28px] border border-white/10 bg-white/5 p-6"
+          className="mt-10 rounded-[28px] border border-white/10 bg-white/5 p-6"
         >
-          <h2 className="text-lg font-semibold">Privacidad, seguridad y Google Calendar</h2>
-          <p className="mt-2 text-sm text-slate-300 max-w-3xl">
-            Para cumplir requisitos de verificación OAuth (Google), OPT-IA explica de forma transparente cómo usa los datos.
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400 mb-4">
+            <span className="h-1 w-1 rounded-full bg-slate-500" aria-hidden />
+            Transparencia y seguridad
+          </div>
+          <h2 className="text-lg font-semibold text-slate-100">
+            Privacidad, seguridad y Google Calendar
+          </h2>
+          <p className="mt-2 text-sm text-slate-400 max-w-3xl">
+            Para cumplir requisitos de verificación OAuth (Google), OPT-IA explica de forma
+            transparente cómo usa los datos.
           </p>
 
           <div className="mt-5 space-y-3">
-            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15">
-              <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
-                <div className="font-semibold text-slate-200">¿Cómo funciona la integración con Google Calendar?</div>
-                <div className="text-xs text-slate-400 group-open:hidden">Ver</div>
-                <div className="text-xs text-slate-400 hidden group-open:block">Ocultar</div>
+            {/* Accordion 1: Google Calendar */}
+            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15 transition-colors">
+              <summary className="cursor-pointer list-none flex items-center justify-between gap-3 select-none">
+                <div className="font-semibold text-sm text-slate-200">
+                  ¿Cómo funciona la integración con Google Calendar?
+                </div>
+                <div className="text-xs text-slate-500 group-open:hidden flex-shrink-0">Ver</div>
+                <div className="text-xs text-slate-500 hidden group-open:block flex-shrink-0">Ocultar</div>
               </summary>
 
               <div className="mt-3 text-sm text-slate-300 space-y-3">
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="text-sm font-semibold text-slate-200">Autorización del estudiante</div>
                   <p className="mt-1 text-xs text-slate-400 leading-relaxed">
-                    El estudiante autoriza el acceso mediante OAuth 2.0. Esta autorización se usa únicamente para
-                    gestionar recordatorios académicos vinculados a OPT-IA.
+                    El estudiante autoriza el acceso mediante OAuth 2.0. Esta autorización se usa
+                    únicamente para gestionar recordatorios académicos vinculados a OPT-IA.
                   </p>
                 </div>
-
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                     <div className="text-sm font-semibold text-slate-200">Qué hace OPT-IA</div>
@@ -334,36 +310,37 @@ export default function Home() {
               </div>
             </details>
 
-            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15">
-              <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
-                <div className="font-semibold text-slate-200">Seguridad (OAuth 2.0 + almacenamiento de tokens)</div>
-                <div className="text-xs text-slate-400 group-open:hidden">Ver</div>
-                <div className="text-xs text-slate-400 hidden group-open:block">Ocultar</div>
+            {/* Accordion 2: Seguridad */}
+            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15 transition-colors">
+              <summary className="cursor-pointer list-none flex items-center justify-between gap-3 select-none">
+                <div className="font-semibold text-sm text-slate-200">
+                  Seguridad (OAuth 2.0 + almacenamiento de tokens)
+                </div>
+                <div className="text-xs text-slate-500 group-open:hidden flex-shrink-0">Ver</div>
+                <div className="text-xs text-slate-500 hidden group-open:block flex-shrink-0">Ocultar</div>
               </summary>
 
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="text-sm font-semibold text-slate-200">Principio de menor privilegio</div>
                   <p className="mt-1 text-xs text-slate-400 leading-relaxed">
-                    OPT-IA solicita únicamente los permisos necesarios para crear/actualizar recordatorios académicos.
+                    OPT-IA solicita únicamente los permisos necesarios para crear/actualizar
+                    recordatorios académicos.
                   </p>
                 </div>
-
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="text-sm font-semibold text-slate-200">Tokens protegidos</div>
                   <p className="mt-1 text-xs text-slate-400 leading-relaxed">
-                    El refresh token se almacena de forma segura/cifrada. Se usa solo para mantener recordatorios activos
-                    sin que el usuario tenga que re-autorizar continuamente.
+                    El refresh token se almacena de forma segura/cifrada. Se usa solo para mantener
+                    recordatorios activos sin que el usuario tenga que re-autorizar continuamente.
                   </p>
                 </div>
-
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="text-sm font-semibold text-slate-200">Revocación</div>
                   <p className="mt-1 text-xs text-slate-400 leading-relaxed">
                     El usuario puede revocar permisos en cualquier momento desde su cuenta de Google.
                   </p>
                 </div>
-
                 <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                   <div className="text-sm font-semibold text-slate-200">Sin venta / sin terceros</div>
                   <p className="mt-1 text-xs text-slate-400 leading-relaxed">
@@ -373,11 +350,12 @@ export default function Home() {
               </div>
             </details>
 
-            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15">
-              <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
-                <div className="font-semibold text-slate-200">Términos de uso (resumen)</div>
-                <div className="text-xs text-slate-400 group-open:hidden">Ver</div>
-                <div className="text-xs text-slate-400 hidden group-open:block">Ocultar</div>
+            {/* Accordion 3: Términos */}
+            <details className="group rounded-2xl border border-white/10 bg-black/10 p-4 open:bg-black/15 transition-colors">
+              <summary className="cursor-pointer list-none flex items-center justify-between gap-3 select-none">
+                <div className="font-semibold text-sm text-slate-200">Términos de uso (resumen)</div>
+                <div className="text-xs text-slate-500 group-open:hidden flex-shrink-0">Ver</div>
+                <div className="text-xs text-slate-500 hidden group-open:block flex-shrink-0">Ocultar</div>
               </summary>
 
               <div className="mt-3 text-xs text-slate-400 leading-relaxed space-y-2">
@@ -386,11 +364,17 @@ export default function Home() {
                 <p>• El servicio puede experimentar mantenimientos o mejoras sin previo aviso.</p>
                 <p className="pt-2 text-slate-500">
                   Ver documentos completos:{" "}
-                  <a className="text-slate-200 underline hover:text-white" href="/privacy">
+                  <a
+                    className="text-slate-200 underline hover:text-white transition-colors"
+                    href="/privacy"
+                  >
                     Política de Privacidad
                   </a>{" "}
                   •{" "}
-                  <a className="text-slate-200 underline hover:text-white" href="/terms">
+                  <a
+                    className="text-slate-200 underline hover:text-white transition-colors"
+                    href="/terms"
+                  >
                     Términos y Condiciones
                   </a>
                 </p>
@@ -399,37 +383,61 @@ export default function Home() {
           </div>
         </motion.section>
 
-        {/* CTA FINAL */}
+        {/* ══════════════════════════════════════════
+            CTA FINAL
+        ══════════════════════════════════════════ */}
         <motion.section
           initial="hidden"
           whileInView="show"
           viewport={{ once: true, amount: 0.25 }}
           variants={fadeUp}
-          className="mt-14 relative overflow-hidden rounded-[28px] border border-white/10 bg-white/5 p-6"
+          className="mt-10 relative overflow-hidden rounded-[28px] border border-white/10 bg-white/5 p-6 lg:p-8"
         >
+          {/* Shimmer — respeta reduced motion */}
           <motion.div
             aria-hidden
-            className="pointer-events-none absolute top-1/2 h-40 w-[35%] -translate-y-1/2 bg-gradient-to-r from-transparent via-sky-400/22 to-transparent blur-2xl"
-            animate={{ x: ["-40%", "140%"] }}
+            className="pointer-events-none absolute top-1/2 h-40 w-[35%] -translate-y-1/2 bg-gradient-to-r from-transparent via-sky-400/20 to-transparent blur-2xl"
+            animate={shouldReduce ? undefined : { x: ["-40%", "140%"] }}
             transition={{ duration: 16, repeat: Infinity, ease: "linear" }}
           />
 
-          <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
             <div>
-              <h2 className="text-lg font-semibold">Empieza con OPT-IA</h2>
-              <p className="mt-2 text-sm text-slate-300 max-w-2xl">
-                Un asistente académico que convierte las prácticas empresariales en un flujo estructurado, evaluable y
-                formativo, garantizando rigor metodológico y trazabilidad.
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-400 mb-3">
+                <span className="h-1 w-1 rounded-full bg-sky-400/60" aria-hidden />
+                Empieza hoy
+              </div>
+              <h2 className="text-xl font-bold text-slate-100">
+                Empieza tu práctica con una guía clara
+              </h2>
+              <p className="mt-2 text-sm text-slate-400 max-w-2xl leading-relaxed">
+                Un flujo académico estructurado, evaluable y formativo, con IA como mentor
+                metodológico, trazabilidad completa y revisión docente integrada.
               </p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex-shrink-0">
               <LoginButton className="rounded-2xl" />
             </div>
           </div>
         </motion.section>
 
-        <footer className="mt-10 text-xs text-slate-500">
-          OPT-IA • Ingeniería Industrial • Prácticas empresariales • Planes de mejora
+        {/* ══════════════════════════════════════════
+            FOOTER
+        ══════════════════════════════════════════ */}
+        <footer className="mt-10 pb-4">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+            <span>
+              OPT-IA · Ingeniería Industrial · Prácticas empresariales · Planes de mejora
+            </span>
+            <div className="flex items-center gap-4">
+              <a href="/privacy" className="hover:text-slate-400 transition-colors">
+                Privacidad
+              </a>
+              <a href="/terms" className="hover:text-slate-400 transition-colors">
+                Términos
+              </a>
+            </div>
+          </div>
         </footer>
       </div>
     </main>
