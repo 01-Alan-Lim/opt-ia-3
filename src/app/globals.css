@@ -445,4 +445,87 @@ html[data-theme="light"] .chat-bubble-shadow {
 }
 
 
+/* ===================================================
+   prefers-reduced-motion
+   Las animaciones de framer-motion se controlan con
+   useReducedMotion en cada Client Component.
+   Aquí detenemos las animaciones CSS puras.
+   =================================================== */
+@media (prefers-reduced-motion: reduce) {
+  /* Detener estrellas subiendo */
+  .midnightStars::before,
+  .midnightStars::after,
+  .midnightStars .starsBright {
+    animation: none !important;
+  }
 
+  /* Sin transición en el glow radial de tarjetas */
+  .magnetic-glow::before {
+    transition: none;
+  }
+
+  /* Deshabilitar scroll suave si llega a activarse */
+  html {
+    scroll-behavior: auto !important;
+  }
+
+  /* Dot matrix: freeze all dot transforms */
+  .dot-matrix-word span {
+    transform: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+  }
+}
+
+
+/* ===================================================
+   DotMatrixWord — responsive dot/gap sizes
+   via CSS custom properties
+   =================================================== */
+.dot-matrix-word {
+  --dms: 5px; /* dot size */
+  --dmg: 2px; /* dot gap  */
+}
+
+@media (min-width: 640px) {
+  .dot-matrix-word {
+    --dms: 6px;
+    --dmg: 2px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dot-matrix-word {
+    --dms: 7px;
+    --dmg: 3px;
+  }
+}
+
+
+/* ===================================================
+   React Bits — StarBorder (solo /landing-lab)
+   Animaciones registradas en Tailwind v4 vía @theme.
+   Inertes salvo donde se usen .animate-star-movement-*
+   =================================================== */
+@theme {
+  --animate-star-movement-bottom: star-movement-bottom linear infinite alternate;
+  --animate-star-movement-top: star-movement-top linear infinite alternate;
+}
+
+@keyframes star-movement-bottom {
+  0%   { transform: translate(0%, 0%); opacity: 1; }
+  100% { transform: translate(-100%, 0%); opacity: 0; }
+}
+
+@keyframes star-movement-top {
+  0%   { transform: translate(0%, 0%); opacity: 1; }
+  100% { transform: translate(100%, 0%); opacity: 0; }
+}
+
+/* Respeta prefers-reduced-motion también para StarBorder */
+@media (prefers-reduced-motion: reduce) {
+  .animate-star-movement-bottom,
+  .animate-star-movement-top {
+    animation: none !important;
+  }
+}
