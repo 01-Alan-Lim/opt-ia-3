@@ -1,7 +1,7 @@
 //src/app/docente/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
 import { TeacherChat } from "@/components/teacher/TeacherChat";
@@ -25,6 +25,24 @@ type Cohort = {
 };
 
 type DocenteTab = "config" | "approvals" | "dashboard" | "chat";
+type RegistrationFilter = "pending" | "approved" | "rejected";
+
+function isRegistrationFilter(value: string): value is RegistrationFilter {
+  return value === "pending" || value === "approved" || value === "rejected";
+}
+
+function normalizeCohortList(value: unknown): Cohort[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== "string" || typeof record.name !== "string") return [];
+
+    return [{ id: record.id, name: record.name }];
+  });
+}
 
 const DOCENTE_TAB_TITLES: Record<DocenteTab, string> = {
   config: "Configuración",
@@ -247,9 +265,10 @@ export default function DocenteHome() {
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
+  const studentsRequestIdRef = useRef(0);
 
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<"pending" | "approved" | "rejected">("pending");
+  const [status, setStatus] = useState<RegistrationFilter>("pending");
 
   const [cohorts, setCohorts] = useState<Cohort[]>([]);
   const [cohortId, setCohortId] = useState<string>("");
@@ -299,10 +318,7 @@ export default function DocenteHome() {
         }
 
         const payload = json?.data ?? json;
-        const list = Array.isArray(payload?.cohorts) ? payload.cohorts : [];
-        setCohorts(list.map((c: any) => ({ id: c.id, name: c.name })));
-
-        if (!cohortId && list.length) setCohortId(list[0].id);
+        setCohorts(normalizeCohortList(payload?.cohorts));
       } catch {
         // ignore
       }
@@ -311,10 +327,14 @@ export default function DocenteHome() {
     return () => {
       active = false;
     };
-  }, [token, authHeaders, cohortId, tab]);
+  }, [token, authHeaders, tab]);
 
   async function loadStudents() {
     if (!token) return;
+
+    const requestId = studentsRequestIdRef.current + 1;
+    studentsRequestIdRef.current = requestId;
+
     setLoading(true);
     setErrorMsg(null);
     setInfoMsg(null);
@@ -330,6 +350,7 @@ export default function DocenteHome() {
       });
 
       const json = await res.json().catch(() => null);
+      if (studentsRequestIdRef.current !== requestId) return;
 
       if (!res.ok || json?.ok === false) {
         setErrorMsg(json?.message ?? "No se pudo cargar estudiantes.");
@@ -340,10 +361,13 @@ export default function DocenteHome() {
       const payload = json?.data ?? json;
       setStudents(Array.isArray(payload?.students) ? payload.students : []);
     } catch {
+      if (studentsRequestIdRef.current !== requestId) return;
       setErrorMsg("Error de red al cargar estudiantes.");
       setStudents([]);
     } finally {
-      setLoading(false);
+      if (studentsRequestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }
 
@@ -537,7 +561,10 @@ export default function DocenteHome() {
                         <label className="text-xs text-slate-400">Estado</label>
                         <select
                           value={status}
-                          onChange={(e) => setStatus(e.target.value as any)}
+                          onChange={(e) => {
+                            const nextStatus = e.target.value;
+                            if (isRegistrationFilter(nextStatus)) setStatus(nextStatus);
+                          }}
                           className="mt-1 w-full rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2 text-sm"
                         >
                           <option value="pending">Pendientes</option>
@@ -553,8 +580,11 @@ export default function DocenteHome() {
                           onChange={(e) => setCohortId(e.target.value)}
                           className="mt-1 w-full rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-2 text-sm"
                         >
+                          <option value="">Todas / Sin filtro</option>
                           {cohorts.length === 0 ? (
-                            <option value="">(sin cohortes activas)</option>
+                            <option value="__no_active_cohorts" disabled>
+                              (sin cohortes activas)
+                            </option>
                           ) : (
                             cohorts.map((c) => (
                               <option key={c.id} value={c.id}>
