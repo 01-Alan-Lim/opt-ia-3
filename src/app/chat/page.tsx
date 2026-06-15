@@ -184,6 +184,8 @@ export default function ChatPage() {
 
   // Refs para evitar closures con estado viejo (ej: Nuevo chat y envío inmediato)
   const chatIdRef = useRef<string | null>(null);
+  const advisorChatBootstrapPromiseRef = useRef<Promise<string | null> | null>(null);
+  const advisorChatBootstrapErrorRef = useRef<string | null>(null);
   const modeRef = useRef<ChatMode>("general");
   const messagesRef = useRef<Message[]>([]);
   const suppressNextHistoryHydrationRef = useRef(false);
@@ -221,6 +223,19 @@ export default function ChatPage() {
     chatId: string | null;
     contextJson: any;
     contextText: string | null;
+    message?: string | null;
+  };
+
+  type AdvisorContextPayload = {
+    status?: "draft" | "confirmed";
+    version?: number;
+    exists?: boolean;
+    chatId?: string | null;
+    contextJson?: unknown;
+    contextText?: string | null;
+    message?: string;
+    error?: string;
+    code?: string;
   };
 
   type LastProductivityReport = { ok: boolean; payload: any | null };
@@ -1540,7 +1555,8 @@ function looksLikeProgressClosureRequest(text: string) {
       // ✅ Si es "fresh", creamos un chat NUEVO del asesor (chat-only)
       if (fresh) {
         // Creamos chat nuevo SOLO para conversación
-        const created = await createAdvisorChatOnly();
+        const createdChatId = await ensureAdvisorChatId({ createNew: true });
+        const created = { ok: Boolean(createdChatId), chatId: createdChatId };
         if (!active) return;
         // Ya no estamos fresh después de crear el chat
         setPlanFresh(clientId, false);
@@ -1652,11 +1668,13 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       // ✅ Si NO es fresh: sincronizamos el chatId con DB solo si no hay chatId local aún
-      if (!chatId && ctx.chatId) {
-        setChatId(ctx.chatId);
-        try {
-          window.sessionStorage.setItem(storageKeyChat, ctx.chatId);
-        } catch {}
+      if (!chatIdRef.current) {
+        if (ctx.chatId) {
+          adoptAdvisorChatId(ctx.chatId);
+        } else {
+          await ensureAdvisorChatId();
+          if (!active) return;
+        }
       }
 
       // ✅ Si está CONFIRMED: no tocar wizard
@@ -3319,6 +3337,12 @@ function looksLikeProgressClosureRequest(text: string) {
     const json = await res.json().catch(() => null);
     const ctxOk = res.ok && json?.ok !== false;
     const ctxPayload = json?.data ?? json;
+    const message =
+      typeof ctxPayload?.message === "string"
+        ? ctxPayload.message
+        : typeof ctxPayload?.error === "string"
+          ? ctxPayload.error
+          : null;
 
     return {
       ok: ctxOk,
@@ -3327,6 +3351,7 @@ function looksLikeProgressClosureRequest(text: string) {
       chatId: (ctxPayload?.chatId ?? null) as string | null,
       contextJson: (ctxPayload?.contextJson ?? {}) as any,
       contextText: (ctxPayload?.contextText ?? null) as string | null,
+      message,
     };
   }
 
@@ -3422,7 +3447,51 @@ function looksLikeProgressClosureRequest(text: string) {
     return fresh;
   }
 
-  async function createAdvisorChatOnly(): Promise<{ ok: boolean; chatId: string | null; payload: any }> {
+  function advisorChatStorageKey() {
+    return `optia-chat-id-${clientId}-plan_mejora`;
+  }
+
+  function adoptAdvisorChatId(nextChatId: string) {
+    chatIdRef.current = nextChatId;
+    setChatId(nextChatId);
+    try {
+      window.sessionStorage.setItem(advisorChatStorageKey(), nextChatId);
+    } catch {}
+  }
+
+  function getAdvisorBootstrapErrorMessage(payload: AdvisorContextPayload | null) {
+    const message = typeof payload?.message === "string" ? payload.message.trim() : "";
+    if (message) return message;
+
+    const error = typeof payload?.error === "string" ? payload.error.trim() : "";
+    if (error) return error;
+
+    return null;
+  }
+
+  function cacheAdvisorContextPayload(payload: AdvisorContextPayload | null, fallbackChatId: string) {
+    const contextJson =
+      payload?.contextJson && typeof payload.contextJson === "object" && !Array.isArray(payload.contextJson)
+        ? (payload.contextJson as Record<string, unknown>)
+        : {};
+
+    planContextCacheRef.current = {
+      at: Date.now(),
+      data: {
+        ok: true,
+        status: payload?.status === "confirmed" ? "confirmed" : "draft",
+        exists: true,
+        chatId: typeof payload?.chatId === "string" ? payload.chatId : fallbackChatId,
+        contextJson,
+        contextText: typeof payload?.contextText === "string" ? payload.contextText : null,
+        message: null,
+      },
+    };
+
+    setPlanContextJson(contextJson);
+  }
+
+  async function createAdvisorChatOnly(): Promise<{ ok: boolean; chatId: string | null; payload: AdvisorContextPayload | null }> {
     const authHeaders = await getAuthHeaders();
 
     const res = await fetch("/api/plans/context", {
@@ -3437,18 +3506,58 @@ function looksLikeProgressClosureRequest(text: string) {
 
     const json = await res.json().catch(() => null);
     const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    const chatId = (payload?.chatId ?? null) as string | null;
+    const payload = (json?.data ?? json ?? null) as AdvisorContextPayload | null;
+    const chatId = typeof payload?.chatId === "string" ? payload.chatId : null;
 
     if (ok && chatId) {
-      chatIdRef.current = chatId;
-      setChatId(chatId);
-      try {
-        window.sessionStorage.setItem(storageKeyChat, chatId);
-      } catch {}
+      adoptAdvisorChatId(chatId);
+      cacheAdvisorContextPayload(payload, chatId);
     }
 
     return { ok, chatId, payload };
+  }
+
+  async function ensureAdvisorChatId(opts?: { createNew?: boolean }): Promise<string | null> {
+    if (chatIdRef.current) return chatIdRef.current;
+    if (advisorChatBootstrapPromiseRef.current) return advisorChatBootstrapPromiseRef.current;
+
+    const bootstrapPromise = (async () => {
+      advisorChatBootstrapErrorRef.current = null;
+
+      if (!opts?.createNew) {
+        const ctx = await getPlanContextStatusCached({ force: true });
+
+        if (!ctx.ok) {
+          advisorChatBootstrapErrorRef.current = ctx.message ?? null;
+          return null;
+        }
+
+        if (ctx.chatId) {
+          adoptAdvisorChatId(ctx.chatId);
+          return ctx.chatId;
+        }
+      }
+
+      const created = await createAdvisorChatOnly();
+
+      if (created.ok && created.chatId) {
+        setPlanFresh(clientId, false);
+        return created.chatId;
+      }
+
+      advisorChatBootstrapErrorRef.current = getAdvisorBootstrapErrorMessage(created.payload);
+      return null;
+    })();
+
+    advisorChatBootstrapPromiseRef.current = bootstrapPromise;
+
+    try {
+      return await bootstrapPromise;
+    } finally {
+      if (advisorChatBootstrapPromiseRef.current === bootstrapPromise) {
+        advisorChatBootstrapPromiseRef.current = null;
+      }
+    }
   }
 
   async function savePlanContextDraft(
@@ -5639,44 +5748,18 @@ function looksLikeProgressClosureRequest(text: string) {
         let effectiveChatId: string | null = chatIdRef.current;
         let skipCtxSync = false;
 
-        if (mustStartFresh && !effectiveChatId) {
-          const resNew = await fetch("/api/plans/context", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authHeaders },
-            // ✅ Evita isChatOnly: contextText debe ser string (""), no null
-            body: JSON.stringify({ forceNew: true, contextJson: {}, contextText: "" }),
-          });
-
-          const jsonNew = await resNew.json().catch(() => null);
-          const payloadNew = jsonNew?.data ?? jsonNew;
-          const newChatId = payloadNew?.chatId as string | undefined;
-
-          if (resNew.ok && jsonNew?.ok !== false && typeof newChatId === "string") {
-            effectiveChatId = newChatId;
-            chatIdRef.current = newChatId;
-        
-            setChatId(newChatId);
-            try {
-              window.sessionStorage.setItem(`optia-chat-id-${clientId}-plan_mejora`, newChatId);
-            } catch {}
-            setPlanFresh(clientId, false);
-          } else {
-            setPlanFresh(clientId, false);
-            setMessages((prev) => [
-              ...prev,
-              createMessage("assistant", "⚠️ No pude crear un chat nuevo del Asesor. Intenta otra vez."),
-            ]);
-            return;
-          }
-        }
-        
         if (!effectiveChatId) {
+          effectiveChatId = await ensureAdvisorChatId({ createNew: mustStartFresh });
+        }
+
+        if (!effectiveChatId) {
+          const bootstrapError =
+            advisorChatBootstrapErrorRef.current ??
+            "⚠️ No pude obtener el chat activo del Asesor. Recarga la página e inténtalo nuevamente.";
+
           setMessages((prev) => [
             ...prev,
-            createMessage(
-              "assistant",
-              "⚠️ No pude obtener el chat activo del Asesor. Recarga la página e inténtalo nuevamente."
-            ),
+            createMessage("assistant", bootstrapError),
           ]);
           return;
         }
@@ -7286,6 +7369,7 @@ function looksLikeProgressClosureRequest(text: string) {
             setShowHoursInline(false);
             modeRef.current = "plan_mejora";
             setMode("plan_mejora");
+            void ensureAdvisorChatId();
           }}
           className={`px-3 py-1 rounded-full border text-xs transition ${
             mode === "plan_mejora"
