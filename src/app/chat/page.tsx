@@ -2318,6 +2318,17 @@ function looksLikeProgressClosureRequest(text: string) {
   // -----------------------------
 
   type Stage0Intent = "GREETING" | "QUESTION" | "START" | "CONFIRM" | "EDIT" | "ANSWER";
+  type Stage0DecisionIntent =
+    | "answer"
+    | "help_request"
+    | "example_request"
+    | "unknown"
+    | "correction"
+    | "meta_process"
+    | "context_change"
+    | "off_topic"
+    | "ambiguous";
+  type Stage0Field = "sector" | "products" | "process_focus";
 
   function isGreetingOrSmallTalk(text: string) {
     const t = normalizeText(text).trim();
@@ -2474,6 +2485,338 @@ function looksLikeProgressClosureRequest(text: string) {
       .slice(0, 3);
   }
 
+  function cleanStage0Phrase(text: string) {
+    return text
+      .replace(/\s+/g, " ")
+      .replace(/^[-*.,;:\s]+/, "")
+      .replace(/[-*.,;:\s]+$/, "")
+      .replace(/^(?:es|son|seria|serian)\s+/i, "")
+      .replace(/^(?:un|una|el|la|los|las)\s+/i, "")
+      .trim()
+      .slice(0, 140);
+  }
+
+  function toDisplayStage0Value(text: string) {
+    return cleanStage0Phrase(text)
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  }
+
+  function hasStage0Extraction(value: Stage0ContextJson) {
+    return Boolean(
+      value.sector ||
+        value.products?.length ||
+        value.process_focus?.length
+    );
+  }
+
+  function mergeStage0Extraction(
+    base: Stage0ContextJson,
+    add: Stage0ContextJson
+  ): Stage0ContextJson {
+    return {
+      stage: base.stage ?? add.stage ?? "ETAPA_0",
+      sector: add.sector ?? base.sector,
+      products: add.products ?? base.products,
+      process_focus: add.process_focus ?? base.process_focus,
+    };
+  }
+
+  function isStage0Unknown(text: string) {
+    const t = normalizeText(text);
+
+    const uncertaintySignal =
+      /\b(no\s+se|nose|no\s+conozco|no\s+tengo|sin\s+idea|ni\s+idea)\b/.test(t) ||
+      /\b(duda|dudas|dudoso|insegur|confundid|perdid)\w*\b/.test(t);
+
+    if (!uncertaintySignal) return false;
+
+    const remainder = t
+      .replace(/\b(no\s+se|nose|no\s+conozco|no\s+tengo|sin\s+idea|ni\s+idea)\b/g, " ")
+      .replace(/\b(no\s+estoy\s+segur\w*|no\s+tengo\s+claro|no\s+me\s+queda\s+claro)\b/g, " ")
+      .replace(/\b(quizas|quiza|tal\s+vez|creo\s+que|podria\s+ser|puede\s+ser|supongo\s+que)\b/g, " ")
+      .replace(/[.,;:!?-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return remainder.length === 0;
+  }
+
+  function stripStage0UncertaintyPrefix(text: string) {
+    return text
+      .replace(
+        /^(?:no\s+s[eé]|nose|no\s+conozco|no\s+tengo\s+claro|no\s+estoy\s+segur\w*|sin\s+idea|ni\s+idea)\s*(?:,|;|pero|aunque)?\s*/i,
+        ""
+      )
+      .replace(/^(?:quiz[aá]s|quiz[aá]|tal\s+vez|creo\s+que|podr[ií]a\s+ser|puede\s+ser|supongo\s+que)\s*/i, "")
+      .trim();
+  }
+
+  function trimStage0OtherFieldSignals(text: string, field: Stage0Field) {
+    const patterns: Record<Stage0Field, RegExp> = {
+      sector: /\b(?:productos?|servicios?|area|proceso|enfoque)\b/i,
+      products: /\b(?:sector|rubro|giro|area|proceso|enfoque)\b/i,
+      process_focus: /\b(?:sector|rubro|giro|productos?|servicios?)\b/i,
+    };
+
+    const match = text.search(patterns[field]);
+    return match > 0 ? text.slice(0, match).trim() : text;
+  }
+
+  function hasMultipleStage0FieldSignals(text: string) {
+    const t = normalizeText(text);
+    const signals = [
+      /\b(sector|rubro|giro)\b/.test(t),
+      /\b(producto|productos|servicio|servicios|ofrece|ofrecen|vende|venden|fabrica|fabrican|produce|producen|elabora|elaboran|prepara|preparan|comercializa|comercializan)\b/.test(t),
+      /\b(area|proceso|enfoque|enfocar|trabajar\s+en|analizar|mejorar|optimizar|revisar)\b/.test(t),
+    ].filter(Boolean).length;
+
+    return signals >= 2;
+  }
+
+  function shouldAnswerWithoutLLM(intent: Stage0DecisionIntent, deterministic: Stage0ContextJson) {
+    if (hasStage0Extraction(deterministic)) return false;
+    return (
+      intent === "unknown" ||
+      intent === "help_request" ||
+      intent === "example_request" ||
+      intent === "meta_process" ||
+      intent === "off_topic"
+    );
+  }
+
+  function hasStage0ListSignal(text: string) {
+    return /[,;\n]/.test(text) || /\s+y\s+/i.test(text);
+  }
+
+  function hasStage0ProductSignal(text: string) {
+    const t = normalizeText(text);
+    return (
+      t.includes("producto") ||
+      t.includes("servicio de") ||
+      t.includes("servicios de") ||
+      t.includes("ofrece") ||
+      t.includes("ofrecen") ||
+      t.includes("vende") ||
+      t.includes("venden") ||
+      t.includes("fabrica") ||
+      t.includes("fabrican") ||
+      t.includes("produce") ||
+      t.includes("producen") ||
+      t.includes("elabora") ||
+      t.includes("elaboran") ||
+      t.includes("prepara") ||
+      t.includes("preparan") ||
+      t.includes("comercializa") ||
+      t.includes("comercializan")
+    );
+  }
+
+  function hasStage0ProcessSignal(text: string) {
+    const t = normalizeText(text);
+    return (
+      t.includes("area") ||
+      t.includes("proceso") ||
+      t.includes("enfoque") ||
+      t.includes("enfocar") ||
+      t.includes("trabajar en") ||
+      t.includes("analizar") ||
+      t.includes("mejorar") ||
+      t.includes("optimizar") ||
+      t.includes("revisar")
+    );
+  }
+
+  function isShortStage0Answer(text: string) {
+    const t = normalizeText(text);
+    if (!t || t.endsWith("?")) return false;
+    if (isStage0Unknown(text)) return false;
+    if (hasStage0ListSignal(text)) return false;
+    if (hasStage0ProductSignal(text)) return false;
+
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 5) return false;
+
+    const verbSignals = [
+      "ofrece",
+      "vende",
+      "fabrica",
+      "produce",
+      "elabora",
+      "prepara",
+      "quiero",
+      "necesito",
+      "puedo",
+      "podemos",
+      "tiene",
+      "hace",
+    ];
+
+    return !verbSignals.some((signal) => t.includes(signal));
+  }
+
+  function stripStage0FieldPrefix(text: string) {
+    return cleanStage0Phrase(stripStage0UncertaintyPrefix(text))
+      .replace(/^(?:sector|rubro|giro)\s*(?:es|:|de)?\s*/i, "")
+      .replace(/^(?:productos?|servicios?)\s*(?:son|es|:|de)?\s*/i, "")
+      .replace(/^(?:area|proceso)\s*(?:es|:|de)?\s*/i, "")
+      .replace(/^quiero\s+(?:analizar|enfocarme\s+en|trabajar\s+en)\s+/i, "")
+      .trim();
+  }
+
+  function extractStage0Products(text: string, step: 1 | 2 | 3, forceField?: Stage0Field | null) {
+    const shouldReadProducts =
+      forceField === "products" ||
+      step === 2 ||
+      hasStage0ProductSignal(text) ||
+      hasStage0ListSignal(text);
+
+    if (!shouldReadProducts || isStage0Unknown(text)) return undefined;
+
+    let source = text.trim();
+    const marker = source.match(
+      /(?:productos?|servicios?|ofrece|ofrecen|vende|venden|fabrica|fabrican|produce|producen|elabora|elaboran|prepara|preparan|comercializa|comercializan)\s*(?:son|es|:|de|que)?\s*(.+)$/i
+    );
+
+    if (marker?.[1]) {
+      source = marker[1];
+    }
+
+    source = trimStage0OtherFieldSignals(source, "products");
+
+    const products = splitProducts(stripStage0FieldPrefix(source))
+      .map(toDisplayStage0Value)
+      .filter(Boolean);
+
+    return products.length ? products : undefined;
+  }
+
+  function extractStage0Process(text: string, step: 1 | 2 | 3, forceField?: Stage0Field | null) {
+    const shouldReadProcess =
+      forceField === "process_focus" ||
+      step === 3 ||
+      hasStage0ProcessSignal(text);
+
+    if (!shouldReadProcess || isStage0Unknown(text)) return undefined;
+
+    let source = text.trim();
+    const marker = source.match(
+      /(?:area|proceso|enfoque|enfocarme\s+en|trabajar\s+en|analizar)\s*(?:es|:|de|el|la)?\s*(.+)$/i
+    );
+
+    if (marker?.[1]) {
+      source = marker[1];
+    }
+
+    source = trimStage0OtherFieldSignals(source, "process_focus");
+
+    const processes = splitProcesses(stripStage0FieldPrefix(source))
+      .map(toDisplayStage0Value)
+      .filter(Boolean);
+
+    return processes.length ? processes : undefined;
+  }
+
+  function extractStage0Sector(text: string, step: 1 | 2 | 3, forceField?: Stage0Field | null) {
+    if (isStage0Unknown(text)) return undefined;
+    if (forceField && forceField !== "sector") return undefined;
+
+    const trimmed = text.trim();
+    const explicit = trimmed.match(/(?:sector|rubro|giro)\s*(?:es|:|de)?\s*(.+)$/i);
+    if (explicit?.[1]) {
+      const source = trimStage0OtherFieldSignals(explicit[1], "sector");
+      const value = toDisplayStage0Value(stripStage0FieldPrefix(source));
+      return value || undefined;
+    }
+
+    const businessKind = trimmed.match(/^(?:es\s+)?(?:un|una)\s+(.+)$/i);
+    if ((forceField === "sector" || step === 1) && businessKind?.[1]) {
+      const source = trimStage0OtherFieldSignals(businessKind[1], "sector");
+      const value = toDisplayStage0Value(stripStage0FieldPrefix(source));
+      return value || undefined;
+    }
+
+    const beforeBusinessVerb = trimmed.match(/^(.+?)\s+es\s+(?:un|una)\s+.+$/i);
+    if ((forceField === "sector" || step === 1) && beforeBusinessVerb?.[1]) {
+      const source = trimStage0OtherFieldSignals(beforeBusinessVerb[1], "sector");
+      const value = toDisplayStage0Value(stripStage0FieldPrefix(source));
+      return value || undefined;
+    }
+
+    if ((forceField === "sector" || step === 1) && isShortStage0Answer(trimmed)) {
+      if (hasStage0ProcessSignal(trimmed)) return undefined;
+      const source = trimStage0OtherFieldSignals(trimmed, "sector");
+      const value = toDisplayStage0Value(stripStage0FieldPrefix(source));
+      return value || undefined;
+    }
+
+    return undefined;
+  }
+
+  function extractStage0Deterministic(
+    text: string,
+    step: 1 | 2 | 3,
+    forceField?: Stage0Field | null
+  ): Stage0ContextJson {
+    const process_focus = extractStage0Process(text, step, forceField);
+    const products = extractStage0Products(text, step, forceField);
+    const sector =
+      process_focus && !forceField
+        ? undefined
+        : extractStage0Sector(text, step, forceField);
+
+    return {
+      sector,
+      products,
+      process_focus,
+    };
+  }
+
+  function classifyStage0DecisionIntent(text: string, localIntent: Stage0Intent): Stage0DecisionIntent {
+    const t = normalizeText(text);
+
+    if (!t) return "ambiguous";
+    if (localIntent === "EDIT") return "correction";
+    if (isStage0Unknown(text)) return "unknown";
+    if (t.includes("ejemplo") || t.includes("opcion") || t.includes("opciones")) {
+      return "example_request";
+    }
+    if (
+      t.includes("que sigue") ||
+      t.includes("como seguimos") ||
+      t.includes("en que etapa") ||
+      t.includes("por que preguntas") ||
+      t.includes("para que sirve")
+    ) {
+      return "meta_process";
+    }
+    if (t.split(/\s+/).filter(Boolean).length <= 1 && /[?¿]/.test(text)) {
+      return "ambiguous";
+    }
+    if (
+      localIntent === "QUESTION" ||
+      t.includes("ayuda") ||
+      t.includes("no entiendo") ||
+      t.includes("explicame") ||
+      t.includes("que significa")
+    ) {
+      return "help_request";
+    }
+    if (
+      t.includes("balanceo de linea") ||
+      t.includes("pareto") ||
+      t.includes("ishikawa") ||
+      t.includes("foda")
+    ) {
+      return "off_topic";
+    }
+    if (t.includes("cambiar empresa") || t.includes("otro caso")) return "context_change";
+
+    return "answer";
+  }
+
   function parseBsAmount(text: string): number | null {
     // captura 9000, 9.000, 9,000, 9000.50, 9000,50
     const m = text.match(/(-?\d[\d.,]*)/);
@@ -2617,36 +2960,33 @@ function looksLikeProgressClosureRequest(text: string) {
   function stage0HelpMessage(step: 1 | 2 | 3) {
     if (step === 1) {
       return (
-        "Claro 👍 En esta primera pregunta solo necesito el **sector o rubro de la empresa**, no el producto ni el área.\n\n" +
-        "Ejemplos válidos:\n" +
+        "Para ubicar el caso, dime el **rubro general** de la empresa.\n\n" +
+        "Ejemplos:\n" +
         "- alimentos\n" +
         "- textil\n" +
         "- servicios\n" +
-        "- metalmecánica\n\n" +
-        promptForStep(1)
+        "- metalmecanica"
       );
     }
 
     if (step === 2) {
       return (
-        "Aquí necesito el **producto o servicio principal**, no el sector ni el área.\n\n" +
+        "Ahora necesito saber que **producto o servicio** ofrece la empresa.\n\n" +
         "Ejemplos:\n" +
         "- yogurt\n" +
         "- pan\n" +
-        "- confección de uniformes\n" +
-        "- servicio de mantenimiento\n\n" +
-        promptForStep(2)
+        "- confeccion de uniformes\n" +
+        "- servicio de mantenimiento"
       );
     }
 
     return (
-      "Aquí necesito el **área o proceso principal** donde trabajarás.\n\n" +
+      "Para cerrar el contexto, dime el **area o proceso** donde enfocaras el analisis.\n\n" +
       "Ejemplos:\n" +
-      "- Producción\n" +
+      "- Produccion\n" +
       "- Calidad\n" +
-      "- Logística\n" +
-      "- Inventarios\n\n" +
-      promptForStep(3)
+      "- Logistica\n" +
+      "- Inventarios"
     );
   }
 
@@ -2797,6 +3137,19 @@ function looksLikeProgressClosureRequest(text: string) {
     };
   }
 
+  function askForMissingStage0Field(step: 1 | 2 | 3, ctxJson: Stage0ContextJson) {
+    if (step === 1) {
+      const products = ctxJson.products?.length ? ` Ya tengo como producto/servicio: **${ctxJson.products.join(", ")}**.` : "";
+      return `${products} Para completar el contexto, dime tambien el **rubro general** de la empresa.`;
+    }
+
+    if (step === 2) {
+      return "Ahora dime que **productos o servicios** ofrece la empresa.";
+    }
+
+    return "Solo me falta el **area o proceso foco** donde trabajaras.";
+  }
+
   function buildStage0ProgressMessage(
     captured: Stage0ContextJson,
     nextContext: Stage0ContextJson
@@ -2804,31 +3157,30 @@ function looksLikeProgressClosureRequest(text: string) {
     const lines: string[] = [];
 
     if (captured.sector) {
-      lines.push(`- Sector/rubro: **${captured.sector}**`);
+      lines.push(`sector: **${captured.sector}**`);
     }
 
     if (captured.products?.length) {
-      lines.push(`- Producto(s)/servicio(s): **${captured.products.join(", ")}**`);
+      lines.push(`producto/servicio: **${captured.products.join(", ")}**`);
     }
 
     if (captured.process_focus?.length) {
-      lines.push(`- Area/proceso foco: **${captured.process_focus.join(", ")}**`);
+      lines.push(`area/proceso foco: **${captured.process_focus.join(", ")}**`);
     }
 
     const nextStep = getNextStage0StepFromContext(nextContext);
-    const intro =
-      lines.length > 1
-        ? "Perfecto. Ya registre estos datos del contexto:"
-        : "Perfecto. Ya registre este dato del contexto:";
+    const intro = lines.length
+      ? `Perfecto, ya registre ${lines.join("; ")}.`
+      : "Perfecto, ya actualice el contexto.";
 
     if (nextStep === 0) {
       return (
-        `${intro}\n\n${lines.join("\n")}\n\n` +
-        "Voy a consolidar tu **Contexto del Caso** para dejarlo listo."
+        `${intro}\n\n` +
+        "Con esto ya tenemos el contexto inicial del caso y puedo dejarlo confirmado."
       );
     }
 
-    return `${intro}\n\n${lines.join("\n")}\n\n${promptForStep(nextStep)}`;
+    return `${intro}\n\n${askForMissingStage0Field(nextStep, nextContext)}`;
   }
 
   function pushAssistantOnce(text: string) {
@@ -3602,10 +3954,14 @@ function looksLikeProgressClosureRequest(text: string) {
       `Proceso/área: ${(contextJson.process_focus || []).join(", ") || "(pendiente)"}`,
     ].join("\n");
 
-    // ✅ Renombramos el payload de request
-    const reqBody: any = {
+    const reqBody: {
+      contextJson: Stage0ContextJson;
+      contextText: string;
+      userMessage?: string;
+      assistantMessage?: string;
+      chatId?: string;
+    } = {
       contextJson,
-      // ✅ para evitar el error de null, mandamos string siempre
       contextText: contextText ?? "",
     };
     if (opts?.userMessage) reqBody.userMessage = opts.userMessage;
@@ -3653,12 +4009,13 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok, payload, status: res.status };
   }
 
-  async function handleStage0DraftFlow(input: {
+  async function handleStage0DraftFlowV2(input: {
     text: string;
     ctx: PlanContextStatus;
   }): Promise<boolean> {
     const { text, ctx } = input;
     const ctxJson = (ctx.contextJson ?? {}) as Record<string, unknown>;
+    const currentStage0Context = readStage0Context(ctxJson);
 
     const editingStep = stage0StepForField(editingField);
     const nextStep = getNextStage0StepFromContext(ctxJson);
@@ -3667,108 +4024,64 @@ function looksLikeProgressClosureRequest(text: string) {
     setStage0Step(step);
 
     const localIntent = detectStage0Intent(text);
+    const decisionIntent = classifyStage0DecisionIntent(text, localIntent);
+    const correctionTarget =
+      editingField ?? (decisionIntent === "correction" ? detectEditingField(text) : null);
+    const forcedField = correctionTarget ?? null;
+    const deterministicExtraction = extractStage0Deterministic(text, step, forcedField);
 
-    if (localIntent === "EDIT") {
-      const target = detectEditingField(text);
-      const targetStep = stage0StepForField(target);
-
-      if (!target || !targetStep) {
+    if (shouldAnswerWithoutLLM(decisionIntent, deterministicExtraction)) {
+      if (decisionIntent === "unknown") {
         await appendAssistant(
-          "Claro, podemos corregir el contexto. Dime que dato quieres cambiar: **rubro**, **producto/servicio** o **area/proceso**."
+          stage0HelpMessage(step) +
+            "\n\nElige una opcion aproximada o dime como lo describiria la empresa."
         );
         return true;
       }
 
-      setEditingField(target);
-      setStage0Step(targetStep);
       await appendAssistant(
-        "Claro. Dime el nuevo dato y lo actualizo sin tocar lo demas.\n\n" +
-          promptForStep(targetStep)
+        decisionIntent === "meta_process"
+          ? "Estamos armando el contexto base del caso para que las siguientes etapas no trabajen con datos inventados.\n\n" +
+              askForMissingStage0Field(step, currentStage0Context)
+          : stage0HelpMessage(step)
       );
       return true;
     }
 
-    if (localIntent === "GREETING" || localIntent === "START") {
-      await appendAssistant(buildStage0Welcome(step));
-      return true;
+    const shouldAskLLM =
+      hasMultipleStage0FieldSignals(text) ||
+      !hasStage0Extraction(deterministicExtraction) ||
+      (!forcedField &&
+        step === 1 &&
+        hasStage0ProductSignal(text) &&
+        !deterministicExtraction.sector);
+
+    const interpreted = shouldAskLLM
+      ? await interpretStage0WithLLM(step, text, ctxJson)
+      : { ok: true, payload: null };
+    const result =
+      interpreted.ok && interpreted.payload
+        ? (interpreted.payload as Stage0InterpretPayload)
+        : null;
+
+    const llmExtraction = result ? readStage0Extraction(result) : {};
+    let extractedContext = mergeStage0Extraction(llmExtraction, deterministicExtraction);
+
+    if (forcedField === "sector") {
+      extractedContext = { sector: extractedContext.sector };
+    } else if (forcedField === "products") {
+      extractedContext = { products: extractedContext.products };
+    } else if (forcedField === "process_focus") {
+      extractedContext = { process_focus: extractedContext.process_focus };
     }
 
-    if (localIntent === "QUESTION") {
-      await appendAssistant(stage0HelpMessage(step));
-      return true;
-    }
-
-    if (localIntent === "CONFIRM") {
-      await appendAssistant(
-        "Todavía estamos completando la **Etapa 0**.\n\n" +
-          "Primero necesito registrar bien estos datos y luego pasamos a la siguiente etapa.\n\n" +
-          promptForStep(step)
-      );
-      return true;
-    }
-
-    const interpreted = await interpretStage0WithLLM(step, text, ctxJson);
-
-    if (!interpreted.ok || !interpreted.payload) {
-      await appendAssistant(
-        "⚠️ No pude interpretar bien tu respuesta.\n\n" + stage0HelpMessage(step)
-      );
-      return true;
-    }
-
-    const result = interpreted.payload as Stage0InterpretPayload;
-
-    if (
-      typeof result.confidence === "number" &&
-      result.confidence < 0.6 &&
-      !result.needsClarification
-    ) {
-      await appendAssistant(stage0HelpMessage(step));
-      return true;
-    }
-
-    if (interpreted.payload?.confidence !== undefined && interpreted.payload.confidence < 0.6) {
-      await appendAssistant(stage0HelpMessage(step));
-      return true;
-    }
-
-
-    if (result.intent === "GREETING" || result.intent === "START") {
-      await appendAssistant(buildStage0Welcome(step));
-      return true;
-    }
-
-    if (
-      result.intent === "QUESTION" ||
-      result.intent === "EDIT" ||
-      result.needsClarification
-    ) {
-      const clarificationQuestion =
-        typeof result.clarificationQuestion === "string"
-          ? result.clarificationQuestion.trim()
-          : "";
-
-      await appendAssistant(
-        clarificationQuestion || stage0HelpMessage(step)
-      );
-      return true;
-    }
-
-    const currentStage0Context = readStage0Context(ctxJson);
-    const extractedContext = readStage0Extraction(result);
-    const hasExtractedContext =
-      Boolean(extractedContext.sector) ||
-      Boolean(extractedContext.products?.length) ||
-      Boolean(extractedContext.process_focus?.length);
-
-    if (hasExtractedContext) {
+    if (hasStage0Extraction(extractedContext)) {
       const nextContext = mergeStage0Context(currentStage0Context, extractedContext);
-      const nextMissingStep = getNextStage0StepFromContext(nextContext);
       const assistantMessage = buildStage0ProgressMessage(extractedContext, nextContext);
 
       const saved = await savePlanContextDraft(
         extractedContext,
-        { userMessage: text, assistantMessage },
+        undefined,
         currentStage0Context
       );
 
@@ -3777,9 +4090,16 @@ function looksLikeProgressClosureRequest(text: string) {
         return true;
       }
 
-      if (nextMissingStep !== 0) {
-        setStage0Draft(nextContext);
-        setStage0Step(nextMissingStep);
+      planContextCacheRef.current = null;
+      const refreshed = await getPlanContextStatusCached({ force: true });
+      const liveContext = refreshed.ok
+        ? readStage0Context((refreshed.contextJson ?? {}) as Record<string, unknown>)
+        : nextContext;
+      const liveMissingStep = getNextStage0StepFromContext(liveContext);
+
+      if (liveMissingStep !== 0) {
+        setStage0Draft(liveContext);
+        setStage0Step(liveMissingStep);
         setEditingField(null);
 
         planContextCacheRef.current = {
@@ -3788,13 +4108,19 @@ function looksLikeProgressClosureRequest(text: string) {
             ...ctx,
             exists: true,
             status: "draft",
-            chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
-            contextJson: nextContext,
-            contextText: (saved.payload?.contextText ?? ctx.contextText) as string | null,
+            chatId: refreshed.ok
+              ? refreshed.chatId
+              : ((saved.payload?.chatId ?? ctx.chatId) as string | null),
+            contextJson: liveContext,
+            contextText: refreshed.ok
+              ? refreshed.contextText
+              : ((saved.payload?.contextText ?? ctx.contextText) as string | null),
           },
         };
 
-        await appendAssistant(assistantMessage);
+        await appendAssistant(
+          buildStage0ProgressMessage(extractedContext, liveContext) || assistantMessage
+        );
         return true;
       }
 
@@ -3808,7 +4134,13 @@ function looksLikeProgressClosureRequest(text: string) {
         return true;
       }
 
-      const finalContext = (confirmed.payload?.contextJson ?? nextContext) as Record<string, unknown>;
+      planContextCacheRef.current = null;
+      const confirmedFresh = await getPlanContextStatusCached({ force: true });
+      const finalContext = (
+        confirmedFresh.ok
+          ? confirmedFresh.contextJson
+          : confirmed.payload?.contextJson ?? liveContext
+      ) as Record<string, unknown>;
 
       planContextCacheRef.current = {
         at: Date.now(),
@@ -3831,200 +4163,94 @@ function looksLikeProgressClosureRequest(text: string) {
         "Etapa 0 completada y confirmada.\n\n" +
           formatContextSummary(finalContext) +
           "\n\nYa quedo registrado el contexto base de tu caso.\n\n" +
-          "Responde **ok** si quieres que sigamos con la siguiente etapa.\n" +
-          "O escribe **productividad** si ya tienes datos mensuales."
+          "Si tienes datos mensuales, escribe **productividad**. Si no, responde **ok** y seguimos con el diagnostico."
       );
 
       return true;
     }
 
-    if (step === 1) {
-      const sector =
-        typeof result.sector === "string" ? result.sector.trim() : "";
-
-      if (!sector) {
-        await appendAssistant(stage0HelpMessage(1));
+    if (decisionIntent === "correction") {
+      const targetStep = stage0StepForField(correctionTarget);
+      if (correctionTarget && targetStep) {
+        setEditingField(correctionTarget);
+        setStage0Step(targetStep);
+        await appendAssistant(
+          "Claro, lo ajustamos. Dime el nuevo dato para actualizarlo sin reiniciar el contexto.\n\n" +
+            askForMissingStage0Field(targetStep, currentStage0Context)
+        );
         return true;
       }
 
-      const assistantMessage =
-        `¡Perfecto! ✅ Ya registré el **sector/rubro**: **${sector}**.\n\n` +
-        promptForStep(2);
-
-      const saved = await savePlanContextDraft(
-        { sector },
-        { userMessage: text, assistantMessage },
-        ctxJson as {
-          sector?: string;
-          products?: string[];
-          process_focus?: string[];
-          stage?: string;
-        }
-      );
-
-      if (!saved.ok) {
-        await appendAssistant("⚠️ No pude guardar el sector en este momento. Intenta otra vez.");
-        return true;
-      }
-
-      setStage0Draft((prev) => ({ ...prev, sector }));
-      setStage0Step(2);
-
-      planContextCacheRef.current = {
-        at: Date.now(),
-        data: {
-          ...ctx,
-          exists: true,
-          status: "draft",
-          chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
-          contextJson: {
-            ...(ctxJson ?? {}),
-            sector,
-          },
-          contextText: ctx.contextText,
-        },
-      };
-
-      await appendAssistant(assistantMessage);
-      return true;
-    }
-
-    if (step === 2) {
-      const rawProducts = Array.isArray(result.products)
-        ? (result.products as unknown[])
-        : [];
-
-      const products: string[] = rawProducts
-        .map((item) => String(item).trim())
-        .filter((item) => item.length > 0);
-
-      if (!products.length) {
-        await appendAssistant(stage0HelpMessage(2));
-        return true;
-      }
-
-      const assistantMessage =
-        `¡Muy bien! ✅ Ya registré el **producto/servicio principal**: **${products.join(", ")}**.\n\n` +
-        promptForStep(3);
-
-      const saved = await savePlanContextDraft(
-        { products },
-        { userMessage: text, assistantMessage },
-        ctxJson as {
-          sector?: string;
-          products?: string[];
-          process_focus?: string[];
-          stage?: string;
-        }
-      );
-
-      if (!saved.ok) {
-        await appendAssistant("⚠️ No pude guardar el producto/servicio en este momento. Intenta otra vez.");
-        return true;
-      }
-
-      setStage0Draft((prev) => ({ ...prev, products }));
-      setStage0Step(3);
-
-      planContextCacheRef.current = {
-        at: Date.now(),
-        data: {
-          ...ctx,
-          exists: true,
-          status: "draft",
-          chatId: (saved.payload?.chatId ?? ctx.chatId) as string | null,
-          contextJson: {
-            ...(ctxJson ?? {}),
-            products,
-          },
-          contextText: ctx.contextText,
-        },
-      };
-
-      await appendAssistant(assistantMessage);
-      return true;
-    }
-
-    const rawProcessFocus = Array.isArray(result.process_focus)
-      ? (result.process_focus as unknown[])
-      : [];
-
-    const process_focus: string[] = rawProcessFocus
-      .map((item) => String(item).trim())
-      .filter((item) => item.length > 0);
-    if (!process_focus.length) {
-      await appendAssistant(stage0HelpMessage(3));
-      return true;
-    }
-
-    const draftAssistantMessage =
-      `Excelente ✅ Ya registré el **área/proceso principal**: **${process_focus.join(", ")}**.\n\n` +
-      "Voy a consolidar tu **Contexto del Caso** para dejarlo listo.";
-
-    const saved = await savePlanContextDraft(
-      { process_focus },
-      { userMessage: text, assistantMessage: draftAssistantMessage },
-      ctxJson as {
-        sector?: string;
-        products?: string[];
-        process_focus?: string[];
-        stage?: string;
-      }
-    );
-
-    if (!saved.ok) {
-      await appendAssistant("⚠️ No pude guardar el área/proceso en este momento. Intenta otra vez.");
-      return true;
-    }
-
-    const confirmed = await confirmPlanContext();
-
-    if (!confirmed.ok) {
       await appendAssistant(
-        confirmed.payload?.message ||
-          "⚠️ Guardé el contexto, pero no pude confirmarlo todavía. Intenta nuevamente."
+        "Claro, podemos corregir el contexto. Dime si quieres cambiar **rubro**, **producto/servicio** o **area/proceso**."
       );
       return true;
     }
 
-    const finalContext = (confirmed.payload?.contextJson ?? {
-      ...(ctxJson ?? {}),
-      process_focus,
-    }) as Record<string, unknown>;
+    if (decisionIntent === "context_change") {
+      await appendAssistant(
+        "Podemos ajustar el contexto del caso. Dime que dato quieres cambiar: **rubro**, **producto/servicio** o **area/proceso**."
+      );
+      return true;
+    }
 
-    planContextCacheRef.current = {
-      at: Date.now(),
-      data: {
-        ...ctx,
-        exists: true,
-        status: "confirmed",
-        chatId: (confirmed.payload?.chatId ?? saved.payload?.chatId ?? ctx.chatId) as string | null,
-        contextJson: finalContext,
-        contextText: (confirmed.payload?.contextText ?? ctx.contextText) as string | null,
-      },
-    };
+    if (localIntent === "GREETING" || localIntent === "START") {
+      await appendAssistant(buildStage0Welcome(step));
+      return true;
+    }
 
-    setStage0Draft({
-      sector: typeof finalContext?.sector === "string" ? finalContext.sector : undefined,
-      products: Array.isArray(finalContext?.products) ? (finalContext.products as string[]) : undefined,
-      process_focus: Array.isArray(finalContext?.process_focus)
-        ? (finalContext.process_focus as string[])
-        : undefined,
-    });
-    setStage0Step(0);
-    setAwaitingStage1Start(clientId, true);
+    if (localIntent === "CONFIRM") {
+      await appendAssistant(
+        "Aun falta completar un dato del contexto antes de avanzar.\n\n" +
+          askForMissingStage0Field(step, currentStage0Context)
+      );
+      return true;
+    }
+
+    if (decisionIntent === "unknown") {
+      await appendAssistant(
+        stage0HelpMessage(step) +
+          "\n\nElige una opcion aproximada o dime como lo describiria la empresa."
+      );
+      return true;
+    }
+
+    if (
+      decisionIntent === "help_request" ||
+      decisionIntent === "example_request" ||
+      decisionIntent === "meta_process" ||
+      decisionIntent === "off_topic" ||
+      decisionIntent === "ambiguous" ||
+      localIntent === "QUESTION"
+    ) {
+      await appendAssistant(
+        decisionIntent === "meta_process"
+          ? "Estamos armando el contexto base del caso para que las siguientes etapas no trabajen con datos inventados.\n\n" +
+              askForMissingStage0Field(step, currentStage0Context)
+          : stage0HelpMessage(step)
+      );
+      return true;
+    }
+
+    const clarificationQuestion =
+      result && typeof result.clarificationQuestion === "string"
+        ? result.clarificationQuestion.trim()
+        : "";
 
     await appendAssistant(
-      "✅ **Etapa 0 completada y confirmada.**\n\n" +
-        formatContextSummary(finalContext) +
-        "\n\n" +
-        "Ya quedó registrado el contexto base de tu caso.\n\n" +
-        "👉 Desde aquí podremos continuar con el flujo del asesor de forma más clara.\n\n" +
-        "Responde **ok** si quieres que sigamos con la siguiente etapa.\n" +
-        "O escribe **productividad** si ya tienes datos mensuales."
+      clarificationQuestion ||
+        "Necesito un dato un poco mas claro para guardarlo correctamente.\n\n" +
+          askForMissingStage0Field(step, currentStage0Context)
     );
-
     return true;
+  }
+
+  async function handleStage0DraftFlow(input: {
+    text: string;
+    ctx: PlanContextStatus;
+  }): Promise<boolean> {
+    return handleStage0DraftFlowV2(input);
+
   }
 
   async function saveProductivity(payload: any, chatId?: string | null) {
