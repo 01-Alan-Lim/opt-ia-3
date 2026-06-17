@@ -35,6 +35,33 @@ async function getRow(userId: string) {
     .maybeSingle();
 }
 
+type ChatOwnershipResult =
+  | { ok: true }
+  | { ok: false; status: number; code: "NOT_FOUND" | "FORBIDDEN" | "INTERNAL"; message: string };
+
+async function assertChatOwner(userId: string, chatId: string): Promise<ChatOwnershipResult> {
+  const { data: chatRow, error: chatErr } = await supabaseServer
+    .from("chats")
+    .select("id, client_id")
+    .eq("id", chatId)
+    .maybeSingle();
+
+  if (chatErr) {
+    console.error("[plans] context: validacion de ownership de chat", chatErr);
+    return { ok: false as const, status: 500, code: "INTERNAL", message: "No se pudo validar el chat." };
+  }
+
+  if (!chatRow) {
+    return { ok: false as const, status: 404, code: "NOT_FOUND", message: "Chat no encontrado." };
+  }
+
+  if (chatRow.client_id !== userId) {
+    return { ok: false as const, status: 403, code: "FORBIDDEN", message: "No tienes acceso a este chat." };
+  }
+
+  return { ok: true as const };
+}
+
 export async function GET(req: Request) {
   try {
     const authed = await requireUser(req);
@@ -53,6 +80,13 @@ export async function GET(req: Request) {
     }
 
     // Si no existe, devolvemos un default (sin crear nada todavía)
+    if (data?.chat_id) {
+      const access = await assertChatOwner(authed.userId, data.chat_id as string);
+      if (!access.ok) {
+        return failResponse(access.code, access.message, access.status);
+      }
+    }
+
     return ok({
       status: data?.status ?? "draft",
       version: data?.version ?? 1,
@@ -91,13 +125,6 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const authed = await requireUser(req);
-
-    const gate = await assertChatAccess(req, authed);
-    if (!gate.ok) {
-      return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
-    }
-
     let raw: unknown;
     try {
       raw = await req.json();
@@ -111,6 +138,13 @@ export async function POST(req: Request) {
         fail("BAD_REQUEST", "Payload inválido."),
         { status: 400 }
       );
+    }
+
+    const authed = await requireUser(req);
+
+    const gate = await assertChatAccess(req, authed);
+    if (!gate.ok) {
+      return NextResponse.json(fail("FORBIDDEN", gate.message), { status: 403 });
     }
 
     const chatId = parsed.data.chatId ?? null;
@@ -144,6 +178,13 @@ export async function POST(req: Request) {
 
     if (!forceNew) {
       effectiveChatId = chatId ?? (current?.chat_id as string | null) ?? null;
+    }
+
+    if (effectiveChatId) {
+      const access = await assertChatOwner(authed.userId, effectiveChatId);
+      if (!access.ok) {
+        return failResponse(access.code, access.message, access.status);
+      }
     }
 
     if (!effectiveChatId) {
