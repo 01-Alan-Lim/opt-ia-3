@@ -6,6 +6,10 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import {
+  mergeParetoCriteriaMonotonic,
+  mergeParetoStringListMonotonic,
+} from "@/lib/plan/paretoParsing";
 
 export const runtime = "nodejs";
 
@@ -147,6 +151,50 @@ function normalizeCriteria(input: unknown): ParetoCriterion[] {
   return isLegacyAutoCriteria(criteria) ? [] : criteria;
 }
 
+function hasThreeCriteria(state: ParetoState) {
+  return (
+    Array.isArray(state.criteria) &&
+    state.criteria.length >= 3 &&
+    state.criteria.slice(0, 3).every((criterion) => criterion.name.trim().length > 3)
+  );
+}
+
+function hasWeights(state: ParetoState) {
+  return (
+    hasThreeCriteria(state) &&
+    state.criteria.slice(0, 3).every((criterion) => {
+      const weight = Number(criterion.weight);
+      return Number.isFinite(weight) && weight >= 1 && weight <= 10;
+    })
+  );
+}
+
+function ceil20Percent(n: number) {
+  return Math.max(1, Math.ceil(n * 0.2));
+}
+
+function resolveParetoStepFromState(state: ParetoState): ParetoStep {
+  const selectedCount = Array.isArray(state.selectedRoots) ? state.selectedRoots.length : 0;
+  const minSelected =
+    Number.isFinite(state.minSelected) && state.minSelected > 0 ? state.minSelected : 10;
+  const maxSelected =
+    Number.isFinite(state.maxSelected) && state.maxSelected >= minSelected
+      ? state.maxSelected
+      : 15;
+
+  if (selectedCount < minSelected || selectedCount > maxSelected) return "select_roots";
+  if (!hasThreeCriteria(state)) return "define_criteria";
+  if (!hasWeights(state)) return "set_weights";
+
+  const minCritical = ceil20Percent(selectedCount);
+  if (state.criticalRoots.length >= minCritical) return "done";
+  if (state.criticalRoots.length > 0) return "collect_critical";
+
+  return state.step === "collect_critical" || state.step === "excel_work"
+    ? state.step
+    : "excel_work";
+}
+
 function normalizeStep(input: unknown): ParetoStep {
   const raw = String(input ?? "").trim();
 
@@ -274,7 +322,12 @@ function sanitizeParetoStateWithOfficialRoots(
     roots: officialRoots,
     selectedRoots,
     criticalRoots,
-    step: normalizeStep(state.step),
+    step: resolveParetoStepFromState({
+      ...state,
+      roots: officialRoots,
+      selectedRoots,
+      criticalRoots,
+    }),
   };
 }
 
@@ -285,15 +338,23 @@ function mergeParetoState(baseRaw: unknown, incomingRaw: unknown): ParetoState {
       ? (incomingRaw as Record<string, unknown>)
       : {};
 
-  return normalizeParetoState({
-    roots: hasOwn(incoming, "roots") ? incoming.roots : base.roots,
-    selectedRoots: hasOwn(incoming, "selectedRoots") ? incoming.selectedRoots : base.selectedRoots,
-    criteria: hasOwn(incoming, "criteria") ? incoming.criteria : base.criteria,
-    criticalRoots: hasOwn(incoming, "criticalRoots") ? incoming.criticalRoots : base.criticalRoots,
+  const incomingState = normalizeParetoState(incoming);
+  const merged = normalizeParetoState({
+    roots: mergeParetoStringListMonotonic(base.roots, incomingState.roots),
+    selectedRoots: mergeParetoStringListMonotonic(base.selectedRoots, incomingState.selectedRoots),
+    criteria: mergeParetoCriteriaMonotonic(base.criteria, incomingState.criteria, {
+      createId: () => crypto.randomUUID(),
+    }),
+    criticalRoots: mergeParetoStringListMonotonic(base.criticalRoots, incomingState.criticalRoots),
     minSelected: hasOwn(incoming, "minSelected") ? incoming.minSelected : base.minSelected,
     maxSelected: hasOwn(incoming, "maxSelected") ? incoming.maxSelected : base.maxSelected,
     step: hasOwn(incoming, "step") ? incoming.step : base.step,
   });
+
+  return {
+    ...merged,
+    step: resolveParetoStepFromState(merged),
+  };
 }
 
 async function assertChatOwner(userId: string, chatId: string) {

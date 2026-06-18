@@ -8,11 +8,20 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
-import { detectParetoIntent } from "@/lib/plan/paretoIntent";
 import {
   classifyConversationIntent,
   type ConversationIntentResult,
 } from "@/lib/plan/conversationIntent";
+import {
+  applyCriterionEntriesToCriteria,
+  applyWeightsToCriteria,
+  isClearCriticalRootsMessage,
+  isLikelyParetoCauseOrProblemList,
+  mergeParetoCriteriaMonotonic,
+  mergeParetoStringListMonotonic,
+  parseCriticalRootsFromParetoMessage,
+  parseParetoCriterionEntries,
+} from "@/lib/plan/paretoParsing";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
@@ -192,6 +201,18 @@ Mensaje:
 function isOkConfirm(msg: string) {
   const t = normalizeText(msg);
   return ["ok", "okay", "dale", "listo", "de acuerdo", "si", "sí"].includes(t);
+}
+
+function isParetoCloseConfirmation(msg: string) {
+  const t = normalizeText(msg);
+  return (
+    isOkConfirm(msg) ||
+    t.includes("siguiente etapa") ||
+    t.includes("pasar a la siguiente") ||
+    t.includes("pasemos a la siguiente") ||
+    t.includes("cerrar pareto") ||
+    t.includes("continuar con objetivos")
+  );
 }
 
 function isAskingForCriticalRoots(msg: string) {
@@ -587,6 +608,8 @@ function overlapScore(a: string[], b: string[]): number {
 }
 
 function parseCriticalRootsFromMessage(studentMessage: string): string[] {
+  return parseCriticalRootsFromParetoMessage(studentMessage).roots;
+
   const cleanedMessage = String(studentMessage ?? "")
     .replace(/^ok[,:\s]*/i, "")
     .replace(/^bien[,:\s]*/i, "")
@@ -642,6 +665,9 @@ function parseCriticalRootsFromMessage(studentMessage: string): string[] {
 }
 
 function looksLikeCriticalRootsDelivery(studentMessage: string, parsedCritical: string[]): boolean {
+  const parsed = parseCriticalRootsFromParetoMessage(studentMessage);
+  return parsed.isDelivery && parsedCritical.length > 0;
+
   const text = String(studentMessage ?? "");
   const normalized = normalizeText(text);
 
@@ -817,16 +843,25 @@ function mergeAssistantParetoState(
 ): ParetoState {
   if (!persisted) return incoming;
 
+  const criteria = mergeParetoCriteriaMonotonic(persisted.criteria, incoming.criteria, {
+    createId: () => crypto.randomUUID(),
+  });
+
+  const roots = mergeParetoStringListMonotonic(persisted.roots, incoming.roots);
+  const selectedRoots = mergeParetoStringListMonotonic(
+    persisted.selectedRoots,
+    incoming.selectedRoots
+  );
+  const criticalRoots = mergeParetoStringListMonotonic(
+    persisted.criticalRoots,
+    incoming.criticalRoots
+  );
+
   const merged = normalizeParetoState({
-    roots: persisted.roots.length > 0 ? persisted.roots : incoming.roots,
-    selectedRoots:
-      persisted.selectedRoots.length > 0 ? persisted.selectedRoots : incoming.selectedRoots,
-    criteria:
-      Array.isArray(persisted.criteria) && persisted.criteria.length > 0
-        ? persisted.criteria
-        : incoming.criteria,
-    criticalRoots:
-      persisted.criticalRoots.length > 0 ? persisted.criticalRoots : incoming.criticalRoots,
+    roots,
+    selectedRoots,
+    criteria,
+    criticalRoots,
     minSelected: persisted.minSelected ?? incoming.minSelected,
     maxSelected: persisted.maxSelected ?? incoming.maxSelected,
     step:
@@ -1050,7 +1085,76 @@ function buildParetoSupportMessage(input: {
   return "Ese mensaje no parece conectado con Pareto. Volvamos al avance: dime tus criterios, pesos, dudas sobre el calculo en Excel o tus causas criticas.";
 }
 
+function buildParetoChecklistMessage(
+  state: ParetoState,
+  options: { savedCriticalRoots?: boolean } = {}
+) {
+  const criteriaOk = hasThreeCriteria(state);
+  const weightsOk = hasWeights(state);
+  const rootsForCritical = state.selectedRoots.length > 0 ? state.selectedRoots : state.roots;
+  const minCritical = ceil20Percent(rootsForCritical.length);
+  const criticalOk = state.criticalRoots.length >= minCritical;
+
+  const criteriaLine = criteriaOk ? "OK criterios" : "FALTA criterios";
+  const weightsLine = weightsOk ? "OK pesos" : "FALTA pesos";
+  const criticalLine = criticalOk ? "OK causas criticas" : "FALTA causas criticas";
+
+  const savedPrefix = options.savedCriticalRoots
+    ? "Ya guarde las causas criticas que pude reconocer.\n\n"
+    : "";
+
+  if (!criteriaOk) {
+    return (
+      savedPrefix +
+      "Para cerrar Pareto necesito:\n" +
+      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
+      "Ahora faltan 3 criterios de priorizacion. Enviame criterios como: Metodo de trabajo, Impacto operativo, Facilidad de implementacion."
+    );
+  }
+
+  if (!weightsOk) {
+    const criteriaText = state.criteria
+      .map((criterion, index) => `${index + 1}. ${criterion.name}`)
+      .join("\n");
+
+    return (
+      savedPrefix +
+      "Para cerrar Pareto necesito:\n" +
+      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
+      "Ya tengo tus criterios. Faltan pesos de 1 a 10:\n" +
+      `${criteriaText}\n\n` +
+      "Puedes enviarlos como: los pesos son 7, 9 y 10."
+    );
+  }
+
+  if (!criticalOk) {
+    return (
+      savedPrefix +
+      "Para cerrar Pareto necesito:\n" +
+      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
+      "Califica tus causas raiz en tu matriz o Excel y enviame las causas criticas resultantes, por ejemplo:\n\n" +
+      "1. Falta de mantenimiento preventivo\n2. Ausencia de estandarizacion\n3. Capacitacion insuficiente"
+    );
+  }
+
+  return (
+    savedPrefix +
+    "Para cerrar Pareto necesito:\n" +
+    `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
+    "Ya tengo lo necesario. Confirma con \"si\" y cierro Pareto para avanzar."
+  );
+}
+
+function buildCauseProblemInsteadOfCriteriaMessage() {
+  return (
+    "Eso parece una lista de causas o problemas, no criterios de priorizacion.\n\n" +
+    "Para Pareto necesito criterios que sirvan para comparar esas causas. Puedes usar, por ejemplo: impacto, frecuencia, costo, facilidad de implementacion o tiempo perdido. Enviame tus 3 criterios."
+  );
+}
+
 function buildConfirmationWithoutPendingMessage(state: ParetoState) {
+  return buildParetoChecklistMessage(state);
+
   if (state.step === "excel_work" || state.step === "collect_critical") {
     return "Antes de confirmar, necesito que me pegues las causas criticas que te salieron en tu Excel o planilla. Con solo un 'ok' no tengo una propuesta nueva para consolidar.";
   }
@@ -1070,40 +1174,8 @@ function parseWeightsFromMessage(
   studentMessage: string,
   currentCriteria: ParetoState["criteria"]
 ): ParetoState["criteria"] | null {
-  const text = String(studentMessage ?? "").trim();
-  if (!text) return null;
-
-  const lines = text
-    .split(/\n|;/g)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) return null;
-
-  const parsed = currentCriteria.map((criterion) => ({ ...criterion }));
-  let updates = 0;
-
-  for (const criterion of parsed) {
-    const criterionKey = normalizeText(criterion.name);
-
-    const matchedLine = lines.find((line) => {
-      const normalizedLine = normalizeText(line);
-      return normalizedLine.includes(criterionKey);
-    });
-
-    if (!matchedLine) continue;
-
-    const match = matchedLine.match(/(\d{1,2})(?:\s*$|\b)/);
-    if (!match) continue;
-
-    const weight = Number(match[1]);
-    if (!Number.isFinite(weight) || weight < 1 || weight > 10) continue;
-
-    criterion.weight = weight;
-    updates += 1;
-  }
-
-  return updates > 0 ? parsed : null;
+  const parsed = applyWeightsToCriteria(currentCriteria, studentMessage);
+  return parsed === currentCriteria ? null : parsed;
 }
 
 function hasExplicitCriterionProposalSignal(studentMessage: string) {
@@ -1124,14 +1196,12 @@ function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
   const raw = String(studentMessage ?? "").trim();
   if (!raw) return false;
 
-  const paretoIntent = detectParetoIntent(raw);
-  if (paretoIntent !== "propose_criterion") return false;
-
   const normalized = normalizeText(raw);
   const compact = raw.replace(/[¿?]/g, "").trim();
   const wordCount = compact.split(/\s+/).filter(Boolean).length;
   const explicitProposal = hasExplicitCriterionProposalSignal(raw);
 
+  if (isClearCriticalRootsMessage(raw)) return false;
   if (isOkConfirm(raw)) return false;
   if (isAskingForCriticalRoots(raw)) return false;
   if (isAskingForCriteriaWeights(raw)) return false;
@@ -1155,7 +1225,7 @@ function shouldTreatMessageAsCriteriaProposal(studentMessage: string) {
     return false;
   }
 
-  return true;
+  return parseParetoCriterionEntries(raw).length > 0;
 }
 
 function cleanCriterionCandidateText(input: string) {
@@ -1304,6 +1374,20 @@ async function parseCriteriaFromMessage(input: {
   const existing = Array.isArray(input.currentCriteria)
     ? [...input.currentCriteria]
     : [];
+
+  const parsedEntries = parseParetoCriterionEntries(text);
+  if (parsedEntries.length > 0) {
+    const parsed = applyCriterionEntriesToCriteria(existing, parsedEntries, {
+      createId: () => crypto.randomUUID(),
+    });
+
+    const changed =
+      parsed.length !== existing.length ||
+      parsed.some((criterion, index) => criterion.weight !== existing[index]?.weight);
+
+    return changed ? parsed : null;
+  }
+
   const existingKeys = new Set(existing.map((c) => normalizeText(c.name)));
 
   let candidates: string[] = [];
@@ -1680,7 +1764,7 @@ export async function POST(req: NextRequest) {
       officialRoots
     );
 
-    const paretoState: ParetoState = {
+    let paretoState: ParetoState = {
       ...mergedParetoState,
       step: resolveParetoStepFromState(mergedParetoState),
     };
@@ -1718,7 +1802,68 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (conversationIntent.intent === "confirmation") {
+    let savedCriticalRootsThisTurn = false;
+    let completedCriteriaOrWeightsThisTurn = false;
+
+    if (conversationIntent.shouldMutateStage && !isParetoCloseConfirmation(studentMessage)) {
+      const parsedCriteriaFromTurn = await parseCriteriaFromMessage({
+        studentMessage,
+        currentCriteria: paretoState.criteria,
+        caseContext,
+        recentHistory,
+        selectedRoots: paretoState.selectedRoots,
+      });
+
+      if (parsedCriteriaFromTurn) {
+        completedCriteriaOrWeightsThisTurn = true;
+        paretoState = {
+          ...paretoState,
+          criteria: parsedCriteriaFromTurn,
+        };
+      }
+
+      const parsedWeightsFromTurn = parseWeightsFromMessage(
+        studentMessage,
+        paretoState.criteria
+      );
+
+      if (parsedWeightsFromTurn) {
+        completedCriteriaOrWeightsThisTurn = true;
+        paretoState = {
+          ...paretoState,
+          criteria: parsedWeightsFromTurn,
+        };
+      }
+
+      const parsedCriticalFromTurn = parseCriticalRootsFromMessage(studentMessage);
+      const hasCriticalDelivery = looksLikeCriticalRootsDelivery(
+        studentMessage,
+        parsedCriticalFromTurn
+      );
+
+      if (hasCriticalDelivery) {
+        const { matched } = matchAgainstSelectedRoots(parsedCriticalFromTurn, rootsForMatching);
+        const criticalRootsToStore = matched.length > 0 ? matched : parsedCriticalFromTurn;
+
+        if (criticalRootsToStore.length > 0) {
+          savedCriticalRootsThisTurn = true;
+          paretoState = {
+            ...paretoState,
+            criticalRoots: mergeParetoStringListMonotonic(
+              paretoState.criticalRoots,
+              criticalRootsToStore
+            ),
+          };
+        }
+      }
+
+      paretoState = {
+        ...paretoState,
+        step: resolveParetoStepFromState(paretoState),
+      };
+    }
+
+    if (conversationIntent.intent === "confirmation" || isParetoCloseConfirmation(studentMessage)) {
       const currentMinSelected = Number.isFinite(paretoState.minSelected)
         ? paretoState.minSelected
         : 10;
@@ -1815,6 +1960,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (
+      completedCriteriaOrWeightsThisTurn &&
+      hasWeights(paretoState) &&
+      paretoState.criticalRoots.length === 0
+    ) {
+      return assistantResponse(
+        "Listo. Ya quedaron definidos tus criterios y pesos.\n\n" +
+          "Ahora califica tus causas raiz en tu matriz o Excel, ordenalas por puntaje y vuelve con las causas criticas resultantes.",
+        { ...paretoState, step: "excel_work" },
+        "instruct_excel"
+      );
+    }
+
     const previousCriteriaBeforeParse = paretoState.criteria;
 
     const parsedCriteriaNames = await parseCriteriaFromMessage({
@@ -1858,6 +2016,17 @@ export async function POST(req: NextRequest) {
       : 15;
 
     if (!hasThreeCriteria(effectiveParetoState)) {
+      if (!savedCriticalRootsThisTurn && isLikelyParetoCauseOrProblemList(studentMessage)) {
+        return assistantResponse(
+          buildCauseProblemInsteadOfCriteriaMessage(),
+          {
+            ...effectiveParetoState,
+            step: "define_criteria",
+          },
+          "define_criteria"
+        );
+      }
+
       const teacherCriteriaReply = await buildTeacherCriteriaReply({
         studentMessage,
         paretoState: effectiveParetoState,
@@ -1866,19 +2035,19 @@ export async function POST(req: NextRequest) {
       });
 
       return assistantResponse(
-        teacherCriteriaReply ||
+        savedCriticalRootsThisTurn
+          ? buildParetoChecklistMessage(effectiveParetoState, { savedCriticalRoots: true })
+          : teacherCriteriaReply ||
           buildCriteriaGuidanceFallback({
             previousCriteria: previousCriteriaBeforeParse,
             currentState: {
               ...effectiveParetoState,
               step: "define_criteria",
-              criticalRoots: [],
             },
           }),
         {
           ...effectiveParetoState,
           step: "define_criteria",
-          criticalRoots: [],
         },
         "define_criteria"
       );
@@ -1893,12 +2062,13 @@ export async function POST(req: NextRequest) {
       });
 
       return assistantResponse(
-        teacherCriteriaReply ||
+        savedCriticalRootsThisTurn
+          ? buildParetoChecklistMessage(paretoStateWithParsedWeights, { savedCriticalRoots: true })
+          : teacherCriteriaReply ||
           buildMissingWeightsTeacherMessage(paretoStateWithParsedWeights, studentMessage),
         {
           ...paretoStateWithParsedWeights,
           step: "set_weights",
-          criticalRoots: [],
         },
         "set_weights"
       );
