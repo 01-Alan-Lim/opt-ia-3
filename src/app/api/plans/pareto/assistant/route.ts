@@ -207,10 +207,14 @@ function isParetoCloseConfirmation(msg: string) {
   const t = normalizeText(msg);
   return (
     isOkConfirm(msg) ||
+    t.includes("confirmo") ||
+    t.includes("confirmar") ||
     t.includes("siguiente etapa") ||
+    t.includes("pasemos") ||
     t.includes("pasar a la siguiente") ||
     t.includes("pasemos a la siguiente") ||
     t.includes("cerrar pareto") ||
+    t.includes("continuar") ||
     t.includes("continuar con objetivos")
   );
 }
@@ -1145,6 +1149,61 @@ function buildParetoChecklistMessage(
   );
 }
 
+function getParetoCloseMissingItems(state: ParetoState) {
+  const missing: string[] = [];
+  const selectedCount = state.selectedRoots.length;
+  const minSelected =
+    Number.isFinite(state.minSelected) && state.minSelected > 0 ? state.minSelected : 10;
+  const maxSelected =
+    Number.isFinite(state.maxSelected) && state.maxSelected >= minSelected
+      ? state.maxSelected
+      : 15;
+
+  if (selectedCount < minSelected || selectedCount > maxSelected) {
+    missing.push(`causas raiz seleccionadas entre ${minSelected} y ${maxSelected}`);
+  }
+
+  if (!hasThreeCriteria(state)) {
+    missing.push("3 criterios de priorizacion");
+  } else if (!hasWeights(state)) {
+    const missingWeights = state.criteria
+      .filter((criterion) => {
+        const weight = Number(criterion.weight);
+        return !Number.isFinite(weight) || weight < 1 || weight > 10;
+      })
+      .map((criterion) => criterion.name.trim())
+      .filter(Boolean);
+
+    missing.push(
+      missingWeights.length > 0
+        ? `pesos de ${missingWeights.join(", ")}`
+        : "pesos de 1 a 10"
+    );
+  }
+
+  const rootsForCritical = state.selectedRoots.length > 0 ? state.selectedRoots : state.roots;
+  const minCritical = ceil20Percent(rootsForCritical.length);
+  if (state.criticalRoots.length < minCritical) {
+    missing.push("causas criticas");
+  }
+
+  return missing;
+}
+
+function isParetoReadyToClose(state: ParetoState) {
+  return getParetoCloseMissingItems(state).length === 0;
+}
+
+function buildParetoCannotCloseMessage(state: ParetoState) {
+  const missing = getParetoCloseMissingItems(state);
+  const list =
+    missing.length > 0
+      ? missing.map((item) => `- ${item}`).join("\n")
+      : "- informacion pendiente";
+
+  return `Todavia no puedo cerrar Pareto. Falta:\n${list}\n\nEnviame eso para cerrar.`;
+}
+
 function buildCauseProblemInsteadOfCriteriaMessage() {
   return (
     "Eso parece una lista de causas o problemas, no criterios de priorizacion.\n\n" +
@@ -1871,6 +1930,14 @@ export async function POST(req: NextRequest) {
         ? Math.max(currentMinSelected, paretoState.maxSelected)
         : 15;
 
+      if (isParetoReadyToClose(paretoState)) {
+        return assistantResponse(
+          "Perfecto. Pareto queda cerrado con tus criterios, pesos y causas criticas registradas. Pasamos a la siguiente etapa.",
+          { ...paretoState, step: "done" },
+          "done"
+        );
+      }
+
       if (paretoState.step === "select_roots") {
         if (
           selectedRoots.length >= currentMinSelected &&
@@ -1927,7 +1994,7 @@ export async function POST(req: NextRequest) {
       }
 
       return assistantResponse(
-        buildConfirmationWithoutPendingMessage(paretoState),
+        buildParetoCannotCloseMessage(paretoState),
         { ...paretoState },
         "ask_clarify"
       );
