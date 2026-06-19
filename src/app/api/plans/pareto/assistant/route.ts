@@ -200,6 +200,7 @@ Mensaje:
 
 function isOkConfirm(msg: string) {
   const t = normalizeText(msg);
+  if (["perfecto", "esta bien", "asi esta bien"].includes(t)) return true;
   return ["ok", "okay", "dale", "listo", "de acuerdo", "si", "sí"].includes(t);
 }
 
@@ -215,7 +216,12 @@ function isParetoCloseConfirmation(msg: string) {
     t.includes("pasemos a la siguiente") ||
     t.includes("cerrar pareto") ||
     t.includes("continuar") ||
-    t.includes("continuar con objetivos")
+    t.includes("continuar con objetivos") ||
+    t.includes("que sigue") ||
+    t.includes("como sigo") ||
+    t.includes("como continuo") ||
+    t.includes("esta bien") ||
+    t.includes("asi esta bien")
   );
 }
 
@@ -1099,20 +1105,14 @@ function buildParetoChecklistMessage(
   const minCritical = ceil20Percent(rootsForCritical.length);
   const criticalOk = state.criticalRoots.length >= minCritical;
 
-  const criteriaLine = criteriaOk ? "OK criterios" : "FALTA criterios";
-  const weightsLine = weightsOk ? "OK pesos" : "FALTA pesos";
-  const criticalLine = criticalOk ? "OK causas criticas" : "FALTA causas criticas";
-
   const savedPrefix = options.savedCriticalRoots
-    ? "Ya guarde las causas criticas que pude reconocer.\n\n"
+    ? "Ya guarde las causas criticas que pude reconocer. "
     : "";
 
   if (!criteriaOk) {
     return (
       savedPrefix +
-      "Para cerrar Pareto necesito:\n" +
-      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
-      "Ahora faltan 3 criterios de priorizacion. Enviame criterios como: Metodo de trabajo, Impacto operativo, Facilidad de implementacion."
+      "Ahora falta definir 3 criterios de priorizacion para comparar tus causas raiz. Pueden ser criterios como Metodo de trabajo, Impacto operativo o Facilidad de implementacion."
     );
   }
 
@@ -1123,9 +1123,7 @@ function buildParetoChecklistMessage(
 
     return (
       savedPrefix +
-      "Para cerrar Pareto necesito:\n" +
-      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
-      "Ya tengo tus criterios. Faltan pesos de 1 a 10:\n" +
+      "Ya tenemos tus criterios. Ahora falta asignar un peso de 1 a 10 a cada uno para que puedas comparar tus causas raiz:\n" +
       `${criteriaText}\n\n` +
       "Puedes enviarlos como: los pesos son 7, 9 y 10."
     );
@@ -1134,18 +1132,14 @@ function buildParetoChecklistMessage(
   if (!criticalOk) {
     return (
       savedPrefix +
-      "Para cerrar Pareto necesito:\n" +
-      `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
-      "Califica tus causas raiz en tu matriz o Excel y enviame las causas criticas resultantes, por ejemplo:\n\n" +
+      "Ya tenemos criterios y pesos. Para cerrar Pareto solo falta que me compartas las causas criticas que resultaron de tu matriz o Excel, es decir, el grupo pequeno de causas que concentra el mayor impacto. Puedes enviarlas asi:\n\n" +
       "1. Falta de mantenimiento preventivo\n2. Ausencia de estandarizacion\n3. Capacitacion insuficiente"
     );
   }
 
   return (
     savedPrefix +
-    "Para cerrar Pareto necesito:\n" +
-    `${criteriaLine}\n${weightsLine}\n${criticalLine}\n\n` +
-    "Ya tengo lo necesario. Confirma con \"si\" y cierro Pareto para avanzar."
+    "Excelente. Ya tenemos tus criterios, sus pesos y las causas criticas priorizadas. Con esto Pareto queda listo para pasar a la siguiente etapa y trabajar las acciones de mejora sobre esas causas prioritarias."
   );
 }
 
@@ -1196,12 +1190,25 @@ function isParetoReadyToClose(state: ParetoState) {
 
 function buildParetoCannotCloseMessage(state: ParetoState) {
   const missing = getParetoCloseMissingItems(state);
-  const list =
-    missing.length > 0
-      ? missing.map((item) => `- ${item}`).join("\n")
-      : "- informacion pendiente";
 
-  return `Todavia no puedo cerrar Pareto. Falta:\n${list}\n\nEnviame eso para cerrar.`;
+  if (missing.length === 0) {
+    return "Excelente. Ya tienes completo Pareto: criterios, pesos y causas criticas. Podemos pasar a la siguiente etapa para trabajar sobre esas causas prioritarias.";
+  }
+
+  if (missing.includes("3 criterios de priorizacion")) {
+    return "Todavia no puedo cerrar Pareto porque faltan los 3 criterios de priorizacion. Necesito criterios de comparacion, por ejemplo impacto, frecuencia, costo, facilidad de implementacion o tiempo perdido.";
+  }
+
+  const missingWeights = missing.find((item) => item.startsWith("pesos"));
+  if (missingWeights) {
+    return `Ya tenemos los criterios. Ahora falta completar ${missingWeights}, usando valores de 1 a 10 para comparar tus causas raiz.`;
+  }
+
+  if (missing.includes("causas criticas")) {
+    return "Ya tengo tus criterios y pesos. Para cerrar Pareto solo falta que me compartas las causas criticas que resultaron de tu matriz, es decir, el pequeno grupo de causas que concentra el mayor impacto.";
+  }
+
+  return `Todavia no puedo cerrar Pareto porque falta ${missing.join(", ")}. Enviame ese dato y lo revisamos.`;
 }
 
 function buildCauseProblemInsteadOfCriteriaMessage() {
@@ -1213,20 +1220,6 @@ function buildCauseProblemInsteadOfCriteriaMessage() {
 
 function buildConfirmationWithoutPendingMessage(state: ParetoState) {
   return buildParetoChecklistMessage(state);
-
-  if (state.step === "excel_work" || state.step === "collect_critical") {
-    return "Antes de confirmar, necesito que me pegues las causas criticas que te salieron en tu Excel o planilla. Con solo un 'ok' no tengo una propuesta nueva para consolidar.";
-  }
-
-  if (state.step === "define_criteria") {
-    return "Antes de confirmar, necesito que propongas o ajustes los 3 criterios. Si quieres, dime uno y lo reviso contigo.";
-  }
-
-  if (state.step === "set_weights") {
-    return "Antes de confirmar, faltan pesos claros para los criterios. Escribelos de 1 a 10 para poder consolidarlos.";
-  }
-
-  return "Necesito una propuesta concreta antes de confirmar. Enviame la lista, criterio, peso o causa critica que quieres dejar registrada.";
 }
 
 function parseWeightsFromMessage(
@@ -1932,7 +1925,7 @@ export async function POST(req: NextRequest) {
 
       if (isParetoReadyToClose(paretoState)) {
         return assistantResponse(
-          "Perfecto. Pareto queda cerrado con tus criterios, pesos y causas criticas registradas. Pasamos a la siguiente etapa.",
+          "Perfecto. Con tus criterios, pesos y causas criticas ya podemos cerrar Pareto. Ahora pasamos a estructurar los objetivos de mejora sobre esas causas prioritarias.",
           { ...paretoState, step: "done" },
           "done"
         );
