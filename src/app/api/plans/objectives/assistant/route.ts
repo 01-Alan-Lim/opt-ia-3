@@ -80,6 +80,66 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
+function isObjectivesReadyForValidation(state: ObjectivesState) {
+  const generalOk = state.generalObjective.trim().length >= 15;
+  const specificOk = state.specificObjectives.filter((item) => item.trim().length > 0).length >= 3;
+  const linkedOk = state.linkedCriticalRoots.filter((item) => item.trim().length > 0).length >= 1;
+
+  return generalOk && specificOk && linkedOk;
+}
+
+function containsPrematureStageAdvanceClaim(message: string) {
+  const normalized = normalizeText(message);
+
+  const hasInventedUiDesyncExplanation =
+    normalized.includes("desfase") ||
+    normalized.includes("plataforma no actualizo") ||
+    normalized.includes("plataforma no ha actualizado") ||
+    normalized.includes("barra no actualizo") ||
+    normalized.includes("barra no ha actualizado") ||
+    normalized.includes("progreso visual") ||
+    normalized.includes("progreso no actualizo") ||
+    normalized.includes("progreso no ha actualizado") ||
+    normalized.includes("sistema todavia no refleja") ||
+    normalized.includes("sistema aun no refleja") ||
+    normalized.includes("todavia no refleja") ||
+    normalized.includes("aun no refleja");
+
+  if (hasInventedUiDesyncExplanation) return true;
+
+  const mentionsNextStage =
+    normalized.includes("etapa 7") ||
+    normalized.includes("siguiente etapa") ||
+    normalized.includes("plan de mejora");
+
+  if (!mentionsNextStage) return false;
+
+  return (
+    normalized.includes("oficial") ||
+    normalized.includes("ya estamos") ||
+    normalized.includes("ya pasamos") ||
+    normalized.includes("hemos pasado") ||
+    normalized.includes("dado por cerrada") ||
+    normalized.includes("cerrada la etapa 6") ||
+    normalized.includes("cerramos la etapa 6") ||
+    normalized.includes("finalizada la etapa 6") ||
+    normalized.includes("queda cerrada")
+  );
+}
+
+function buildSafeObjectivesAssistantMessage(state: ObjectivesState) {
+  if (isObjectivesReadyForValidation(state)) {
+    return (
+      "Tus objetivos ya se ven suficientemente estructurados para validarlos. " +
+      "Antes de afirmar que pasamos a Etapa 7, la validacion de Objetivos debe completarse correctamente en el sistema."
+    );
+  }
+
+  return (
+    "Seguimos en Etapa 6: Objetivos. Antes de hablar de Etapa 7, completemos y validemos los objetivos con sus causas criticas vinculadas."
+  );
+}
+
 
 
 function keepOnlyOfficialCriticalRoots(
@@ -571,6 +631,12 @@ INSTRUCCIONES PEDAGÓGICAS:
   - propón una primera versión tentativa útil
   - luego pídele que confirme o ajuste esa propuesta
 
+REGLA DE VERDAD DEL AVANCE:
+- Esta ruta NO valida ni cierra oficialmente la Etapa 6.
+- No digas que la Etapa 6 ya quedo cerrada, que ya estamos oficialmente en Etapa 7, ni que hay un desfase de la plataforma.
+- Si los objetivos se ven completos, di que estan listos para validarse.
+- Solo despues de que /api/plans/objectives/validate confirme la validacion, la app puede anunciar el paso a Etapa 7.
+
 DEVUELVE SOLO JSON CON ESTE FORMATO:
 {
   "assistantMessage": "string",
@@ -635,6 +701,11 @@ REGLAS DEL JSON:
       studentMessage,
     });
 
+    const rawAssistantMessage = String(json.assistantMessage).trim();
+    const safeAssistantMessage = containsPrematureStageAdvanceClaim(rawAssistantMessage)
+      ? buildSafeObjectivesAssistantMessage(resolvedNextState)
+      : rawAssistantMessage;
+
     const responseData: {
       assistantMessage: string;
       updates: {
@@ -643,7 +714,7 @@ REGLAS DEL JSON:
       };
     } = {
       assistantMessage: sanitizeStudentPlaceholder(
-        String(json.assistantMessage).trim(),
+        safeAssistantMessage,
         preferredFirstName
       ),
       updates: {
