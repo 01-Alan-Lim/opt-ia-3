@@ -732,7 +732,7 @@ export default function ChatPage() {
     return textOk;
   }
 
-  function normalizeClosureText(text: string) {
+function normalizeClosureText(text: string) {
   return String(text ?? "")
     .toLowerCase()
     .normalize("NFD")
@@ -740,6 +740,123 @@ export default function ChatPage() {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function containsAcademicPayload(text: string) {
+  const raw = String(text ?? "").trim();
+  const normalized = normalizeClosureText(raw);
+  if (!normalized) return false;
+
+  const academicSignals = [
+    "objetivo",
+    "objetivos",
+    "meta",
+    "metas",
+    "accion",
+    "acciones",
+    "plan",
+    "cronograma",
+    "kpi",
+    "indicador",
+    "indicadores",
+    "causa",
+    "causas",
+    "criterio",
+    "criterios",
+    "peso",
+    "pesos",
+    "reducir",
+    "mejorar",
+    "incrementar",
+    "disminuir",
+    "optimizar",
+    "estandarizar",
+  ];
+
+  if (academicSignals.some((signal) => normalized.includes(signal))) {
+    return true;
+  }
+
+  const colonIndex = raw.indexOf(":");
+  if (colonIndex >= 0 && raw.slice(colonIndex + 1).trim().length >= 24) {
+    return true;
+  }
+
+  if (/(^|\n|\s)(\d+[\).:-]\s+\S|[-*]\s+\S)/.test(raw)) {
+    return true;
+  }
+
+  const separatorCount = (raw.match(/[,;]/g) ?? []).length;
+  return raw.length >= 90 && separatorCount >= 2;
+}
+
+function looksLikeAdvisorProgressStatusQuestion(text: string) {
+  const normalized = normalizeClosureText(text);
+  if (!normalized) return false;
+  if (containsAcademicPayload(text)) return false;
+
+  const hasStageSignal =
+    normalized.includes("progreso") ||
+    normalized.includes("barra") ||
+    normalized.includes("etapa") ||
+    normalized.includes("avance") ||
+    normalized.includes("avanzo") ||
+    normalized.includes("avanzar");
+
+  if (!hasStageSignal) return false;
+
+  return (
+    normalized.includes("me aparece") ||
+    normalized.includes("no aparece") ||
+    normalized.includes("sigue en") ||
+    normalized.includes("sigue la") ||
+    normalized.includes("no cambio") ||
+    normalized.includes("no avanzo") ||
+    normalized.includes("no avance") ||
+    normalized.includes("en que etapa") ||
+    normalized.includes("que etapa") ||
+    normalized.includes("por que no") ||
+    normalized.includes("porque no") ||
+    normalized.includes("por que dice") ||
+    normalized.includes("ya pase") ||
+    normalized.includes("ya pasamos")
+  );
+}
+
+function looksLikeStage6NextStepQuestion(text: string) {
+  const normalized = normalizeClosureText(text);
+  if (!normalized) return false;
+  if (containsAcademicPayload(text)) return false;
+
+  return (
+    normalized.includes("que sigue") ||
+    normalized.includes("como continuo") ||
+    normalized.includes("como continuamos") ||
+    normalized.includes("como seguimos") ||
+    normalized.includes("ya esta bien") ||
+    normalized.includes("esta bien asi") ||
+    normalized.includes("asi esta bien") ||
+    normalized.includes("pasamos") ||
+    normalized.includes("pasemos") ||
+    normalized.includes("siguiente etapa") ||
+    normalized.includes("avancemos") ||
+    normalized.includes("continuemos")
+  );
+}
+
+function wantsStage6ValidationNow(text: string) {
+  const normalized = normalizeClosureText(text);
+
+  return (
+    looksLikeObjectivesClosureRequest(text) ||
+    isShortAffirmativeReply(text) ||
+    normalized.includes("validemos") ||
+    normalized.includes("valida") ||
+    normalized.includes("pasamos") ||
+    normalized.includes("pasemos") ||
+    normalized.includes("siguiente etapa") ||
+    normalized.includes("avancemos")
+  );
 }
 
 function looksLikeObjectivesClosureRequest(text: string) {
@@ -3443,55 +3560,77 @@ function looksLikeProgressClosureRequest(text: string) {
     };
   }
 
+  function isAdvisorRuntimeStageValue(value: unknown): value is Exclude<AdvisorRuntimeStage, null> {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 0 &&
+      value <= 10
+    );
+  }
+
+  function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  function applyResolvedAdvisorStage(
+    stage: Exclude<AdvisorRuntimeStage, null>,
+    stateJson: Record<string, unknown> | null
+  ) {
+    clearAdvisorStageStatesLocal();
+    setActiveAdvisorStage(stage);
+    syncResumeFlagsForAdvisorStage(stage);
+
+    if (stage === 10 && stateJson) {
+      setFinalDocState(stateJson as FinalDocState);
+    } else if (stage === 9 && stateJson) {
+      setProgressState(stateJson as ProgressState);
+    } else if (stage === 8 && stateJson) {
+      setPlanningState(stateJson as PlanningState);
+    } else if (stage === 7 && stateJson) {
+      setImprovementState(stateJson as ImprovementState);
+    } else if (stage === 6 && stateJson) {
+      setObjectivesState(stateJson as ObjectivesState);
+    } else if (stage === 5 && stateJson) {
+      const normalizedPareto = normalizeParetoStateClient(stateJson);
+      if (normalizedPareto) {
+        setParetoState(normalizedPareto);
+      }
+    } else if (stage === 4 && stateJson) {
+      setIshikawaState(stateJson as IshikawaState);
+    } else if (stage === 3 && stateJson) {
+      setBrainstormState(stateJson as BrainstormState);
+    } else if (stage === 2 && stateJson) {
+      const normalizedFoda = sanitizeFodaState(stateJson);
+      setFodaState(normalizedFoda);
+    } else if (stage === 1 && stateJson) {
+      const prodState = stateJson as {
+        prodStep?: number;
+        prodDraft?: ProductivityDraft;
+      };
+
+      const nextProdStep =
+        typeof prodState.prodStep === "number"
+          ? (prodState.prodStep as ProdStep)
+          : 1;
+
+      setProdStep(nextProdStep);
+      setProdDraft(prodState.prodDraft ?? {});
+    }
+
+    return stage;
+  }
+
     async function refreshActiveAdvisorStage() {
     const resolved = await getActiveAdvisorStage();
 
-    if (resolved.ok && resolved.payload?.found) {
-      const stage = resolved.payload.stage as AdvisorRuntimeStage;
-      const stateJson = (resolved.payload.stateJson ?? null) as Record<string, unknown> | null;
-
-      clearAdvisorStageStatesLocal();
-      setActiveAdvisorStage(stage);
-      syncResumeFlagsForAdvisorStage(stage);
-
-      if (stage === 10 && stateJson) {
-        setFinalDocState(stateJson as FinalDocState);
-      } else if (stage === 9 && stateJson) {
-        setProgressState(stateJson as ProgressState);
-      } else if (stage === 8 && stateJson) {
-        setPlanningState(stateJson as PlanningState);
-      } else if (stage === 7 && stateJson) {
-        setImprovementState(stateJson as ImprovementState);
-      } else if (stage === 6 && stateJson) {
-        setObjectivesState(stateJson as ObjectivesState);
-      } else if (stage === 5 && stateJson) {
-        const normalizedPareto = normalizeParetoStateClient(stateJson);
-        if (normalizedPareto) {
-          setParetoState(normalizedPareto);
-        }
-      } else if (stage === 4 && stateJson) {
-        setIshikawaState(stateJson as IshikawaState);
-      } else if (stage === 3 && stateJson) {
-        setBrainstormState(stateJson as BrainstormState);
-      } else if (stage === 2 && stateJson) {
-        const normalizedFoda = sanitizeFodaState(stateJson);
-        setFodaState(normalizedFoda);
-      } else if (stage === 1 && stateJson) {
-        const prodState = stateJson as {
-          prodStep?: number;
-          prodDraft?: ProductivityDraft;
-        };
-
-        const nextProdStep =
-          typeof prodState.prodStep === "number"
-            ? (prodState.prodStep as ProdStep)
-            : 1;
-
-        setProdStep(nextProdStep);
-        setProdDraft(prodState.prodDraft ?? {});
-      }
-
-      return stage;
+    if (resolved.ok && resolved.payload?.found && isAdvisorRuntimeStageValue(resolved.payload.stage)) {
+      return applyResolvedAdvisorStage(
+        resolved.payload.stage,
+        asRecordOrNull(resolved.payload.stateJson)
+      );
     }
 
     const errorCode =
@@ -3518,6 +3657,145 @@ function looksLikeProgressClosureRequest(text: string) {
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(0);
     return 0 as AdvisorRuntimeStage;
+  }
+
+  function getAdvisorStageLabel(stage: Exclude<AdvisorRuntimeStage, null>) {
+    switch (stage) {
+      case 0:
+        return "Etapa 0: Contexto del caso";
+      case 1:
+        return "Etapa 1: Productividad";
+      case 2:
+        return "Etapa 2: FODA";
+      case 3:
+        return "Etapa 3: Lluvia de ideas";
+      case 4:
+        return "Etapa 4: Ishikawa";
+      case 5:
+        return "Etapa 5: Pareto";
+      case 6:
+        return "Etapa 6: Objetivos";
+      case 7:
+        return "Etapa 7: Plan de Mejora";
+      case 8:
+        return "Etapa 8: Planificacion";
+      case 9:
+        return "Etapa 9: Reporte de avances";
+      case 10:
+        return "Etapa 10: Documento final";
+    }
+
+    return `Etapa ${stage}`;
+  }
+
+  function isObjectivesStateLike(value: unknown): value is ObjectivesState {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return (
+      typeof record.generalObjective === "string" &&
+      Array.isArray(record.specificObjectives) &&
+      Array.isArray(record.linkedCriticalRoots) &&
+      (record.step === "general" || record.step === "specific" || record.step === "review")
+    );
+  }
+
+  function getObjectivesMissingItems(st: ObjectivesState | null) {
+    if (!st) return ["estado guardado de Objetivos"];
+
+    const missing: string[] = [];
+    if ((st.generalObjective ?? "").trim().length < 15) {
+      missing.push("objetivo general claro");
+    }
+
+    const specificCount = Array.isArray(st.specificObjectives)
+      ? st.specificObjectives.filter((item) => (item ?? "").trim().length > 0).length
+      : 0;
+    if (specificCount < 3) {
+      missing.push(`3 objetivos especificos (${specificCount}/3)`);
+    }
+
+    const linkedCount = Array.isArray(st.linkedCriticalRoots)
+      ? st.linkedCriticalRoots.filter((item) => (item ?? "").trim().length > 0).length
+      : 0;
+    if (linkedCount < 1) {
+      missing.push("vinculo con al menos una causa critica priorizada");
+    }
+
+    return missing;
+  }
+
+  function buildStage6ProgressTruthMessage(st: ObjectivesState | null) {
+    const missing = getObjectivesMissingItems(st);
+
+    if (missing.length === 0) {
+      return (
+        "Actualmente el sistema todavia registra tu avance en **Etapa 6: Objetivos**. " +
+        "Tus objetivos ya se ven listos para validarse; solo despues de que esa validacion se complete correctamente " +
+        "el progreso debe pasar a **Etapa 7: Plan de Mejora**."
+      );
+    }
+
+    return (
+      "Actualmente el sistema todavia registra tu avance en **Etapa 6: Objetivos**. " +
+      "Para pasar a **Etapa 7** falta completar: " +
+      missing.join(", ") +
+      "."
+    );
+  }
+
+  async function syncActiveAdvisorStageFromBackend() {
+    const localStage = activeAdvisorStage;
+    const resolved = await getActiveAdvisorStage();
+
+    if (resolved.ok && resolved.payload?.found && isAdvisorRuntimeStageValue(resolved.payload.stage)) {
+      const stateJson = asRecordOrNull(resolved.payload.stateJson);
+      const stage = applyResolvedAdvisorStage(resolved.payload.stage, stateJson);
+
+      return {
+        ok: true as const,
+        stage,
+        stateJson,
+        changed: stage !== localStage,
+      };
+    }
+
+    const errorCode =
+      resolved.error && typeof resolved.error.code === "string"
+        ? resolved.error.code
+        : null;
+
+    return {
+      ok: false as const,
+      status: resolved.status,
+      errorCode,
+    };
+  }
+
+  async function handleAdvisorProgressStatusQuestion() {
+    const synced = await syncActiveAdvisorStageFromBackend();
+
+    if (!synced.ok) {
+      await appendAssistant(
+        "No puedo confirmar el estado actualizado en este momento. Evitare asumir que ya cambio de etapa; revisemos el ultimo paso pendiente."
+      );
+      return true;
+    }
+
+    if (synced.stage === 6) {
+      const syncedObjectivesState = isObjectivesStateLike(synced.stateJson)
+        ? synced.stateJson
+        : objectivesState;
+      await appendAssistant(buildStage6ProgressTruthMessage(syncedObjectivesState));
+      return true;
+    }
+
+    const label = getAdvisorStageLabel(synced.stage);
+    const message = synced.changed
+      ? `El avance registrado ya esta en **${label}**. Actualice el estado del asesor para que el progreso se alinee con tu etapa actual.`
+      : `El sistema registra tu avance en **${label}**. Esa es la etapa que debo usar como referencia.`;
+
+    await appendAssistant(message);
+    return true;
   }
 
 
@@ -5314,6 +5592,63 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok: true as const, assistantMessage, nextState: nextState as IshikawaState };
   }
 
+  async function handleStage6NextStepQuestion(args: {
+    text: string;
+    objectivesState: ObjectivesState;
+    effectiveChatId: string;
+    advisorChatId: string;
+  }) {
+    const { text, objectivesState: currentObjectivesState, effectiveChatId, advisorChatId } = args;
+
+    if (!isObjectivesReadyForValidation(currentObjectivesState)) {
+      await appendAssistant(buildStage6ProgressTruthMessage(currentObjectivesState));
+      return true;
+    }
+
+    if (!wantsStage6ValidationNow(text)) {
+      await appendAssistant(
+        "Tus objetivos ya se ven suficientemente estructurados para validarlos. " +
+          "Si quieres pasar a **Etapa 7**, dime que validemos o que pasemos; primero ejecutare la validacion y solo despues actualizare el progreso."
+      );
+      return true;
+    }
+
+    const validation = await validateObjectives(effectiveChatId);
+
+    if (!validation.ok) {
+      const msg = validation.payload?.message ?? "No se pudo cerrar Etapa 6 (Objetivos).";
+      await appendAssistant(`⚠️ ${msg}`);
+      return true;
+    }
+
+    if (!validation.payload?.valid) {
+      const msg =
+        validation.payload?.message ??
+        "La Etapa 6 aun no quedo validada. Revisa los ajustes pendientes antes de pasar a la Etapa 7.";
+
+      await appendAssistant(
+        "Todavia no puedo pasar a **Etapa 7**.\n\n" +
+          `⚠️ ${msg}\n\n` +
+          "Sigamos corrigiendo eso primero."
+      );
+      return true;
+    }
+
+    const moved = await applyBackendAdvisorAdvance({
+      fromStage: 6,
+      payload: validation.payload,
+      effectiveChatId: advisorChatId,
+    });
+
+    if (!moved) {
+      await appendAssistant(
+        "La Etapa 6 quedo validada, pero no pude preparar automaticamente la Etapa 7. Recarga el chat y retomamos."
+      );
+    }
+
+    return true;
+  }
+
   // -----------------------------
   // Enviar mensaje
   // -----------------------------
@@ -5994,6 +6329,11 @@ function looksLikeProgressClosureRequest(text: string) {
 
         await persistMessageDB({ chatId: advisorChatId, role: "user", content: text });
 
+        if (looksLikeAdvisorProgressStatusQuestion(text)) {
+          await handleAdvisorProgressStatusQuestion();
+          return;
+        }
+
         const ctx = await getPlanContextStatusCached();
         const lastReport = await getLastProductivityReportCached();
         if (ctx.ok && ctx.status !== "confirmed") {
@@ -6221,6 +6561,16 @@ function looksLikeProgressClosureRequest(text: string) {
         // ETAPA 6: Objetivos (en progreso)
         // ================================
         if (activeAdvisorStage === 6 && objectivesState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
+          if (looksLikeStage6NextStepQuestion(text)) {
+            await handleStage6NextStepQuestion({
+              text,
+              objectivesState,
+              effectiveChatId,
+              advisorChatId,
+            });
+            return;
+          }
+
           const assistant = await callObjectivesAssistant({
             studentMessage: text,
             objectivesState,
