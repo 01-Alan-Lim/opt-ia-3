@@ -9,6 +9,7 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 
 export const runtime = "nodejs";
 
@@ -73,7 +74,7 @@ function buildScore(state: any, roots: string[]) {
   // - base: 40 si hay problemática
   // - +15 si cumple min categorías
   // - +15 si cumple min main/sub (si llega aquí, cumple)
-  // - +30 proporcional por raíces (10 → 30 pts, 15+ → 30 pts)
+  // - +30 proporcional por raíces (MIN_ROOT_CAUSES o más → 30 pts)
   const problemText =
     typeof state?.problem === "string"
       ? state.problem
@@ -89,7 +90,7 @@ function buildScore(state: any, roots: string[]) {
     (hasProblem ? 40 : 0) +
     (cats.length >= minCats ? 15 : 0) +
     15 +
-    Math.min(30, Math.round((Math.min(roots.length, 15) / 10) * 30));
+    Math.round((Math.min(roots.length, MIN_ROOT_CAUSES) / MIN_ROOT_CAUSES) * 30);
 
   return {
     total: Math.min(100, Math.max(0, total)),
@@ -227,10 +228,8 @@ export async function POST(req: Request) {
     const minCats = typeof s?.minCategories === "number" ? s.minCategories : 3;
     const minMain = typeof s?.minMainCausesPerCategory === "number" ? s.minMainCausesPerCategory : 2;
     const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 1;
-    const minRoots =
-    typeof s?.minRootCandidates === "number"
-      ? s.minRootCandidates
-      : Math.max(1, minCats * minMain);
+    // El mínimo no se lee del estado: estados antiguos guardaron 6 y permitían cerrar con menos.
+    const minRoots = MIN_ROOT_CAUSES;
 
     const isPlaceholder = (x: any) => {
       const t = (x ?? "").toString().trim().toLowerCase();
@@ -298,7 +297,7 @@ export async function POST(req: Request) {
           valid: false,
           message:
             `Aún hay pocas causas raíz/candidatas (${roots.length}/${minRoots}). ` +
-            `Completa al menos ${minRoots} (recomendado 10–15) para pasar a Pareto.`,
+            `Completa al menos ${minRoots} para pasar a Pareto.`,
         })
       );
     }

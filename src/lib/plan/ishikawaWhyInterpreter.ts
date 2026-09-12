@@ -46,6 +46,15 @@ function hasAny(text: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) => text.includes(pattern));
 }
 
+// "no se controla/revisa/verifica" describen una causa, no desconocimiento.
+// Se retiran antes de evaluar la regla generica "no se" para que
+// "no se controla el stock" no se trate como pedido de ayuda.
+const NEGATED_PASSIVE_CAUSE_PATTERN = /\bno se (controla|revisa|verifica)n?\b/g;
+
+function stripNegatedPassiveCauses(text: string): string {
+  return text.replace(NEGATED_PASSIVE_CAUSE_PATTERN, " ").replace(/\s+/g, " ").trim();
+}
+
 function isQuestion(input: string, normalized: string): boolean {
   return input.includes("?") || input.includes("¿") || normalized.startsWith("por que ");
 }
@@ -170,7 +179,7 @@ export function classifyWhyIntent(input: string): IshikawaWhyIntent {
 
   if (asksExample) return "ask_example";
 
-  const asksGuidance = hasAny(t, [
+  const asksGuidance = hasAny(stripNegatedPassiveCauses(t), [
     "ayudame",
     "me ayudas",
     "puedes ayudarme",

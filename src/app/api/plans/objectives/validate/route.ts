@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         valid: false,
         message:
-          "Para validar Objetivos (Etapa 6) primero debes tener Pareto final validado con causas críticas (top 20%).",
+          "Para validar Objetivos (Etapa 6) primero debes tener Pareto final validado con su grupo crítico de causas.",
       });
     }
 
@@ -231,7 +231,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Debes vincular al menos 1 causa crítica (top 20%) del Pareto a tus objetivos.",
+        message: "Debes vincular al menos 1 causa del grupo crítico del Pareto a tus objetivos.",
       });
     }
 
@@ -242,7 +242,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Algunas causas vinculadas no coinciden con las causas críticas oficiales del Pareto (top 20%).",
+        message: "Algunas causas vinculadas no coinciden con las causas del grupo crítico oficial del Pareto.",
         detail: { invalidLinked },
       });
     }
@@ -272,7 +272,7 @@ Evalúa académicamente la Etapa 6 (Objetivos). Debes ser estricto: si hay ambig
 
 RÚBRICA (0-100):
 1) Coherencia y trazabilidad con causas críticas (40%):
-   - Los objetivos responden a causas críticas (Pareto top 20%) y no se contradicen.
+   - Los objetivos responden a las causas del grupo crítico (Pareto) y no se contradicen.
    - La vinculación causa→objetivo es razonable y defendible.
 2) Claridad y calidad de redacción (30%):
    - Objetivo general claro (qué se mejora, dónde y con qué intención).
@@ -296,7 +296,7 @@ Devuelve SOLO JSON:
   "mejoras": ["string", "string", "string"]
 }
 
-CAUSAS CRÍTICAS OFICIALES (Pareto top 20%):
+CAUSAS CRÍTICAS OFICIALES (grupo crítico del Pareto):
 ${JSON.stringify(criticalRootsOfficial, null, 2)}
 
 ENTREGA DEL ESTUDIANTE (Objetivos):

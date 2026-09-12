@@ -18,6 +18,8 @@ import {
   sanitizeBrainstormState,
   resolveBrainstormStep,
 } from "@/lib/plan/brainstormFlow";
+import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import { normalizeEffectPercent, normalizeJustification } from "@/lib/plan/paretoCut";
 
 
 type ChatMode = "general" | "plan_mejora";
@@ -462,11 +464,11 @@ export default function ChatPage() {
 
   type ParetoState = {
     roots: string[];              // viene de ishikawa_final.validate
-    selectedRoots: string[];      // 10-15 (para trabajar en Excel)
+    selectedRoots: string[];      // todas las raíces de Ishikawa (para trabajar en Excel)
     criteria: ParetoCriterion[];  // 0..3 durante la conversación; 3 al validar
-    criticalRoots: string[];      // top 20% (el estudiante vuelve del Excel y lo pega)
-    minSelected: number;          // 10
-    maxSelected: number;          // 15
+    criticalRoots: string[];      // grupo crítico (el estudiante vuelve del Excel y lo pega)
+    criticalEffectPercent: number | null; // % del problema que concentra el grupo crítico (Excel)
+    criticalJustification: string | null;
     step:
       | "select_roots"
       | "define_criteria"
@@ -533,23 +535,11 @@ export default function ChatPage() {
     const source = input as Record<string, unknown>;
 
     const roots = normalizeParetoStringArray(source.roots);
-    const minSelectedRaw = Number(source.minSelected);
-    const maxSelectedRaw = Number(source.maxSelected);
 
-    const minSelected =
-      Number.isFinite(minSelectedRaw) && minSelectedRaw > 0
-        ? Math.round(minSelectedRaw)
-        : 10;
-    const maxSelectedBase =
-      Number.isFinite(maxSelectedRaw) && maxSelectedRaw > 0
-        ? Math.round(maxSelectedRaw)
-        : 15;
-    const maxSelected = Math.max(minSelected, maxSelectedBase);
-
+    // Pareto no tiene mínimo ni tope propio (CLAUDE.md): recibe todas las raíces de Ishikawa.
+    // minSelected/maxSelected de estados antiguos se ignoran.
     const selectedRootsRaw = normalizeParetoStringArray(source.selectedRoots);
-    const selectedRoots = (
-      selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected)
-    ).slice(0, maxSelected);
+    const selectedRoots = selectedRootsRaw.length > 0 ? selectedRootsRaw : roots;
 
     const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
     const criticalRoots = normalizeParetoStringArray(source.criticalRoots).filter((item) =>
@@ -595,8 +585,8 @@ export default function ChatPage() {
       selectedRoots,
       criteria,
       criticalRoots,
-      minSelected,
-      maxSelected,
+      criticalEffectPercent: normalizeEffectPercent(source.criticalEffectPercent),
+      criticalJustification: normalizeJustification(source.criticalJustification),
       step,
     };
   }
@@ -1255,12 +1245,8 @@ function looksLikeProgressClosureRequest(text: string) {
     // ✅ NO exigimos todas las categorías: exigimos al menos minCats categorías completas
     if (completeCats.length < minCats) return false;
 
-    const minRoots =
-      typeof (st as any).minRootCandidates === "number"
-        ? (st as any).minRootCandidates
-        : Math.max(1, minCats * minMain);
-
-    return countRootCandidatesFromIshikawa(st) >= minRoots;
+    // El mínimo no se lee del estado: estados antiguos guardaron 6.
+    return countRootCandidatesFromIshikawa(st) >= MIN_ROOT_CAUSES;
 
   }
 
@@ -6036,7 +6022,7 @@ function looksLikeProgressClosureRequest(text: string) {
         minMainCausesPerCategory: 2,
         minSubCausesPerMain: 1,
         maxWhyDepth: 3,
-        minRootCandidates: 6,
+        minRootCandidates: MIN_ROOT_CAUSES,
         cursor: null,
       };
 
@@ -6063,15 +6049,15 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (fromStage === 4 && toStage === 5) {
       const roots = Array.isArray(payload?.roots) ? payload.roots : [];
-      const selected = roots.slice(0, 15);
 
+      // Pareto recibe todas las raíces de Ishikawa, sin recorte (CLAUDE.md).
       const initialPareto: ParetoState = {
         roots,
-        selectedRoots: selected,
+        selectedRoots: roots,
         criteria: [],
         criticalRoots: [],
-        minSelected: 10,
-        maxSelected: 15,
+        criticalEffectPercent: null,
+        criticalJustification: null,
         step: "select_roots",
       };
 
@@ -6083,14 +6069,14 @@ function looksLikeProgressClosureRequest(text: string) {
 
       await clearStageState(4, effectiveChatId);
 
-      const list = selected.map((r, i) => `${i + 1}) ${r}`).join("\n");
+      const list = roots.map((r, i) => `${i + 1}) ${r}`).join("\n");
 
       await appendAssistant(
         "✅ Listo, cerramos **Etapa 4 (Ishikawa)** y pasamos a **Etapa 5 (Pareto)**.\n\n" +
-          "Primero trabajaremos con tus **causas raíz** (10–15). Aquí tienes una lista inicial:\n\n" +
+          `Estas son las **${roots.length} causas raíz** de tu Ishikawa; con todas ellas harás tu matriz de Pareto en Excel:\n\n` +
           list +
           "\n\n" +
-          "👉 Si quieres **quitar/combinar** alguna, dime cuáles. Si está bien, responde **OK** y pasamos a definir los **3 criterios de priorización**."
+          "👉 Revísalas y responde **OK** para definir los **3 criterios de priorización**."
       );
 
       return true;
@@ -6703,7 +6689,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
             const msg =
               v.payload?.message ??
-              "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado el top 20%.";
+              "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado tu grupo crítico y el porcentaje del problema que concentra.";
             await appendAssistant(`⚠️ ${msg}`);
             return;
           }
@@ -6719,7 +6705,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
             const msg =
               v.payload?.message ??
-              "Pareto aún no quedó validado. Revisa tus causas críticas (top 20%) antes de pasar a Objetivos.";
+              "Pareto aún no quedó validado. Revisa tu grupo crítico antes de pasar a Objetivos.";
             await appendAssistant(`⚠️ ${msg}`);
             return;
           }

@@ -526,7 +526,7 @@ export async function POST(req: NextRequest) {
           ok: false,
           code: "BAD_REQUEST",
           message:
-            "Para iniciar Etapa 7 necesitas Pareto final validado con causas críticas (top 20%).",
+            "Para iniciar Etapa 7 necesitas Pareto final validado con su grupo crítico de causas.",
         },
         { status: 400 }
       );
@@ -716,7 +716,7 @@ REGLAS:
 - No des por cerrada la etapa solo porque ya exista un borrador coherente.
 - Si ya hay un plan suficientemente armado, primero resume lo construido, explica por qué esa mejora sí conviene y pide confirmación antes de cerrar Etapa 7.
 
-CAUSAS CRÍTICAS (Pareto Etapa 5, top 20%):
+CAUSAS CRÍTICAS (grupo crítico del Pareto, Etapa 5):
 ${JSON.stringify(criticalRoots, null, 2)}
 
 OBJETIVOS VALIDADOS (Etapa 6):

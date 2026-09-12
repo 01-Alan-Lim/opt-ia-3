@@ -14,6 +14,13 @@ export type CriticalRootsParse = {
   isDelivery: boolean;
 };
 
+export type ParetoEffectParse = {
+  percent: number | null;
+  justification: string | null;
+  // Número suelto < EFFECT_MIN_UNMARKED_PERCENT escrito sin "%": se pide aclaración.
+  ambiguousNumber: number | null;
+};
+
 type MergeOptions = {
   maxCriteria?: number;
   createId?: () => string;
@@ -562,6 +569,132 @@ export function mergeParetoStringListMonotonic(
   return out;
 }
 
+const EFFECT_NUMBER = String.raw`(\d{1,3}(?:[.,]\d+)?)`;
+const EFFECT_FILLER = String.raw`(?:(?:el|la|un|una|aprox|aproximadamente|alrededor|cerca|de|del|mas|casi|al|menos|o|total)\s+){0,4}`;
+const EFFECT_VERB_PATTERN = new RegExp(
+  String.raw`\b(?:concentra|concentran|acumula|acumulan|representa|representan|explica|explican|abarca|abarcan|cubre|cubren|suma|suman|equivale|equivalen)\s+` +
+    EFFECT_FILLER +
+    EFFECT_NUMBER +
+    String.raw`\s*(%|por\s*ciento)?`
+);
+const EFFECT_LEADING_PERCENT_PATTERN = new RegExp(
+  "^" + EFFECT_FILLER + EFFECT_NUMBER + String.raw`\s*(?:%|por\s*ciento)`
+);
+const EFFECT_BARE_NUMBER_PATTERN = new RegExp(
+  String.raw`^(?:(?:es|son|seria|serian|concentran?|acumulan?|representan?)\s+)?` +
+    EFFECT_FILLER +
+    EFFECT_NUMBER +
+    String.raw`\s*(%|por\s*ciento)?\s*(?:del\s+(?:problema|efecto|total))?\s*[.!]?$`
+);
+// Sin "%", un número menor a este suele ser otra cosa (cantidad de causas, un peso).
+const EFFECT_MIN_UNMARKED_PERCENT = 20;
+const EFFECT_CUT_PATTERN = /\b(\d{1,2}(?:[.,]\d+)?)\s*[/-]\s*(\d{1,3}(?:[.,]\d+)?)\b/;
+const JUSTIFICATION_CONNECTOR_PATTERN =
+  /\b(?:porque|ya\s+que|debido\s+a\s+que|dado\s+que)\b[\s,:]*([\s\S]+)$/i;
+const JUSTIFICATION_PART_PATTERN = /^(?:porque|ya que|debido a que|dado que)\b/;
+
+function readEffectPercent(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const value = Number(raw.replace(",", "."));
+  return Number.isFinite(value) && value > 0 && value <= 100 ? value : null;
+}
+
+// Notación de corte "25/75" o "20-80": suman ~100 y el segundo número es el efecto.
+function readCutEffectRaw(text: string): string | undefined {
+  const match = text.match(EFFECT_CUT_PATTERN);
+  if (!match) return undefined;
+
+  const causes = Number(match[1].replace(",", "."));
+  const effect = Number(match[2].replace(",", "."));
+  return Math.abs(causes + effect - 100) <= 1 ? match[2] : undefined;
+}
+
+// Segmentos del mensaje; la coma decimal ("72,5") no separa.
+function splitEffectSegments(text: string): string[] {
+  return text
+    .split(/\n|;|,(?!\d)/g)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function extractEffectJustification(original: string, raw: string): string | null {
+  let candidate = original.match(JUSTIFICATION_CONNECTOR_PATTERN)?.[1] ?? "";
+
+  if (!candidate && raw) {
+    const index = original.lastIndexOf(raw);
+    const rest = index >= 0 ? original.slice(index + raw.length) : "";
+    const afterPercent = rest
+      .replace(/^\s*(?:%|por\s*ciento)/i, "")
+      .replace(/^\s*(?:del|de\s+la)\s+(?:problema|efecto|total)\b/i, "");
+
+    // Solo cuenta si viene separada del porcentaje: "75%, son las más frecuentes".
+    candidate = afterPercent.match(/^\s*[.,;:\n-]+\s*([\s\S]+)$/)?.[1] ?? "";
+  }
+
+  const value = candidate.replace(/\s+/g, " ").trim();
+  return value.split(" ").length >= 2 ? value.slice(0, 600) : null;
+}
+
+// Frase del porcentaje del efecto o de su justificación (no es una causa crítica).
+export function isParetoEffectStatement(segment: string): boolean {
+  const text = normalizeParetoKey(segment);
+  if (!text) return false;
+
+  return (
+    JUSTIFICATION_PART_PATTERN.test(text) ||
+    EFFECT_VERB_PATTERN.test(text) ||
+    EFFECT_LEADING_PERCENT_PATTERN.test(text) ||
+    EFFECT_BARE_NUMBER_PATTERN.test(text) ||
+    readCutEffectRaw(text) !== undefined
+  );
+}
+
+// Porcentaje del problema que concentra el grupo crítico, declarado por el estudiante
+// desde su Excel. Determinista: si hay ambigüedad devuelve null y se vuelve a preguntar.
+export function parseParetoEffectFromMessage(message: string): ParetoEffectParse {
+  const original = String(message ?? "").trim();
+  const text = normalizeParetoKey(original);
+  if (!text) return { percent: null, justification: null, ambiguousNumber: null };
+
+  // 1) Verbo + número: "concentran el 75%", "acumulan aproximadamente 80".
+  const verbMatch = text.match(EFFECT_VERB_PATTERN);
+  let raw: string | undefined = verbMatch?.[1];
+  let hasPercentSign = Boolean(verbMatch?.[2]);
+
+  // 2) Notación de corte: "25/75", "20-80" (explícita aunque no lleve "%").
+  if (!raw) {
+    raw = readCutEffectRaw(text);
+    hasPercentSign = true;
+  }
+
+  // 3) Un único segmento que empieza con el porcentaje: "75%", "75%, porque...".
+  if (!raw) {
+    const leading = splitEffectSegments(text)
+      .map((segment) => segment.match(EFFECT_LEADING_PERCENT_PATTERN)?.[1])
+      .filter((value): value is string => Boolean(value));
+    if (leading.length === 1) raw = leading[0];
+  }
+
+  // 4) Respuesta que es solo un número: "75", "el 75", "aprox 80".
+  if (!raw) {
+    const bareMatch = text.match(EFFECT_BARE_NUMBER_PATTERN);
+    raw = bareMatch?.[1];
+    hasPercentSign = Boolean(bareMatch?.[2]);
+  }
+
+  const percent = readEffectPercent(raw);
+
+  if (percent !== null && !hasPercentSign && percent < EFFECT_MIN_UNMARKED_PERCENT) {
+    return { percent: null, justification: null, ambiguousNumber: percent };
+  }
+
+  return {
+    percent,
+    justification: percent === null ? null : extractEffectJustification(original, raw ?? ""),
+    ambiguousNumber: null,
+  };
+}
+
 function stripCriticalRootPrefix(input: string): string {
   return input
     .replace(/^[-*•\s]+/, "")
@@ -598,6 +731,9 @@ export function parseCriticalRootsFromParetoMessage(message: string): CriticalRo
   const seen = new Set<string>();
 
   for (const part of text.split(/\n|;|,/g)) {
+    // El porcentaje del efecto y su justificación no son causas críticas.
+    if (isParetoEffectStatement(part)) continue;
+
     const root = cleanCriticalRoot(part);
     const key = normalizeParetoKey(root);
     if (!key) continue;

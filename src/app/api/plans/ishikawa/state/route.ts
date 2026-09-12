@@ -6,6 +6,7 @@ import { ok, fail } from "@/lib/api/response";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
+import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
@@ -17,7 +18,7 @@ const RULES = {
   minMainCausesPerCategory: 2,
   minSubCausesPerMain: 1,
   maxWhyDepth: 3,
-  minRootCandidates: 3 * 2,
+  minRootCandidates: MIN_ROOT_CAUSES,
 };
 
 function applyStage4Rules(out: any) {

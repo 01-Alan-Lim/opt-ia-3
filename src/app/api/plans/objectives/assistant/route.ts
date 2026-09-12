@@ -542,7 +542,7 @@ export async function POST(req: NextRequest) {
           ok: false,
           code: "BAD_REQUEST",
           message:
-            "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con causas críticas (top 20%). " +
+            "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con su grupo crítico de causas. " +
             "Si ya terminaste Pareto pero abriste otro chat, primero hay que re-sincronizar el avance real.",
         },
         { status: 400 }
@@ -586,7 +586,7 @@ OBJETIVO DE LA ETAPA:
 - Formular mínimo 3 objetivos específicos.
 - Asegurar trazabilidad con las causas críticas del Pareto.
 - Mantener redacción clara, defendible y evaluable.
-- No asumir que el objetivo general debe atacar todas las causas críticas del top 20%.
+- No asumir que el objetivo general debe atacar todas las causas del grupo crítico.
 - Ayuda a elegir la causa o combinación de causas más viable y ejecutable según el caso.
 - Elegir un alcance viable: el objetivo general puede atacar 1 o 2 causas críticas prioritarias, no necesariamente todas.
 

@@ -14,6 +14,7 @@ import {
   classifyWhyIntent,
   sanitizeWhyCandidate,
 } from "@/lib/plan/ishikawaWhyInterpreter";
+import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 
 export const runtime = "nodejs";
 
@@ -967,12 +968,8 @@ function buildIshikawaMap(state: any) {
 
   const lines: string[] = [];
 
-  lines.push("📊 Progreso mínimo del Ishikawa");
-  lines.push(`Categorías completas: ${completeCats.length}/${minCats}`);
-  lines.push(`Causas raíz identificadas: ${roots.length}/10`);
-  lines.push("");
-
   // 🧾 LISTA DE CAUSAS RAÍZ (para que el estudiante vea cuáles son)
+  // Se cuentan sin duplicados, igual que ishikawa/validate.
   const uniqueRoots = Array.from(
     new Set(
       roots
@@ -980,6 +977,11 @@ function buildIshikawaMap(state: any) {
         .filter(Boolean)
     )
   );
+
+  lines.push("📊 Progreso mínimo del Ishikawa");
+  lines.push(`Categorías completas: ${completeCats.length}/${minCats}`);
+  lines.push(`Causas raíz identificadas: ${uniqueRoots.length}/${MIN_ROOT_CAUSES}`);
+  lines.push("");
 
   lines.push("🧾 Causas raíz identificadas (último porqué de cada rama)");
   if (uniqueRoots.length === 0) {
@@ -996,15 +998,15 @@ function buildIshikawaMap(state: any) {
   lines.push("");
 
 
-  if (completeCats.length >= minCats && roots.length >= 10) {
+  if (completeCats.length >= minCats && uniqueRoots.length >= MIN_ROOT_CAUSES) {
     lines.push("✅ Ya cumples los mínimos para pasar a Pareto.");
   } else {
     lines.push("🧩 Para poder pasar a Pareto te falta:");
     if (completeCats.length < minCats) {
       lines.push(`- Completar al menos ${minCats} categorías (con ${minMain} causas principales completas cada una)`);
     }
-    if (roots.length < 10) {
-      lines.push(`- Identificar ${10 - roots.length} causas raíz adicionales`);
+    if (uniqueRoots.length < MIN_ROOT_CAUSES) {
+      lines.push(`- Identificar ${MIN_ROOT_CAUSES - uniqueRoots.length} causas raíz adicionales`);
     }
   }
 

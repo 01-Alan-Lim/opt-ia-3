@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Para validar Etapa 7 primero debes tener Pareto final validado con causas críticas (top 20%).",
+        message: "Para validar Etapa 7 primero debes tener Pareto final validado con su grupo crítico de causas.",
       });
     }
 
