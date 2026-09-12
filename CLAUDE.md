@@ -64,10 +64,42 @@ Los documentos históricos NO son fuente final de verdad.
   accionable, no genérica.
 
 ## Estado del trabajo
-Rama de trabajo actual: fix/advisor-unblock-e4-e5
-Auditoría read-only completa (fases 1-3) realizada. Hallazgos principales:
-deadlock E4->E5, clasificación errónea de "no se", desincronización de
-estado en FODA, historial invertido en /api/chat.
+
+### Completado — Tanda 1 (commit 7e92d36, rama fix/advisor-unblock-e4-e5, sin push)
+- Ishikawa exige 10 causas raíz. Constante compartida en rootCauseLimits.ts.
+- Pareto sin mínimo ni tope propio: recibe todas las raíces de Ishikawa.
+- Corte 20% fijo reemplazado por evaluateParetoCut (paretoCut.ts):
+  minoría de causas (<50%), mayoría del efecto (>50%), desbalance >=20 puntos.
+  El estudiante declara el % desde su Excel.
+- select_roots es paso de revisión explícito: el estudiante lee sus causas
+  y responde OK.
+- "no se controla/revisa/verifica" ya no se clasifica como pedido de ayuda.
+
+### En curso — Tanda 2: profundidad variable de porqués en Ishikawa
+Problema: maxWhyDepth está fijo en 3 y al tercer porqué la rama se cierra
+automáticamente como "causa raíz suficientemente clara", sea accionable o no
+(ishikawa/assistant:2225-2239). Eso produce causas raíz pobres.
+Objetivo: tope de 5 porqués, con cierre por CALIDAD (la causa es accionable),
+no por contador. Si a los 5 sigue sin ser accionable, el sistema ayuda a
+reformular en vez de aceptar cualquier cosa.
+
+### Pendiente — Tanda 3: "¿qué me falta?" transversal
+Que en cualquiera de las 11 etapas el estudiante pueda preguntar qué le falta
+o por qué no puede avanzar, y reciba respuesta concreta. Las reglas de cierre
+de cada etapa ya son deterministas y están mapeadas.
+
+### Deuda técnica conocida (no tocada)
+- conversationIntent.ts clasifica mal "no se..." en Pareto; también atrapa
+  "no seleccione". Peor que el caso de Ishikawa.
+- Otras frases pasivas en Ishikawa siguen mal clasificadas: "no se capacita",
+  "no se registra", "no se supervisa", "no se cumple".
+- parseCriteriaFromMessage se llama dos veces por turno en pareto/assistant.
+- /api/chat envía los 12 PRIMEROS mensajes del historial, no los últimos
+  (chat/route.ts:630, order asc). El agente pierde contexto reciente.
+- foda/validate guarda el artefacto y avanza ANTES de evaluar; si el JSON del
+  LLM falla, responde 500 con la DB ya en E3 y el frontend en E2.
+- Sin middleware.ts: las páginas no tienen protección server-side.
+- Hasta 4-5 llamadas secuenciales a Gemini por turno.
 
 ## Pendientes de seguridad (NO tocar sin autorización)
 - 7 views BI son SECURITY DEFINER y anon tiene SELECT: fuga de datos de
