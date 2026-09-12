@@ -14,7 +14,20 @@ import {
   classifyWhyIntent,
   sanitizeWhyCandidate,
 } from "@/lib/plan/ishikawaWhyInterpreter";
-import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import {
+  MAX_WHY_DEPTH,
+  MIN_ROOT_CAUSES,
+  MIN_WHY_DEPTH,
+  REJECTED_WHY_ATTEMPTS_LIMIT,
+} from "@/lib/plan/rootCauseLimits";
+import {
+  decideWhyStep,
+  evaluateWhyDeterministic,
+  interpretLlmActionabilityResponse,
+  type LlmActionabilityVerdict,
+  type WhyBlockReason,
+  type WhyStepDecision,
+} from "@/lib/plan/whyQuality";
 
 export const runtime = "nodejs";
 
@@ -47,6 +60,9 @@ type IshikawaCategory = {
       text?: string;
       name?: string;
       whys?: IshikawaWhy[];
+      rejectedWhyAttempts?: number; // rechazos deterministas seguidos en esta subcausa
+      reformulateWhy?: boolean; // el próximo porqué aceptado reemplaza al último
+      whysReplace?: boolean; // solo en tránsito: la lista de porqués es autoritativa al guardar
     }>;
   }>;
 };
@@ -57,7 +73,7 @@ export type IshikawaState = {
   minCategories: number; // 4-5
   minMainCausesPerCategory: number; // 2-3
   minSubCausesPerMain: number; // 2-3
-  maxWhyDepth: number; // 3-5 (prefer 3)
+  maxWhyDepth: number; // tope de porqués (MAX_WHY_DEPTH)
   cursor?: { categoryId?: string; mainCauseId?: string; subCauseId?: string } | null;
   rootCauses?: string[]; // opcional: se puede rellenar al final
 };
@@ -1365,9 +1381,13 @@ async function buildGuidedWhyStep(args: {
   subCauseName: string;
   whys: string[];
   maxWhyDepth: number;
+  hint?: string;
 }) {
   const depth = args.whys.length;
   const lastWhy = depth > 0 ? args.whys[depth - 1] : null;
+  const hintBlock = args.hint
+    ? `\nOrientación que debes transmitir al estudiante con tus palabras (sin copiarla literal):\n${args.hint}\n`
+    : "";
 
   const prompt = `
 Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
@@ -1379,7 +1399,7 @@ Rama actual:
 - Categoría: ${args.categoryName}
 - Causa principal: ${args.mainCauseName}
 - Subcausa: ${args.subCauseName}
-- Why depth actual: ${depth}
+- Why depth actual: ${depth} (mínimo ${MIN_WHY_DEPTH} antes de cerrar, máximo ${args.maxWhyDepth})
 - Último porqué registrado: ${lastWhy ?? "(ninguno)"}
 
 Mensaje más reciente del estudiante:
@@ -1387,11 +1407,11 @@ Mensaje más reciente del estudiante:
 
 Whys registrados hasta ahora:
 ${JSON.stringify(args.whys, null, 2)}
-
+${hintBlock}
 Reglas:
 - Si el último porqué todavía no es una causa raíz accionable, pregunta un nuevo “¿por qué?” centrado en ESA rama.
 - Si el estudiante quedó a medio formular, ayúdalo a aterrizar la causa con 2 o 3 formulaciones plausibles y una sola pregunta final.
-- Si ya parece una causa raíz accionable/sistémica, puedes proponer cerrarla como raíz candidata.
+- No propongas cerrar la rama ni declares que ya es la causa raíz: ese cierre lo decide una revisión de calidad aparte.
 - No preguntes cosas genéricas que no tengan relación con la rama.
 - No uses frases rígidas tipo “esto puede estar contribuyendo...” si no aportan.
 - Responde breve, natural y docente.
@@ -1403,6 +1423,142 @@ Devuelve solo el mensaje final.
 
   const text = await llmText(prompt);
   return String(text ?? "").trim();
+}
+
+// Prompt de ayuda con hipótesis dentro de la rama activa: 2-3 formulaciones plausibles
+// para que el estudiante elija. Lo usan la ayuda pedida dentro de la rama y la escalada
+// tras REJECTED_WHY_ATTEMPTS_LIMIT rechazos deterministas seguidos.
+function buildBranchHypothesesPrompt(args: {
+  situation: "asked_help" | "repeated_rejections";
+  categoryName: string;
+  mainCauseName: string;
+  subCauseName: string;
+  lastWhy: string | null;
+  studentMessage: string;
+}) {
+  const situationLine =
+    args.situation === "asked_help"
+      ? "El estudiante está dentro de una rama activa y pidió ayuda para formular mejor la causa raíz."
+      : "El estudiante está dentro de una rama activa y lleva varios intentos sin lograr una causa concreta y accionable para el siguiente porqué.";
+
+  return `
+    Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
+
+    ${situationLine}
+    NO debes sacarlo del flujo ni preguntarle si quiere cambiar de categoría.
+    Debes ayudarlo a aterrizar la MISMA rama actual.
+
+    Contexto de la rama:
+    - Categoría: ${args.categoryName}
+    - Causa principal: ${args.mainCauseName}
+    - Subcausa: ${args.subCauseName}
+    - Último porqué registrado: ${args.lastWhy ?? "(ninguno)"}
+
+    Mensaje del estudiante:
+    "${args.studentMessage}"
+
+    Tu objetivo:
+    - interpretar qué quiso decir,
+    - ayudarle a aterrizar la causa,
+    - proponer 2 o 3 formulaciones plausibles y accionables si hace falta,
+    - mantener la conversación natural,
+    - terminar con una sola pregunta concreta para que el estudiante elija o precise.
+
+    Responde SOLO en texto, no JSON.
+    `;
+}
+
+// Juicio de accionabilidad de la cadena de porqués: una llamada, temperatura baja.
+// Cualquier fallo o respuesta inválida devuelve null, que nunca cierra la rama.
+async function judgeWhyActionability(args: {
+  problem: string;
+  categoryName: string;
+  mainCauseName: string;
+  subCauseName: string;
+  whys: string[];
+}): Promise<LlmActionabilityVerdict | null> {
+  const system = `
+Eres un docente de Ingeniería Industrial que revisa un análisis Ishikawa + porqués.
+Decide si el ÚLTIMO porqué de la cadena ya es una causa raíz accionable.
+
+"Accionable" significa que la empresa puede modificarlo con una acción de mejora: un
+proceso, un control, una capacitación o un responsable. NO es accionable si es un síntoma,
+si repite lo anterior o si depende de algo fuera del control de la empresa.
+
+Responde EXCLUSIVAMENTE con JSON válido, sin markdown ni texto adicional:
+{"actionable": boolean, "reason": string}
+
+"reason": en segunda persona, dirigido al estudiante, máximo 2 frases, concreto y sin
+jerga. Si no es accionable, dile qué le falta para serlo.
+`;
+
+  const prompt = `
+Problema: ${args.problem || "(sin problema registrado)"}
+Categoría: ${args.categoryName}
+Causa principal: ${args.mainCauseName}
+Subcausa: ${args.subCauseName}
+Cadena de porqués (del primero al último):
+${args.whys.map((why, index) => `${index + 1}. ${why}`).join("\n")}
+`;
+
+  try {
+    const raw = await geminiText({ system, prompt, temperature: 0.1 });
+    return interpretLlmActionabilityResponse(raw);
+  } catch {
+    return null;
+  }
+}
+
+const BLOCKED_WHY_INTROS: Record<WhyBlockReason, string> = {
+  tautology: "Te entiendo, pero con eso seguimos en el mismo punto de la rama.",
+  external_only:
+    "Tiene sentido que eso influya, aunque así la causa queda fuera de lo que la empresa puede cambiar.",
+  too_generic: "Vas por buen camino, pero así queda demasiado general para trabajarla.",
+};
+
+function buildBlockedWhyMessage(reason: WhyBlockReason, hint: string) {
+  return `${BLOCKED_WHY_INTROS[reason]}\n\n${hint}`;
+}
+
+// Debe contener "cerramos esta subcausa": el cliente la usa para no ofrecer el paso a
+// Pareto en el mismo turno que un cierre de rama (shouldOfferIshikawaStageClose).
+function buildBranchClosedMessage(args: {
+  rootCause: string;
+  mainCauseName: string;
+  reason: string;
+}) {
+  return (
+    `Bien, con esto cerramos esta subcausa: **"${args.rootCause}"** queda como causa raíz candidata dentro de **"${args.mainCauseName}"**.` +
+    (args.reason ? ` ${args.reason}` : "") +
+    `\n\nAhora podemos hacer una de estas tres cosas:\n` +
+    `• profundizar otra subcausa en esta misma causa principal\n` +
+    `• pasar a otra categoría del Ishikawa\n` +
+    `• o, si ya lo ves suficiente, revisar si estamos listos para pasar a Pareto\n\n` +
+    `Dime cómo quieres continuar y te guío.`
+  );
+}
+
+function buildReformulateWhyMessage(hint: string, lastWhy: string) {
+  return (
+    `${hint}\n\n` +
+    `Escribe de nuevo esta última causa con esa idea: **"${lastWhy}"**. La reemplazo por tu nueva versión; no agregamos otro porqué.`
+  );
+}
+
+// whysReplace solo vale para el guardado del turno en que se reemplazó un porqué. El
+// cliente puede reenviarlo en turnos siguientes, así que se descarta al entrar.
+function clearWhysReplaceFlags(state: IshikawaState): IshikawaState {
+  const cloned = safeClone(state);
+
+  for (const cat of cloned.categories ?? []) {
+    for (const mc of cat.mainCauses ?? []) {
+      for (const sc of mc.subCauses ?? []) {
+        delete sc.whysReplace;
+      }
+    }
+  }
+
+  return cloned;
 }
 
 type IshikawaIntent =
@@ -1785,7 +1941,7 @@ export async function POST(req: Request) {
     }
 
     const studentMessage = parsedBody.data.studentMessage;
-    const ishikawaState = parsedBody.data.ishikawaState;
+    const ishikawaState = clearWhysReplaceFlags(parsedBody.data.ishikawaState);
     const caseContext = parsedBody.data.caseContext ?? null;
     const stage1Summary = parsedBody.data.stage1Summary ?? null;
     const brainstormState = parsedBody.data.brainstormState ?? null;
@@ -2123,7 +2279,7 @@ export async function POST(req: Request) {
             mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
             subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
             whys: currentWhys,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+            maxWhyDepth: MAX_WHY_DEPTH,
           });
 
           return ok({
@@ -2155,7 +2311,7 @@ export async function POST(req: Request) {
             mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
             subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
             whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+            maxWhyDepth: MAX_WHY_DEPTH,
           });
 
           return ok({
@@ -2176,7 +2332,7 @@ export async function POST(req: Request) {
             mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
             subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
             whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+            maxWhyDepth: MAX_WHY_DEPTH,
           });
 
           return ok({
@@ -2198,7 +2354,7 @@ export async function POST(req: Request) {
             mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
             subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
             whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
+            maxWhyDepth: MAX_WHY_DEPTH,
           });
 
           return ok({
@@ -2210,54 +2366,163 @@ export async function POST(req: Request) {
           });
         }
 
-        const alreadyExists = whysArr.some(
-          (w) => w.toLowerCase() === answer.toLowerCase()
-        );
+        const catName = active.cat.name ?? "Sin categoría";
+        const mainName = active.mc.name ?? active.mc.text ?? "Sin causa principal";
+        const subName = sc.name ?? sc.text ?? "Sin subcausa";
+        const problemForBranch =
+          typeof nextState.problem === "string"
+            ? nextState.problem
+            : nextState.problem?.text ?? "";
 
-        if (!alreadyExists) {
-          whysArr.push(answer);
-        }
+        // Porqués guardados tal cual (sin sanitizeWhyList): base del reemplazo en modo
+        // reformulación, para no borrar porqués que ese filtro descarta.
+        const storedWhys = (sc.whys ?? [])
+          .map((w) => (typeof w === "string" ? w : w?.text ?? "").trim())
+          .filter(Boolean);
 
-        sc.whys = whysArr;
+        // Modo reformulación: el tope ya se alcanzó; la respuesta reemplaza al último
+        // porqué en vez de agregar uno nuevo.
+        const reformulating =
+          sc.reformulateWhy === true || storedWhys.length >= MAX_WHY_DEPTH;
 
-        const depth = whysArr.length;
-        const max = nextState.maxWhyDepth ?? 3;
+        // El candidato se evalúa ANTES de agregarlo (contrato de evaluateWhyDeterministic).
+        // Al reformular no se compara contra el porqué que se está reemplazando.
+        const deterministic = evaluateWhyDeterministic({
+          why: answer,
+          subCauseText: subName,
+          previousWhys: reformulating ? storedWhys.slice(0, -1) : whysArr,
+        });
 
-        // Si ya llegamos a profundidad, proponemos cerrar
-        if (depth >= max) {
-          // liberamos subCauseId para permitir otra subcausa en la misma causa principal
-          nextState.cursor = { categoryId: active.cat.id, mainCauseId: active.mc.id };
+        if (!deterministic.closable) {
+          // Rechazo: no se guarda el candidato ni sube la profundidad.
+          const attempts = (sc.rejectedWhyAttempts ?? 0) + 1;
+
+          if (attempts < REJECTED_WHY_ATTEMPTS_LIMIT) {
+            sc.rejectedWhyAttempts = attempts;
+
+            return ok({
+              assistantMessage: sanitizeStudentPlaceholder(
+                buildBlockedWhyMessage(deterministic.reason, deterministic.hint),
+                preferredFirstName
+              ),
+              updates: { nextState },
+            });
+          }
+
+          // Varios rechazos seguidos: se escala a ayuda con formulaciones para elegir.
+          sc.rejectedWhyAttempts = 0;
+
+          const helpWhys = reformulating ? storedWhys : whysArr;
+          let hypothesesHelp = "";
+          try {
+            hypothesesHelp = String(
+              (await llmText(
+                buildBranchHypothesesPrompt({
+                  situation: "repeated_rejections",
+                  categoryName: catName,
+                  mainCauseName: mainName,
+                  subCauseName: subName,
+                  lastWhy: helpWhys.length > 0 ? helpWhys[helpWhys.length - 1] : null,
+                  studentMessage: answerRaw,
+                })
+              )) ?? ""
+            ).trim();
+          } catch {
+            hypothesesHelp = "";
+          }
 
           return ok({
-            assistantMessage:
-              `Bien, con esto ya llegamos a una causa raíz suficientemente clara dentro de esta línea.\n\n` +
-              `Voy a dejar cerrada esta subcausa como candidata dentro de **"${active.mc.name ?? active.mc.text ?? "esta causa"}"**.\n\n` +
-              `Ahora podemos hacer una de estas tres cosas:\n` +
-              `• profundizar otra subcausa en esta misma causa principal\n` +
-              `• pasar a otra categoría del Ishikawa\n` +
-              `• o, si ya lo ves suficiente, revisar si estamos listos para pasar a Pareto\n\n` +
-              `Dime cómo quieres continuar y te guío.`,
+            assistantMessage: sanitizeStudentPlaceholder(
+              hypothesesHelp || buildBlockedWhyMessage(deterministic.reason, deterministic.hint),
+              preferredFirstName
+            ),
             updates: { nextState },
           });
         }
 
-        // Si aún no llegamos, seguimos profundizando con ayuda contextual real
-        const guidedMessage = await buildGuidedWhyStep({
-          studentMessage,
-          categoryName: active.cat.name ?? "Sin categoría",
-          mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-          subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-          whys: whysArr,
-          maxWhyDepth: max,
-        });
+        // El candidato pasa: se registra y se reinicia el contador de rechazos.
+        sc.rejectedWhyAttempts = 0;
 
-        return ok({
-          assistantMessage: sanitizeStudentPlaceholder(
-            guidedMessage || buildClarifyWhyMessage(studentMessage),
-            preferredFirstName
-          ),
-          updates: { nextState },
-        });
+        let branchWhys: string[];
+        if (reformulating) {
+          // Reemplaza al último porqué; la lista viaja como autoritativa al guardar.
+          branchWhys = [...storedWhys.slice(0, -1), answer];
+          sc.whysReplace = true;
+          sc.reformulateWhy = false;
+        } else {
+          const alreadyExists = whysArr.some(
+            (w) => w.toLowerCase() === answer.toLowerCase()
+          );
+          branchWhys = alreadyExists ? whysArr : [...whysArr, answer];
+        }
+
+        sc.whys = branchWhys;
+
+        const depth = branchWhys.length;
+        const lastBranchWhy = branchWhys[branchWhys.length - 1] ?? answer;
+
+        const respond = (message: string) =>
+          ok({
+            assistantMessage: sanitizeStudentPlaceholder(message, preferredFirstName),
+            updates: { nextState },
+          });
+
+        const askNext = async (hint?: string) => {
+          const guidedMessage = await buildGuidedWhyStep({
+            studentMessage,
+            categoryName: catName,
+            mainCauseName: mainName,
+            subCauseName: subName,
+            whys: branchWhys,
+            maxWhyDepth: MAX_WHY_DEPTH,
+            hint,
+          });
+
+          return respond(guidedMessage || buildClarifyWhyMessage(studentMessage));
+        };
+
+        let decision: WhyStepDecision = decideWhyStep({ depth, deterministic });
+        let closeReason = "";
+
+        // Una sola consulta de calidad por turno.
+        if (decision.action === "consult_quality") {
+          const verdict = await judgeWhyActionability({
+            problem: problemForBranch,
+            categoryName: catName,
+            mainCauseName: mainName,
+            subCauseName: subName,
+            whys: branchWhys,
+          });
+
+          decision = decideWhyStep({ depth, deterministic, llmVerdict: verdict });
+          closeReason = verdict?.actionable ? verdict.reason : "";
+        }
+
+        switch (decision.action) {
+          case "close":
+            // Se libera subCauseId para permitir otra subcausa en la misma causa principal.
+            nextState.cursor = { categoryId: active.cat.id, mainCauseId: active.mc.id };
+            sc.reformulateWhy = false;
+            return respond(
+              buildBranchClosedMessage({
+                rootCause: lastBranchWhy,
+                mainCauseName: mainName,
+                reason: closeReason,
+              })
+            );
+
+          case "reformulate":
+            // No se agrega un porqué más: el siguiente reemplaza al último.
+            sc.reformulateWhy = true;
+            return respond(buildReformulateWhyMessage(decision.hint, lastBranchWhy));
+
+          case "ask_next":
+            return askNext(decision.hint);
+
+          case "consult_quality":
+            // No ocurre tras obtener el veredicto; nunca se consulta dos veces por turno.
+            return askNext();
+        }
       }
 
       // Si no hay subcausa activa, NO hacemos fast-path (evitamos “inventar” flujo)
@@ -2303,31 +2568,14 @@ export async function POST(req: Request) {
         const currentWhys = sanitizeWhyList(active.sc.whys);
         const lastWhy = currentWhys.length > 0 ? currentWhys[currentWhys.length - 1] : null;
 
-        const guidancePrompt = `
-    Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
-
-    El estudiante está dentro de una rama activa y pidió ayuda para formular mejor la causa raíz.
-    NO debes sacarlo del flujo ni preguntarle si quiere cambiar de categoría.
-    Debes ayudarlo a aterrizar la MISMA rama actual.
-
-    Contexto de la rama:
-    - Categoría: ${catName}
-    - Causa principal: ${mainName}
-    - Subcausa: ${subName}
-    - Último porqué registrado: ${lastWhy ?? "(ninguno)"}
-
-    Mensaje del estudiante:
-    "${studentMessage}"
-
-    Tu objetivo:
-    - interpretar qué quiso decir,
-    - ayudarle a aterrizar la causa,
-    - proponer 2 o 3 formulaciones plausibles y accionables si hace falta,
-    - mantener la conversación natural,
-    - terminar con una sola pregunta concreta para que el estudiante elija o precise.
-
-    Responde SOLO en texto, no JSON.
-    `;
+        const guidancePrompt = buildBranchHypothesesPrompt({
+          situation: "asked_help",
+          categoryName: catName,
+          mainCauseName: mainName,
+          subCauseName: subName,
+          lastWhy,
+          studentMessage,
+        });
 
         const guidedHelp = await llmText(guidancePrompt);
 
@@ -2394,15 +2642,15 @@ export async function POST(req: Request) {
     - categories[]: categorías (ideal 6M: Hombre, Máquina, Método, Material, Medida, Entorno).
     - mainCauses[] dentro de cada categoría.
     - subCauses[] dentro de cada causa principal.
-    - whys[] dentro de cada subcausa para registrar los “por qué” (profundidad 3 preferida, máximo maxWhyDepth).
+    - whys[] dentro de cada subcausa para registrar los “por qué” (mínimo ${MIN_WHY_DEPTH} antes de cerrar una rama, máximo ${MAX_WHY_DEPTH}).
 
     Mínimos (orientativos, guía):
     - minCategories: ideal 5 (6M).
     - Por categoría: mínimo 3 causas principales. 
     - Si el estudiante tiene otra idea sólida, llegar a 4 (preguntar explícitamente si desea agregar una 4ta).
     - Por causa principal: 2-3 subcausas.
-    - Profundidad: 3 porqués como base; llegar a 4–5 SOLO si aún no es causa raíz accionable.
-    - Por subcausa: completar whys[] cuando el estudiante responda "por qué" (1 a maxWhyDepth).
+    - Profundidad: ${MIN_WHY_DEPTH} porqués como base; llegar a ${MIN_WHY_DEPTH + 1}–${MAX_WHY_DEPTH} SOLO si aún no es causa raíz accionable.
+    - Por subcausa: completar whys[] cuando el estudiante responda "por qué" (1 a ${MAX_WHY_DEPTH}).
 
     Tu tarea con cada mensaje del estudiante:
     1) Clasifica la intención del mensaje:
@@ -2416,7 +2664,7 @@ export async function POST(req: Request) {
     3) Si el estudiante no indica categoría, ubícala tú en la mejor categoría 6M.
     4) Si el mensaje es ambiguo, haz 1 pregunta corta y no cambies el estado.
     5) Si acabas de agregar una causa principal o subcausa nueva, actualiza cursor para apuntar a esa rama (categoryId + mainCauseId) y haz la primera pregunta de “¿por qué?”.
-    6) Antes de cambiar de rama, intenta llegar a al menos 3 respuestas en whys[] para una subcausa importante.
+    6) Antes de cambiar de rama, intenta llegar a al menos ${MIN_WHY_DEPTH} respuestas en whys[] para una subcausa importante.
     7) Para la categoría actual, completa mínimo minMainCausesPerCategory causas principales antes de proponer cambiar a otra categoría.
         Si el estudiante menciona una idea que cae en otra categoría mientras la categoría actual aún no llega al mínimo:
         Reconoce la idea (sin guardarla)
@@ -2424,8 +2672,8 @@ export async function POST(req: Request) {
         Pide una causa principal adicional para completar la categoría actual.
     8) Cierre de rama y continuación (OBLIGATORIO):
         - Considera “rama lista” cuando:
-        (a) una subcausa clave ya tiene 2–3 porqués y la última respuesta es accionable/sistémica, o
-        (b) ya se alcanzó maxWhyDepth.
+        (a) una subcausa clave ya tiene al menos ${MIN_WHY_DEPTH} porqués y la última respuesta es accionable/sistémica, o
+        (b) ya se alcanzó el tope de ${MAX_WHY_DEPTH} porqués.
         - Cuando una rama esté lista:
         1) Propón cerrar la causa raíz candidata (resumen 1 línea).
         2) Limpia el cursor para permitir ampliar el diagrama en la MISMA categoría:
@@ -2443,11 +2691,11 @@ export async function POST(req: Request) {
     1) NO lo guardes aún.
     2) Pregunta si desea: (1) seguir con la rama actual (recomendado) o (2) cambiar de rama.
     3) Solo si confirma (2), entonces actualiza cursor hacia la nueva categoría/causa y recién agrega esa nueva causa.
-    - Objetivo docente: profundiza con “¿por qué?” hasta registrar al menos 3 elementos en whys[] para una subcausa importante antes de cerrar la rama y permitir cambio.
+    - Objetivo docente: profundiza con “¿por qué?” hasta registrar al menos ${MIN_WHY_DEPTH} elementos en whys[] para una subcausa importante antes de cerrar la rama y permitir cambio.
     - En modo cursor activo, tu explicación debe referirse SOLO a la rama actual (no menciones otra categoría).
     - Cierre de causa raíz:
-    - NO es obligatorio llegar al 5º porqué.
-    - Si en 2–3 porqués ya aparece una causa sistémica accionable (ej: ausencia de estándar, mantenimiento inexistente, falta de método, falta de capacitación, falta de repuestos), propón cerrarla como "causa raíz candidata".
+    - NO es obligatorio llegar al ${MAX_WHY_DEPTH}º porqué.
+    - Si al llegar a ${MIN_WHY_DEPTH} porqués ya aparece una causa sistémica accionable (ej: ausencia de estándar, mantenimiento inexistente, falta de método, falta de capacitación, falta de repuestos), propón cerrarla como "causa raíz candidata".
     - Pregunta al estudiante si están de acuerdo en cerrarla y pasar a otra subcausa/rama.
 
 

@@ -6,7 +6,8 @@ import { ok, fail } from "@/lib/api/response";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
-import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import { dedupeWhys, mergeSubCause } from "@/lib/plan/whyList";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
@@ -17,7 +18,7 @@ const RULES = {
   minCategories: 3,
   minMainCausesPerCategory: 2,
   minSubCausesPerMain: 1,
-  maxWhyDepth: 3,
+  maxWhyDepth: MAX_WHY_DEPTH,
   minRootCandidates: MIN_ROOT_CAUSES,
 };
 
@@ -277,16 +278,10 @@ function mergeIshikawaState(base: any, incoming: any) {
         const baseSc = (baseMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? {};
         const incSc = (incMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? sc;
 
-        const mergedSc: any = { ...baseSc, ...incSc };
-
-        const baseWhys = Array.isArray(baseSc.whys) ? baseSc.whys : [];
-        const incWhys = Array.isArray(mergedSc.whys) ? mergedSc.whys : [];
-
-        // ✅ dedupe POR TEXTO/ID, no por referencia
-        // ✅ y cap duro para que no crezca infinito
-        mergedSc.whys = dedupeWhys(baseWhys, incWhys, Math.min(out.maxWhyDepth ?? 3, 7));
-
-        return mergedSc;
+        // ✅ whys deduplicados por texto y recortados a MAX_WHY_DEPTH. Sin flag se unen con
+        //    los guardados; con whysReplace (reemplazo explícito de un porqué) la lista
+        //    entrante es autoritativa. whysReplace no se persiste.
+        return mergeSubCause(baseSc, incSc, RULES.maxWhyDepth);
       });
 
       return mergedMc;
@@ -302,37 +297,6 @@ function mergeIshikawaState(base: any, incoming: any) {
   }
 
   return applyStage4Rules(out);
-}
-
-function whyToKey(w: any): string {
-  if (typeof w === "string") return w.trim();
-  if (w && typeof w === "object") {
-    const t = typeof w.text === "string" ? w.text.trim() : "";
-    const id = typeof w.id === "string" ? w.id.trim() : "";
-    return t || id || "";
-  }
-  return "";
-}
-
-function dedupeWhys(base: any[], incoming: any[], maxKeep: number) {
-  const seen = new Set<string>();
-  const out: string[] = [];
-
-  const push = (w: any) => {
-    const key = whyToKey(w);
-    if (!key) return;
-    const norm = key.toLowerCase();
-    if (seen.has(norm)) return;
-    seen.add(norm);
-    out.push(key);
-  };
-
-  for (const w of base ?? []) push(w);
-  for (const w of incoming ?? []) push(w);
-
-  // ✅ cap duro para que JAMÁS explote
-  if (out.length > maxKeep) return out.slice(0, maxKeep);
-  return out;
 }
 
 function compactIshikawaState(state: any) {
@@ -354,6 +318,7 @@ function compactIshikawaState(state: any) {
         // ✅ normalizar siempre a string[] y dedupe + cap
         const merged = dedupeWhys(sc2.whys ?? [], [], maxWhyDepth);
         sc2.whys = merged;
+        delete sc2.whysReplace;
 
         return sc2;
       });

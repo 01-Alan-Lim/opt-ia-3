@@ -18,7 +18,7 @@ import {
   sanitizeBrainstormState,
   resolveBrainstormStep,
 } from "@/lib/plan/brainstormFlow";
-import { MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 import { normalizeEffectPercent, normalizeJustification } from "@/lib/plan/paretoCut";
 
 
@@ -434,6 +434,9 @@ export default function ChatPage() {
     id: string;
     text: string;
     whys?: string[];
+    rejectedWhyAttempts?: number; // rechazos deterministas seguidos en esta subcausa
+    reformulateWhy?: boolean; // el próximo porqué aceptado reemplaza al último
+    whysReplace?: boolean; // solo en tránsito: la lista de porqués es autoritativa al guardar
   };
 
   type IshikawaMainCause = {
@@ -454,7 +457,7 @@ export default function ChatPage() {
     minCategories: number;              // 4-5
     minMainCausesPerCategory: number;   // 2-3
     minSubCausesPerMain: number;        // 2-3
-    maxWhyDepth: number;                // 3-5 (prefer 3)
+    maxWhyDepth: number;                // tope de porqués (MAX_WHY_DEPTH)
     minRootCandidates: number;
     cursor?: { categoryId?: string; mainCauseId?: string } | null;
     rootCauses?: string[];
@@ -1259,11 +1262,13 @@ function looksLikeProgressClosureRequest(text: string) {
       const msg = normalizeText(assistantMessage ?? "");
 
       // Si el mensaje todavía está cerrando una subcausa/rama,
-      // no debemos meter además el cierre de etapa.
+      // no debemos meter además el cierre de etapa. Frases de los mensajes reales de
+      // cierre de rama (ishikawa/assistant): cierre por calidad, cierre confirmado por el
+      // estudiante y la pregunta que pide el prompt general al cerrar una rama.
       if (
         msg.includes("cerramos esta subcausa") ||
-        msg.includes("agregamos otra subcausa dentro de") ||
-        msg.includes("ya llegamos a profundidad suficiente")
+        msg.includes("cerramos esa rama") ||
+        msg.includes("agregamos otra causa principal dentro de")
       ) {
         return false;
       }
@@ -6021,7 +6026,7 @@ function looksLikeProgressClosureRequest(text: string) {
         minCategories: 3,
         minMainCausesPerCategory: 2,
         minSubCausesPerMain: 1,
-        maxWhyDepth: 3,
+        maxWhyDepth: MAX_WHY_DEPTH,
         minRootCandidates: MIN_ROOT_CAUSES,
         cursor: null,
       };

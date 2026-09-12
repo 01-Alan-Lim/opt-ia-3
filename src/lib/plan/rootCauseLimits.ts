@@ -14,3 +14,8 @@ export const MIN_WHY_DEPTH = 3;
 
 // Tope duro: al llegar aquí sin causa accionable, se ayuda a reformular.
 export const MAX_WHY_DEPTH = 5;
+
+// Rechazos deterministas seguidos en la misma subcausa antes de escalar a ayuda
+// concreta (2-3 formulaciones para elegir). Evita que el estudiante quede en bucle
+// recibiendo la misma pista una y otra vez.
+export const REJECTED_WHY_ATTEMPTS_LIMIT = 3;
