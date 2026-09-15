@@ -1,5 +1,7 @@
 // src/lib/plan/ishikawaWhyInterpreter.ts
 
+import type { IshikawaWhy } from "./ishikawaTree";
+
 export type IshikawaWhyIntent =
   | "answer_why"
   | "ask_guidance"
@@ -32,6 +34,11 @@ function normalize(text: string): string {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// Texto normalizado para comparar intenciones: minúsculas, sin acentos ni signos.
+export function normalizeIntentText(text: string): string {
+  return normalize(text);
 }
 
 function mentionsCategory(text: string): boolean {
@@ -292,4 +299,165 @@ export function sanitizeWhyCandidate(input: string): string | null {
   if (cleaned.length < 6) return null;
 
   return cleaned;
+}
+
+// ---------------------------------------------------------------------------
+// Filtros de la respuesta a un "¿por qué?" (movidos sin cambios desde
+// ishikawa/assistant para probar la ruta rápida sin la ruta HTTP).
+// ---------------------------------------------------------------------------
+
+// Quita muletillas iniciales ("sí,", "creo que", "porque") y capitaliza.
+export function normalizeWhyText(input: string): string {
+  let t = (input ?? "").trim();
+
+  t = t.replace(/^(si|sí|pues|bueno|ok|mmm)\s*,?\s*/i, "");
+  t = t.replace(/^(creo que|pienso que|diría que)\s+/i, "");
+  t = t.replace(/^(porque|por que)\s+/i, "");
+
+  if (t.length) t = t[0].toUpperCase() + t.slice(1);
+
+  return t;
+}
+
+export function isActionableWhyText(input: string): boolean {
+  const t = (input ?? "").trim().toLowerCase();
+  if (!t) return false;
+
+  if (t.length < 8) return false;
+
+  if (
+    t.includes("ayudame") ||
+    t.includes("ayúdame") ||
+    t.includes("como encontramos") ||
+    t.includes("cómo encontramos") ||
+    t.includes("como hallar") ||
+    t.includes("cómo hallar") ||
+    t.includes("como encontrar") ||
+    t.includes("cómo encontrar") ||
+    t.includes("no se como") ||
+    t.includes("no sé cómo") ||
+    t.includes("cual seria") ||
+    t.includes("cuál sería")
+  ) {
+    return false;
+  }
+
+  if (
+    /^(seria|sería|podria|podría|quizas|quizás|tal vez|creo que|pienso que)\b/.test(t)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function sanitizeWhyList(whys: IshikawaWhy[] | undefined): string[] {
+  const rawList = Array.isArray(whys) ? whys : [];
+
+  const cleaned = rawList
+    .map((item) => (typeof item === "string" ? item : (item?.text ?? "")))
+    .map((item) => sanitizeWhyCandidate(String(item ?? "")))
+    .filter((item): item is string => Boolean(item))
+    .map((item) => normalizeWhyText(item))
+    .filter((item) => isActionableWhyText(item));
+
+  return Array.from(new Set(cleaned.map((item) => item.trim()))); // dedup exacto
+}
+
+export function isVagueWhyAnswer(input: string): boolean {
+  const t = (input ?? "").trim().toLowerCase();
+  if (!t) return true;
+
+  // Muy corto = probablemente poco útil
+  if (t.length < 10) return true;
+
+  // Respuestas típicas vagas
+  if (
+    /^(no se|no sé|ni idea|nose|quiz(a|á)|tal vez|creo|pienso|supongo|puede ser|por ahi|por ahí)/.test(t)
+  ) {
+    return true;
+  }
+
+  // Frases tipo "por mirar / a ojo" sin causa concreta
+  if (/(por mirar|a ojo|solo mirando|me parece|como que)/.test(t)) return true;
+
+  return false;
+}
+
+export function looksLikeSwitchCategoryIntent(text: string): boolean {
+  const t = normalizeIntentText(text);
+  if (!t) return false;
+
+  return (
+    t.includes("otra categoria") ||
+    t.includes("siguiente categoria") ||
+    t.includes("cambiar de categoria") ||
+    t.includes("cambiar de rama") ||
+    t.includes("pasemos a") ||
+    t.includes("vamos a") ||
+    t.includes("vamos con") ||
+    t.includes("sigamos con") ||
+    t.includes("continuemos con") ||
+    t.includes("continuemos ahora en") ||
+    t.includes("sigamos ahora en") ||
+    t.includes("ahora con") ||
+    t.includes("trabajemos") ||
+    t.includes("trabajar la categoria") ||
+    t.includes("trabajar categoria") ||
+    t.includes("podemos trabajar") ||
+    t.includes("quiero trabajar") ||
+    t.includes("quiero ir a") ||
+    t.includes("mejor pasemos a") ||
+    t === "material" ||
+    t === "metodo" ||
+    t === "maquina" ||
+    t === "hombre" ||
+    t === "mano de obra" ||
+    t === "medicion" ||
+    t === "medida" ||
+    t === "entorno"
+  );
+}
+
+export function isNonCausalMessage(input: string): boolean {
+  const t = normalizeIntentText(input);
+  if (!t) return true;
+
+  if (looksLikeSwitchCategoryIntent(t)) return true;
+
+  if (
+    t.includes("continuemos") ||
+    t.includes("sigamos") ||
+    t.includes("ahora trabajemos") ||
+    t.includes("ahora quiero trabajar") ||
+    t.includes("trabajar la categoria") ||
+    t.includes("trabajar categoria") ||
+    t.includes("podemos trabajar") ||
+    t.includes("quiero trabajar") ||
+    t.includes("quiero ir a") ||
+    t.includes("pasemos a") ||
+    t.includes("siguiente categoria") ||
+    t.includes("otra categoria") ||
+    t.includes("cambiemos de categoria") ||
+    t.includes("cambiemos de rama") ||
+    t.includes("cambiar de rama") ||
+    t.includes("rama actual")
+  ) {
+    return true;
+  }
+
+  if (
+    t.startsWith("que temas") ||
+    t.startsWith("en que estamos") ||
+    t.startsWith("que estamos viendo") ||
+    t.includes("que causa estamos") ||
+    t.includes("muestrame el avance") ||
+    t.includes("en que rama") ||
+    t.includes("donde ibamos") ||
+    t.includes("retomemos")
+  ) {
+    return true;
+  }
+
+  return false;
 }

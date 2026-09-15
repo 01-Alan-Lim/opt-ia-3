@@ -5,60 +5,27 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
-import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
-import { dedupeWhys, mergeSubCause } from "@/lib/plan/whyList";
+import { IshikawaStateInputSchema } from "@/lib/plan/ishikawaTree";
+import { compactIshikawaState, mergeClientIshikawaState } from "@/lib/plan/ishikawaStateMerge";
+import { loadStoredIshikawaState, writeIshikawaStateRow } from "@/lib/plan/ishikawaStateStore";
 
 const STAGE = 4;
 const DraftType = "ishikawa_wizard_state";
 const PERIOD_KEY = getPeriodKeyLaPaz();
 
-// ✅ Reglas globales nuevas (tu pantalla)
-const RULES = {
-  minCategories: 3,
-  minMainCausesPerCategory: 2,
-  minSubCausesPerMain: 1,
-  maxWhyDepth: MAX_WHY_DEPTH,
-  minRootCandidates: MIN_ROOT_CAUSES,
-};
-
-function applyStage4Rules(out: any) {
-  if (!out || typeof out !== "object") return out;
-  out.minCategories = RULES.minCategories;
-  out.minRootCandidates = RULES.minRootCandidates;
-  out.minMainCausesPerCategory = RULES.minMainCausesPerCategory;
-  out.minSubCausesPerMain = RULES.minSubCausesPerMain;
-  out.maxWhyDepth = RULES.maxWhyDepth;
-  return out;
-}
+// Reglas globales de E4, fusión y compactación del estado: src/lib/plan/ishikawaStateMerge.ts
 
 const BodySchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
-  state: z.any(),
+  state: IshikawaStateInputSchema,
 });
 
 const QuerySchema = z.object({
   // chatId es opcional: si no coincide (por ejemplo, nuevo chat), retomamos el último estado del periodo.
   chatId: z.string().uuid().optional(),
 });
-
-async function assertChatOwner(userId: string, chatId: string) {
-  const { data: chatRow, error: chatErr } = await supabaseServer
-    .from("chats")
-    .select("id, client_id")
-    .eq("id", chatId)
-    .single();
-
-  if (chatErr || !chatRow) {
-    return { ok: false as const, status: 404, message: "Chat no encontrado." };
-  }
-
-  if (chatRow.client_id !== userId) {
-    return { ok: false as const, status: 403, message: "No tienes acceso a este chat." };
-  }
-
-  return { ok: true as const };
-}
 
 
 
@@ -234,110 +201,6 @@ export async function GET(req: NextRequest) {
 }
 
 
-function mergeById<T extends { id: string }>(base: T[] = [], incoming: T[] = []): T[] {
-  const map = new Map<string, T>();
-  for (const b of base) map.set(b.id, b);
-
-  for (const inc of incoming) {
-    const prev = map.get(inc.id);
-    map.set(inc.id, prev ? ({ ...prev, ...inc } as T) : inc);
-  }
-
-  return Array.from(map.values());
-}
-
-function mergeIshikawaState(base: any, incoming: any) {
-  if (!base) return incoming;
-  if (!incoming) return base;
-
-  const out: any = { ...base, ...incoming };
-  applyStage4Rules(out);
-
-  // 1) NO permitir que el problema se pierda si incoming no lo trae
-  const incomingProblemMissing =
-    incoming.problem == null ||
-    incoming.problem === "" ||
-    (typeof incoming.problem === "object" && !incoming.problem?.text);
-
-  if (incomingProblemMissing) out.problem = base.problem;
-
-  // 2) merge categories -> mainCauses -> subCauses y preservar whys
-  out.categories = mergeById(base.categories ?? [], incoming.categories ?? []).map((cat: any) => {
-    const baseCat = (base.categories ?? []).find((c: any) => c.id === cat.id) ?? {};
-    const incCat = (incoming.categories ?? []).find((c: any) => c.id === cat.id) ?? cat;
-
-    const mergedCat: any = { ...baseCat, ...incCat };
-
-    mergedCat.mainCauses = mergeById(baseCat.mainCauses ?? [], incCat.mainCauses ?? []).map((mc: any) => {
-      const baseMc = (baseCat.mainCauses ?? []).find((m: any) => m.id === mc.id) ?? {};
-      const incMc = (incCat.mainCauses ?? []).find((m: any) => m.id === mc.id) ?? mc;
-
-      const mergedMc: any = { ...baseMc, ...incMc };
-
-      mergedMc.subCauses = mergeById(baseMc.subCauses ?? [], incMc.subCauses ?? []).map((sc: any) => {
-        const baseSc = (baseMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? {};
-        const incSc = (incMc.subCauses ?? []).find((s: any) => s.id === sc.id) ?? sc;
-
-        // ✅ whys deduplicados por texto y recortados a MAX_WHY_DEPTH. Sin flag se unen con
-        //    los guardados; con whysReplace (reemplazo explícito de un porqué) la lista
-        //    entrante es autoritativa. whysReplace no se persiste.
-        return mergeSubCause(baseSc, incSc, RULES.maxWhyDepth);
-      });
-
-      return mergedMc;
-    });
-
-    return mergedCat;
-  });
-
-  // ✅ Normalizar problema a { text } si viene como string
-  if (typeof out.problem === "string") {
-    const t = out.problem.trim();
-    out.problem = t ? { text: t } : out.problem;
-  }
-
-  return applyStage4Rules(out);
-}
-
-function compactIshikawaState(state: any) {
-  if (!state || typeof state !== "object") return state;
-
-  const maxWhyDepth = RULES.maxWhyDepth;
-
-  const out = { ...state };
-
-  out.categories = (out.categories ?? []).map((cat: any) => {
-    const cat2 = { ...cat };
-
-    cat2.mainCauses = (cat2.mainCauses ?? []).map((mc: any) => {
-      const mc2 = { ...mc };
-
-      mc2.subCauses = (mc2.subCauses ?? []).map((sc: any) => {
-        const sc2 = { ...sc };
-
-        // ✅ normalizar siempre a string[] y dedupe + cap
-        const merged = dedupeWhys(sc2.whys ?? [], [], maxWhyDepth);
-        sc2.whys = merged;
-        delete sc2.whysReplace;
-
-        return sc2;
-      });
-
-      return mc2;
-    });
-
-    return cat2;
-  });
-
-  // ✅ normalizar problema
-  if (typeof out.problem === "string") {
-    const t = out.problem.trim();
-    out.problem = t ? { text: t } : out.problem;
-  }
-
-  applyStage4Rules(out);
-  return out;
-}
 
 
 export async function POST(req: NextRequest) {
@@ -377,36 +240,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const existing = await supabaseServer
-      .from("plan_stage_states")
-      .select("state_json")
-      .eq("user_id", user.userId)
-      .eq("chat_id", chatId)
-      .eq("stage", STAGE)
-      .maybeSingle();
+    const stored = await loadStoredIshikawaState(user.userId, chatId);
 
-    if (existing.error) {
-      console.error("[plans] ishikawa/state: lectura previa", existing.error);
+    if (!stored.ok) {
+      console.error("[plans] ishikawa/state: lectura previa", stored.error);
       return NextResponse.json(fail("BAD_REQUEST", "No se pudo leer el estado de Ishikawa."), { status: 400 });
     }
 
-    const mergedStateRaw = mergeIshikawaState(existing.data?.state_json ?? null, state);
-    const mergedState = compactIshikawaState(mergedStateRaw);
+    // closure, rejectedWhyAttempts, reformulateWhy y el registro de raíces son de autoridad
+    // del servidor (los escribe ishikawa/assistant): los del cliente se descartan y se
+    // conservan los almacenados, de la fila de este chat o, si todavía no existe, de la
+    // última fila de E4 del usuario.
+    const mergedState = compactIshikawaState(
+      mergeClientIshikawaState(stored.value.exact, state, stored.value.serverSource)
+    );
 
-    const { error } = await supabaseServer
-      .from("plan_stage_states")
-      .upsert(
-        {
-          user_id: user.userId,
-          chat_id: chatId,
-          stage: STAGE,
-          state_json: mergedState,
-        },
-        { onConflict: "user_id,chat_id,stage" }
-      );
+    const saved = await writeIshikawaStateRow(user.userId, chatId, mergedState);
 
-    if (error) {
-      console.error("[plans] ishikawa/state: guardado de estado", error);
+    if (!saved.ok) {
+      console.error("[plans] ishikawa/state: guardado de estado", saved.error);
       return NextResponse.json(fail("BAD_REQUEST", "No se pudo guardar el estado de Ishikawa."), { status: 400 });
     }
 

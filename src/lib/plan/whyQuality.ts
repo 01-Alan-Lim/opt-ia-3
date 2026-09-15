@@ -243,6 +243,31 @@ function isTautology(whyTokens: readonly string[], referenceTokens: readonly str
   return union > 0 && shared / union >= TAUTOLOGY_JACCARD_THRESHOLD;
 }
 
+// Parecido entre dos causas raíz de ramas distintas (registro de E4). Reutiliza la
+// tokenización de las tautologías con un umbral más bajo. Dentro de una rama, 0,8 detecta
+// "casi las mismas palabras"; entre ramas, la misma causa suele escribirse con otro verbo de
+// ausencia ("falta", "no hay", "no existe": "hay" es palabra vacía, los otros no) y eso baja
+// el índice de Jaccard aunque la causa sea la misma. Ejemplo: "No hay un procedimiento para
+// priorizar compras de equipos" y "Falta un procedimiento para priorizar las compras de
+// equipos" comparten 4 de 6 términos (0,67). Con 0,5 entran esos pares y quedan fuera las
+// causas que solo comparten un sustantivo ("Nadie revisa las necesidades de equipos de
+// caja" frente a la primera: 1 de 9, 0,11). Si una causa está contenida en la otra (con al
+// menos MIN_SIGNIFICANT_TOKENS términos) cuenta como parecido máximo. Es solo un prefiltro:
+// después decide la IA y, al final, el estudiante.
+export const ROOT_SIMILARITY_JACCARD_THRESHOLD = 0.5;
+
+export function rootTextSimilarity(a: string, b: string): number {
+  const tokensA = new Set(significantTokens(a));
+  const tokensB = new Set(significantTokens(b));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+
+  const shared = [...tokensA].filter((token) => tokensB.has(token)).length;
+  const smaller = Math.min(tokensA.size, tokensB.size);
+  if (smaller >= MIN_SIGNIFICANT_TOKENS && shared === smaller) return 1;
+
+  return shared / new Set([...tokensA, ...tokensB]).size;
+}
+
 function isTooGeneric(tokens: readonly string[]): boolean {
   if (tokens.length < MIN_SIGNIFICANT_TOKENS) return true;
 
@@ -367,7 +392,8 @@ const LlmActionabilitySchema = z.object({
   reason: z.string(),
 });
 
-function parseJsonLoose(raw: string): unknown {
+// JSON de una respuesta de LLM: tolera cercos de markdown y texto alrededor del objeto.
+export function parseJsonLoose(raw: string): unknown {
   const cleaned = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, "")

@@ -19,6 +19,15 @@ import {
   resolveBrainstormStep,
 } from "@/lib/plan/brainstormFlow";
 import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
+import {
+  NO_TURN_UI,
+  parseIshikawaTurnUi,
+  type BranchClosure,
+  type IshikawaTurnUi,
+  type PendingRootMatch,
+  type RootCauseEntry,
+} from "@/lib/plan/ishikawaTree";
+import { deriveRootCauses } from "@/lib/plan/ishikawaRoots";
 import { normalizeEffectPercent, normalizeJustification } from "@/lib/plan/paretoCut";
 
 
@@ -437,6 +446,7 @@ export default function ChatPage() {
     rejectedWhyAttempts?: number; // rechazos deterministas seguidos en esta subcausa
     reformulateWhy?: boolean; // el próximo porqué aceptado reemplaza al último
     whysReplace?: boolean; // solo en tránsito: la lista de porqués es autoritativa al guardar
+    closure?: BranchClosure; // cierre revisado de la rama; solo lo escribe el servidor
   };
 
   type IshikawaMainCause = {
@@ -460,7 +470,8 @@ export default function ChatPage() {
     maxWhyDepth: number;                // tope de porqués (MAX_WHY_DEPTH)
     minRootCandidates: number;
     cursor?: { categoryId?: string; mainCauseId?: string } | null;
-    rootCauses?: string[];
+    rootCauses?: RootCauseEntry[];                // registro de causas raíz (lo escribe el servidor)
+    pendingRootMatch?: PendingRootMatch | null;   // pregunta abierta sobre una raíz repetida
   };
 
   type ParetoCriterion = { id: string; name: string; weight?: number };
@@ -1148,51 +1159,12 @@ function looksLikeProgressClosureRequest(text: string) {
     return generalOk && specificOk && linkedOk;
   }
 
-  function countRootCandidatesFromIshikawa(st: IshikawaState | null) {
-    if (!st) return 0;
-
-    const isPlaceholder = (x: any) => {
-      const t = (x ?? "").toString().trim().toLowerCase();
-      return !t || t === "causa" || t === "subcausa";
-    };
-
-    const normalizeWhys = (sc: any) => {
-      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
-      return whys
-        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-        .map((t: any) => (t ?? "").toString().trim())
-        .filter(Boolean);
-    };
-
-    const cats = Array.isArray(st.categories) ? st.categories : [];
-    const roots: string[] = [];
-
-    for (const c of cats) {
-      const mains = Array.isArray((c as any)?.mainCauses) ? (c as any).mainCauses : [];
-      for (const m of mains) {
-        const subs = Array.isArray((m as any)?.subCauses) ? (m as any).subCauses : [];
-        for (const s of subs) {
-          const whys = normalizeWhys(s);
-
-          // raíz = último porqué si existe
-          if (whys.length > 0) {
-            const last = whys[whys.length - 1];
-            if (last && !isPlaceholder(last)) roots.push(last);
-            continue;
-          }
-
-          // fallback: subcausa si tiene texto útil
-          const t = ((s as any)?.text ?? (s as any)?.name ?? "").toString().trim();
-          if (t && !isPlaceholder(t)) roots.push(t);
-        }
-      }
-    }
-
-    return new Set(roots).size;
-  }
-
   function isIshikawaReadyToClose(st: IshikawaState | null) {
     if (!st) return false;
+
+    // Con una pregunta abierta sobre causas raíz repetidas no se ofrece el paso a Pareto: el
+    // "sí" del estudiante responde esa pregunta.
+    if (st.pendingRootMatch) return false;
 
     const problemText =
       typeof st.problem === "string"
@@ -1248,32 +1220,17 @@ function looksLikeProgressClosureRequest(text: string) {
     // ✅ NO exigimos todas las categorías: exigimos al menos minCats categorías completas
     if (completeCats.length < minCats) return false;
 
-    // El mínimo no se lee del estado: estados antiguos guardaron 6.
-    return countRootCandidatesFromIshikawa(st) >= MIN_ROOT_CAUSES;
+    // El mínimo no se lee del estado: estados antiguos guardaron 6. La derivación es la de
+    // ishikawa/validate: con REQUIRE_REVIEWED_CLOSURE solo cuentan las ramas cerradas.
+    return deriveRootCauses(st).roots.length >= MIN_ROOT_CAUSES;
 
   }
 
-  function shouldOfferIshikawaStageClose(
-      st: IshikawaState | null,
-      assistantMessage: string
-    ) {
-      if (!isIshikawaReadyToClose(st)) return false;
-
-      const msg = normalizeText(assistantMessage ?? "");
-
-      // Si el mensaje todavía está cerrando una subcausa/rama,
-      // no debemos meter además el cierre de etapa. Frases de los mensajes reales de
-      // cierre de rama (ishikawa/assistant): cierre por calidad, cierre confirmado por el
-      // estudiante y la pregunta que pide el prompt general al cerrar una rama.
-      if (
-        msg.includes("cerramos esta subcausa") ||
-        msg.includes("cerramos esa rama") ||
-        msg.includes("agregamos otra causa principal dentro de")
-      ) {
-        return false;
-      }
-
-      return true;
+  // El servidor indica si el turno admite ofrecer el paso a Pareto (ui.offerStageClose: no
+  // en el mismo turno que un cierre de rama); aquí se exige además que el estado cumpla
+  // los mínimos. No se lee el texto del mensaje.
+  function shouldOfferIshikawaStageClose(st: IshikawaState | null, ui: IshikawaTurnUi) {
+    return ui.offerStageClose && isIshikawaReadyToClose(st);
   }
 
   function isProgressQuestion(text: string) {
@@ -5542,6 +5499,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
   async function callIshikawaAssistant(args: {
     studentMessage: string;
+    chatId: string; // el servidor verifica que el chat sea del usuario y lee de ahí sus campos
     ishikawaState: IshikawaState;
     caseContext: any;
     stage1Summary: any;
@@ -5560,7 +5518,7 @@ function looksLikeProgressClosureRequest(text: string) {
 
     if (!ok) {
       console.error("[ISHIKAWA] assistant failed", { status: res.status, json });
-      return { ok: false as const, assistantMessage: "⚠️ No pude procesar tu mensaje en Ishikawa.", nextState: args.ishikawaState };
+      return { ok: false as const, assistantMessage: "⚠️ No pude procesar tu mensaje en Ishikawa.", nextState: args.ishikawaState, ui: NO_TURN_UI };
     }
 
     const data = json?.data ?? json?.payload ?? json ?? null;
@@ -5577,10 +5535,16 @@ function looksLikeProgressClosureRequest(text: string) {
         ok: true as const,
         assistantMessage: "⚠️ No pude interpretar bien este turno de Ishikawa. Vuelve a escribir tu idea y seguimos desde la misma rama.",
         nextState: args.ishikawaState,
+        ui: NO_TURN_UI,
       };
     }
 
-    return { ok: true as const, assistantMessage, nextState: nextState as IshikawaState };
+    return {
+      ok: true as const,
+      assistantMessage,
+      nextState: nextState as IshikawaState,
+      ui: parseIshikawaTurnUi(data?.ui),
+    };
   }
 
   async function handleStage6NextStepQuestion(args: {
@@ -6795,6 +6759,7 @@ function looksLikeProgressClosureRequest(text: string) {
                 // Reintentamos el flujo normal (Gemini) con el state ya sincronizado.
                 const ai = await callIshikawaAssistant({
                   studentMessage: text,
+                  chatId: advisorChatId,
                   ishikawaState: freshState,
                   caseContext: ctx?.contextJson ?? null,
                   stage1Summary: null,
@@ -6910,6 +6875,7 @@ function looksLikeProgressClosureRequest(text: string) {
           // 2) Ya hay problema: delegamos al assistant para clasificar + guiar + 5 porqués
           const assistant = await callIshikawaAssistant({
             studentMessage: text,
+            chatId: advisorChatId,
             ishikawaState,
             caseContext: ctx.contextJson ?? null,
             stage1Summary: lastReport.ok ? lastReport.payload ?? null : null,
@@ -6923,8 +6889,8 @@ function looksLikeProgressClosureRequest(text: string) {
 
           await appendAssistant(assistant.assistantMessage);
 
-          // ✅ Solo ofrecemos pasar de etapa si el mensaje anterior NO está cerrando aún una subcausa
-          if (shouldOfferIshikawaStageClose(nextState, assistant.assistantMessage)) {
+          // ✅ Solo ofrecemos pasar de etapa si el servidor lo admite en este turno (no justo tras cerrar una rama)
+          if (shouldOfferIshikawaStageClose(nextState, assistant.ui)) {
             setIshikawaClosePending(true);
             await appendAssistant(
               "✅ Ya tenemos una base suficiente del Ishikawa. " +

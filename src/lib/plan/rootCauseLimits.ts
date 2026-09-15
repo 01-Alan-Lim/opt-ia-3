@@ -19,3 +19,8 @@ export const MAX_WHY_DEPTH = 5;
 // concreta (2-3 formulaciones para elegir). Evita que el estudiante quede en bucle
 // recibiendo la misma pista una y otra vez.
 export const REJECTED_WHY_ATTEMPTS_LIMIT = 3;
+
+// Única fuente de verdad del conteo de raíces: con true, solo cuenta como causa raíz
+// una subcausa con cierre revisado (closure.reviewed === true, escrito por el gate de
+// calidad). Una rama abandonada o de un estado antiguo sin el campo no cuenta.
+export const REQUIRE_REVIEWED_CLOSURE = true;
