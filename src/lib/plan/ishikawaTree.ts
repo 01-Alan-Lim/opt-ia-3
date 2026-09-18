@@ -39,6 +39,9 @@ export const RootCauseEntrySchema = z.object({
   normalizedText: z.string(), // minúsculas + espacios normalizados
   occurrences: z.array(RootOccurrenceSchema),
   distinctFrom: z.array(z.string()), // ids que el estudiante ya declaró distintos
+  // Se registró mientras había otra pregunta abierta y tenía candidatas parecidas: se compara
+  // cuando el estudiante responda la pendiente (resolveDeferredRootQuestion).
+  recheck: z.boolean().optional(),
 });
 
 // Pregunta abierta al estudiante: ¿la raíz provisoria (rootId) de esa rama es la misma que la

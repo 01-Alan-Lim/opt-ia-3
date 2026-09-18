@@ -10,12 +10,14 @@ import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
 import { MIN_ROOT_CAUSES, REQUIRE_REVIEWED_CLOSURE } from "@/lib/plan/rootCauseLimits";
-import { parsePendingRootMatch, parseRootRegistry } from "@/lib/plan/ishikawaTree";
+import { parsePendingRootMatch, parseRootRegistry, type IshikawaState } from "@/lib/plan/ishikawaTree";
+import { deriveRootCauses, type RootCauseSummary } from "@/lib/plan/ishikawaRoots";
+import { evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
 import {
-  deriveRootCauses,
-  describeRootBranch,
-  type RootCauseSummary,
-} from "@/lib/plan/ishikawaRoots";
+  describeUnreviewedBranch,
+  listUnreviewedBranches,
+  type UnreviewedBranch,
+} from "@/lib/plan/ishikawaResume";
 
 export const runtime = "nodejs";
 
@@ -44,8 +46,13 @@ function extractJsonSafe(text: string) {
 
 const MAX_PENDING_LISTED = 10;
 
-// Faltan raíces: cuántas faltan y qué ramas quedan por revisar.
-function buildMissingRootsMessage(summary: RootCauseSummary, minRoots: number) {
+// Faltan raíces: cuántas faltan y qué ramas quedan sin terminar, numeradas como en el chat para
+// que el estudiante pueda retomarlas ("retomar 2").
+function buildMissingRootsMessage(
+  summary: RootCauseSummary,
+  minRoots: number,
+  unreviewed: readonly UnreviewedBranch[]
+) {
   const count = summary.roots.length;
 
   if (!REQUIRE_REVIEWED_CLOSURE) {
@@ -55,7 +62,6 @@ function buildMissingRootsMessage(summary: RootCauseSummary, minRoots: number) {
     );
   }
 
-  const pending = summary.pendingBranches;
   const lines = [
     `Aún hay pocas causas raíz revisadas (${count}/${minRoots}): faltan ${minRoots - count}.`,
     "Una rama cuenta cuando la cerramos al confirmar que su último porqué es algo que la empresa puede cambiar. Una misma causa en varias ramas cuenta una sola vez.",
@@ -71,19 +77,23 @@ function buildMissingRootsMessage(summary: RootCauseSummary, minRoots: number) {
     }
   }
 
-  if (pending.length === 0) {
-    lines.push("", "No quedan ramas abiertas por revisar: agrega causas nuevas y profundízalas con porqués.");
+  if (unreviewed.length === 0) {
+    lines.push("", "No quedan ramas sin terminar: agrega causas nuevas y profundízalas con porqués.");
     return lines.join("\n");
   }
 
-  lines.push("", `Ramas que faltan revisar (${pending.length}):`);
-  for (const branch of pending.slice(0, MAX_PENDING_LISTED)) {
-    lines.push(`- ${describeRootBranch(branch)}`);
+  lines.push("", `Ramas sin terminar (${unreviewed.length}):`);
+  for (const branch of unreviewed.slice(0, MAX_PENDING_LISTED)) {
+    lines.push(`${branch.index}) ${describeUnreviewedBranch(branch)}`);
   }
-  if (pending.length > MAX_PENDING_LISTED) {
-    lines.push(`- ... (+${pending.length - MAX_PENDING_LISTED} más)`);
+  if (unreviewed.length > MAX_PENDING_LISTED) {
+    lines.push(`... (+${unreviewed.length - MAX_PENDING_LISTED} más)`);
   }
-  lines.push("", "Retoma esas ramas hasta una causa accionable y ciérralas, o agrega ramas nuevas.");
+  lines.push(
+    "",
+    `Para retomar una, escribe en el chat **retomar ${unreviewed[0].index}** (o el nombre de la subcausa), ` +
+      "llévala hasta una causa que la empresa pueda cambiar y ciérrala, o agrega ramas nuevas."
+  );
 
   return lines.join("\n");
 }
@@ -258,53 +268,18 @@ export async function POST(req: Request) {
       });
     }
 
-    const cats = Array.isArray(s?.categories) ? s.categories : [];
-
-    // ✅ Nuevas reglas (si el state trae números, los usa; si no, usa defaults nuevos)
-    const minCats = typeof s?.minCategories === "number" ? s.minCategories : 3;
-    const minMain = typeof s?.minMainCausesPerCategory === "number" ? s.minMainCausesPerCategory : 2;
-    const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 1;
-    // El mínimo no se lee del estado: estados antiguos guardaron 6 y permitían cerrar con menos.
+    // Categorías completas: mismas reglas que el mapa del asistente y el cliente
+    // (ishikawaReadiness.ts). El mínimo de raíces no se lee del estado: estados antiguos
+    // guardaron 6 y permitían cerrar con menos.
+    const readiness = evaluateIshikawaReadiness(s);
     const minRoots = MIN_ROOT_CAUSES;
 
-    const isPlaceholder = (x: any) => {
-      const t = (x ?? "").toString().trim().toLowerCase();
-      return !t || t === "causa" || t === "subcausa";
-    };
-
-    const normalizeWhys = (sc: any) => {
-      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
-      return whys
-        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-        .map((t: any) => (t ?? "").toString().trim())
-        .filter(Boolean);
-    };
-
-    const isSubValid = (sc: any) => {
-      const n = (sc?.name ?? sc?.text ?? "").toString().trim();
-      if (n && !isPlaceholder(n)) return true;
-      return normalizeWhys(sc).length > 0;
-    };
-
-    // ✅ Una causa principal “completa” = tiene ≥ minSub subcausas válidas
-    const isMainComplete = (mc: any) => {
-      const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
-      const validSubs = subs.filter(isSubValid);
-      return validSubs.length >= minSub;
-    };
-
-    // ✅ Conteo por categoría: cuántas causas principales completas tiene
-    const mainCompleteCount = (cat: any) => {
-      const mains = Array.isArray(cat?.mainCauses) ? cat.mainCauses : [];
-      return mains.filter(isMainComplete).length;
-    };
-
-    // ✅ Categoría completa = tiene ≥ minMain causas principales completas
-    const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
-
-    if (completeCats.length < minCats) {
-      const statusPerCat = cats
-        .map((c: any) => `${c?.name ?? "Categoría"}: ${mainCompleteCount(c)}/${minMain}`)
+    if (readiness.completeCategories < readiness.requiredCategories) {
+      const statusPerCat = readiness.categories
+        .map(
+          (category) =>
+            `${category.name}: ${category.completeMainCauses}/${readiness.requiredMainCausesPerCategory}`
+        )
         .join(" | ");
 
       // ok() ya es la respuesta: envolverla en NextResponse.json la serializaba como {} y
@@ -313,8 +288,8 @@ export async function POST(req: Request) {
         valid: false,
         message:
           `Aún no cumples el mínimo de categorías completas: ` +
-          `${completeCats.length}/${minCats}. ` +
-          `Debes completar ${minCats} categorías con ≥${minMain} causas principales completas (y cada una con ≥${minSub} subcausa válida).`,
+          `${readiness.completeCategories}/${readiness.requiredCategories}. ` +
+          `Debes completar ${readiness.requiredCategories} categorías con ≥${readiness.requiredMainCausesPerCategory} causas principales completas (y cada una con ≥${readiness.requiredSubCausesPerMain} subcausa válida).`,
         detail: { statusPerCat },
       });
     }
@@ -325,13 +300,15 @@ export async function POST(req: Request) {
     const roots = rootSummary.roots;
 
     if (roots.length < minRoots) {
+      const unreviewed = listUnreviewedBranches(s as IshikawaState);
+
       return ok({
         valid: false,
-        message: buildMissingRootsMessage(rootSummary, minRoots),
+        message: buildMissingRootsMessage(rootSummary, minRoots, unreviewed),
         detail: {
           rootsCount: roots.length,
           minRoots,
-          pendingBranches: rootSummary.pendingBranches.map(describeRootBranch),
+          pendingBranches: unreviewed.map(describeUnreviewedBranch),
         },
       });
     }

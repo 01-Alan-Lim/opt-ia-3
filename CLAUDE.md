@@ -114,16 +114,52 @@ Los documentos históricos NO son fuente final de verdad.
   - validate respondía {} en sus rechazos (NextResponse.json(ok(...))): corregido.
   - Pruebas: npm test (arnés con Gemini simulado).
 
+### Completado — Conversación y desbloqueo de E4 (rama feat/advisor-conversation-e4)
+- Entrada de respuestas (ishikawaWhyInterpreter.ts), dos juicios separados. ¿Es un
+  intento de responder? Permisivo: si no pide ayuda o un ejemplo, no navega (categoría,
+  rama o etapa), no pregunta por el proceso y no es un acuse ("ok"), ES una respuesta; no
+  se exige frase causal. ¿Sirve como causa? Lo decide whyQuality.ts, con pista. Mismo
+  criterio en la ruta rápida y para los porqués que agrega el LLM (keepStoredWhysWithReport).
+  Con una subcausa abierta, toda respuesta se captura por la ruta determinista (corta o
+  larga) sin el clasificador de intención por IA.
+- "no se registra/capacita…" ya no es pedido de ayuda (solo "no sé", "no se qué/cómo…");
+  "por ejemplo…", "cerramos la caja…", "pasamos mucho tiempo…", "el mapa de procesos…" ya
+  no se toman como ejemplo, cierre, consulta o avance.
+- En el tope, tras REJECTED_WHY_ATTEMPTS_LIMIT reformulaciones sin causa accionable se
+  escala a formulaciones concretas (no queda en bucle).
+- Contexto de los prompts (ishikawaPromptContext.ts, ishikawaContextStore.ts): el
+  servidor lee plan_case_contexts (sector; products y process_focus son listas) y los
+  artefactos validados de E2 (foda_analysis) y E3 (brainstorm_ideas) por el usuario de la
+  sesión, y los resume; no confía en el cliente (brainstormState ya no se recibe). El
+  mensaje guiado y las hipótesis reciben problema, rubro, productos, áreas, la cadena
+  guardada y los rechazos de la rama. Las instrucciones de coherencia solo nombran lo que
+  el prompt recibe.
+- Ramas a medias (ishikawaResume.ts): lista determinista y numerada de ramas sin revisar;
+  "retomar 2" o "retomar <subcausa>" mueve el cursor sin IA. Se ofrecen al cerrar una
+  rama, en el avance, en "pasemos a Pareto" y en validate. Una rama en el tope con
+  reformulateWhy pide reformular, no un sexto porqué.
+- La pregunta de raíz repetida ya no traba: se muestra al final de cada respuesta hasta
+  que se conteste, y solo la responde un sí/no explícito o una frase sobre "la
+  misma/distintas". Mientras está abierta, otra raíz parecida queda diferida (recheck) y
+  se compara al responder.
+- Comienzo del turno determinista (ishikawaTurnRouter.ts): pregunta pendiente, retomar,
+  avance / "¿qué me falta?", pasar de etapa, cierre, acuse con la rama abierta, captura.
+- Disponibilidad para cerrar E4 compartida (ishikawaReadiness.ts): validate, el mapa, la
+  respuesta a "pasemos a Pareto" y el cliente usan las mismas reglas.
+- Pruebas: npm test (15 archivos); ishikawaE4Simulation.test.ts recorre E4 entera con
+  Gemini simulado. npm test corre scripts/run-tests.mjs (lista de archivos ahí): en
+  Windows, una cadena "tsx a && tsx b && …" de 15 archivos en package.json colgaba el
+  cmd.exe con que npm ejecuta el script.
+
 ### Pendiente — Tanda 3: "¿qué me falta?" transversal
 Que en cualquiera de las 11 etapas el estudiante pueda preguntar qué le falta
 o por qué no puede avanzar, y reciba respuesta concreta. Las reglas de cierre
-de cada etapa ya son deterministas y están mapeadas.
+de cada etapa ya son deterministas y están mapeadas. (E4 ya lo responde con el mapa
+y las reglas de validate.)
 
 ### Deuda técnica conocida (no tocada)
 - conversationIntent.ts clasifica mal "no se..." en Pareto; también atrapa
   "no seleccione". Peor que el caso de Ishikawa.
-- Otras frases pasivas en Ishikawa siguen mal clasificadas: "no se capacita",
-  "no se registra", "no se supervisa", "no se cumple".
 - parseCriteriaFromMessage se llama dos veces por turno en pareto/assistant.
 - /api/chat envía los 12 PRIMEROS mensajes del historial, no los últimos
   (chat/route.ts:630, order asc). El agente pierde contexto reciente.
@@ -134,16 +170,19 @@ de cada etapa ya son deterministas y están mapeadas.
 - Siguiente tramo: autoridad total del turno de E4. Hoy el árbol y los porqués
   siguen viniendo del cliente; solo closure, contadores, registro de raíces y la
   pregunta pendiente son del servidor.
-- La entrada de respuestas nuevas exige frase causal (sanitizeWhyCandidate): "El
-  operario no conoce el procedimiento" cae en la aclaración y no se guarda por la
-  ruta rápida. En el camino general, los porqués que agrega el LLM sin frase
-  causal se descartan (keepStoredWhys).
-- Prompt general de Ishikawa: product y areas llegan siempre null (E0 guarda
-  products / process_focus como listas); brainstormState se recibe y no se usa.
-- Retomar una rama a medias: listar las pendientes ya es determinista
-  (deriveRootCauses().pendingBranches), pero mover el cursor a una subcausa
-  concreta depende del LLM, y nada recuerda al estudiante que una rama esperaba
-  una reformulación.
+- E4, entrada permisiva: un mensaje que no es ayuda, navegación ni consulta y no está en
+  las listas (p. ej. "eso ya lo sabemos") se guarda como porqué si pasa la calidad, y no
+  hay forma de borrar un porqué desde el chat.
+- E4: ayuda, navegación, avance y consultas se reconocen por listas de frases; un falso
+  positivo no se guarda como respuesta. Sin una subcausa abierta siguen
+  isNonCausalMessage / looksLikeSwitchCategoryIntent ("vamos a", "ahora con").
+- E4: el clasificador contextual por IA se sigue llamando si el mensaje trae palabras de
+  navegación (categoría, rama, sigamos…); solo puede sumar navegación.
+- E4: la regla de nombres propios es una instrucción a Gemini; el FODA y la lluvia de
+  ideas llegan como texto del estudiante y no se filtran.
+- E4: "cambiemos de rama" pregunta la categoría; no ofrece la lista de ramas sin terminar.
+- ishikawa/assistant sigue siendo grande (~2800 líneas); el arnés simula el despacho con
+  las funciones puras, no la redacción de mensajes ni el HTTP.
 - whysCount (dato del prompt) quedó guardado en 237 de 251 subcausas reales: el
   LLM lo copia en su nextState.
 - Sin bloqueo optimista en plan_stage_states: dos turnos simultáneos del mismo
@@ -151,8 +190,8 @@ de cada etapa ya son deterministas y están mapeadas.
   agregarlo sin migración).
 - distinctFrom es por id: si una raíz sale del registro (rama reabierta sin otras
   ramas), se pierde la marca de "distintas" y ese par puede volver a preguntarse.
-- Con una pregunta de raíz repetida pendiente, cualquier otro mensaje recibe el
-  recordatorio: el estudiante no puede seguir con otra rama hasta responder sí/no.
+- Con una pregunta de raíz repetida abierta, un "sí"/"no" suelto siempre la responde a
+  ella, aunque el último mensaje del asistente preguntara otra cosa.
 
 ## Pendientes de seguridad (NO tocar sin autorización)
 - 7 views BI son SECURITY DEFINER y anon tiene SELECT: fuga de datos de

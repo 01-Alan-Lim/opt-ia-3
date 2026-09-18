@@ -16,6 +16,11 @@
 //
 // La profundidad y el cierre se deciden SIEMPRE sobre la lista de porqués guardada tal cual
 // (whyTexts), nunca sobre una lista filtrada.
+//
+// Entrada de respuestas: un mensaje se acepta si es un intento de responder
+// (ishikawaWhyInterpreter, sin exigir frase causal); si sirve como causa lo decide el filtro
+// de calidad (whyQuality). El mismo criterio vale para los porqués que agrega el LLM en el
+// camino general (keepStoredWhysWithReport).
 
 import { MAX_WHY_DEPTH, REJECTED_WHY_ATTEMPTS_LIMIT } from "./rootCauseLimits";
 import {
@@ -25,16 +30,7 @@ import {
   type WhyBlockReason,
   type WhyStepDecision,
 } from "./whyQuality";
-import {
-  classifyWhyIntent,
-  isActionableWhyText,
-  isNonCausalMessage,
-  isVagueWhyAnswer,
-  normalizeIntentText,
-  normalizeWhyText,
-  sanitizeWhyCandidate,
-  sanitizeWhyList,
-} from "./ishikawaWhyInterpreter";
+import { classifyWhyIntent, extractWhyAnswer } from "./ishikawaWhyInterpreter";
 import {
   cloneIshikawaState,
   findActiveNodes,
@@ -45,26 +41,13 @@ import {
   type IshikawaState,
   type IshikawaSubCause,
 } from "./ishikawaTree";
-import { hydrateServerFields } from "./ishikawaStateMerge";
+import { hydrateServerFields, mergeLlmIshikawaState } from "./ishikawaStateMerge";
 import { dedupeWhys } from "./whyList";
 import { releaseRootOccurrenceInPlace, type RootPath } from "./ishikawaRootRegistry";
 
-// Confirmación explícita de cierre: el mensaje completo debe serlo (muletillas de acuerdo
-// + verbo de cierre + complementos cortos: "sí, cerremos esta rama", "ok, cerrar", "cerrar
-// ahí"). Una frase que solo contiene la palabra no confirma: "falta personal para cerrar
-// la caja", "el sitio queda cerrado", "no sé si cerrar".
-const CLOSE_CONFIRM_PATTERN = new RegExp(
-  "^" +
-    "(?:(?:ok|okay|okey|si|dale|listo|bueno|perfecto|de acuerdo|entonces|ya|vale|va)\\s+)*" +
-    "(?:(?:la|lo)\\s+)?" +
-    "(?:cerremos(?:la|lo)?|cerramos|cerrar(?:la|lo)?|cierra(?:la|lo)?)" +
-    "(?:\\s+(?:ahi|aqui|ya|entonces|nomas|asi|por favor|porfa|esta|esa|la|rama|subcausa|causa|raiz))*" +
-    "$"
-);
-
-export function isCloseBranchConfirm(text: string): boolean {
-  return CLOSE_CONFIRM_PATTERN.test(normalizeIntentText(text));
-}
+// La confirmación de cierre vive en el intérprete de intención (que la usa para no tomar
+// "cerremos" como respuesta); se reexporta para los llamadores de siempre.
+export { isCloseBranchConfirm } from "./ishikawaWhyInterpreter";
 
 export type BranchLabels = {
   categoryName: string;
@@ -437,11 +420,20 @@ export function protectServerFields(
   return nextState;
 }
 
+// Porqué que el LLM agregó en el camino general y no se guardó por calidad. Si la subcausa ya
+// existía antes del turno, la ruta se lo dice al estudiante con la pista.
+export type DroppedLlmWhy = { path: RootPath; text: string; hint: string; existingBranch: boolean };
+
 // Camino general: el LLM puede devolver listas de porqués recortadas o con texto propio. Los
 // porqués que ya estaban se conservan tal cual y en su orden (sobre ellos se cuenta la
-// profundidad y decide el gate); solo los que el LLM agregó en este turno pasan por
-// sanitizeWhyList, que descarta texto meta o vacío. Máximo MAX_WHY_DEPTH, como al guardar.
-export function keepStoredWhys(prevState: IshikawaState, nextState: IshikawaState): IshikawaState {
+// profundidad y decide el gate). Los que el LLM agregó en este turno pasan por el mismo
+// criterio que una respuesta de la ruta rápida: tienen que ser un intento de respuesta
+// (extractWhyAnswer descarta preguntas, pedidos y texto meta) y pasar el filtro de calidad
+// determinista. No se exige frase causal. Máximo MAX_WHY_DEPTH, como al guardar.
+export function keepStoredWhysWithReport(
+  prevState: IshikawaState,
+  nextState: IshikawaState
+): { state: IshikawaState; dropped: DroppedLlmWhy[] } {
   const key = (categoryId: string, mainCauseId: string, subCauseId: string) =>
     `${categoryId}/${mainCauseId}/${subCauseId}`;
 
@@ -453,20 +445,65 @@ export function keepStoredWhys(prevState: IshikawaState, nextState: IshikawaStat
   }
 
   const out = cloneIshikawaState(nextState);
+  const dropped: DroppedLlmWhy[] = [];
 
   for (const cat of out.categories ?? []) {
     for (const mc of cat.mainCauses ?? []) {
       for (const sc of mc.subCauses ?? []) {
-        const stored = previous.get(key(cat.id, mc.id, sc.id)) ?? [];
+        const branchKey = key(cat.id, mc.id, sc.id);
+        const existingBranch = previous.has(branchKey);
+        const stored = previous.get(branchKey) ?? [];
         const storedKeys = new Set(stored.map((why) => why.toLowerCase()));
         const added = whyTexts(sc.whys).filter((why) => !storedKeys.has(why.toLowerCase()));
+        const subCauseText = sc.name ?? sc.text ?? "";
+        const accepted: string[] = [];
 
-        sc.whys = dedupeWhys(stored, sanitizeWhyList(added), MAX_WHY_DEPTH);
+        for (const text of added) {
+          const answer = extractWhyAnswer(text);
+          if (!answer) continue;
+
+          const verdict = evaluateWhyDeterministic({
+            why: answer,
+            subCauseText,
+            previousWhys: [...stored, ...accepted],
+          });
+
+          if (!verdict.closable) {
+            dropped.push({
+              path: { categoryId: cat.id, mainCauseId: mc.id, subCauseId: sc.id },
+              text: answer,
+              hint: verdict.hint,
+              existingBranch,
+            });
+            continue;
+          }
+
+          accepted.push(answer);
+        }
+
+        sc.whys = dedupeWhys(stored, accepted, MAX_WHY_DEPTH);
       }
     }
   }
 
-  return out;
+  return { state: out, dropped };
+}
+
+export function keepStoredWhys(prevState: IshikawaState, nextState: IshikawaState): IshikawaState {
+  return keepStoredWhysWithReport(prevState, nextState).state;
+}
+
+// Estado del camino general antes del gate del cursor: fusión con lo que devolvió el LLM,
+// porqués guardados restituidos y agregados filtrados (keepStoredWhysWithReport) y campos del
+// servidor protegidos (protectServerFields). La ruta y el arnés de simulación usan esta misma
+// secuencia.
+export function prepareLlmTurnState(
+  prevState: IshikawaState,
+  llmState: IshikawaState,
+  now: string
+): { state: IshikawaState; dropped: DroppedLlmWhy[] } {
+  const kept = keepStoredWhysWithReport(prevState, mergeLlmIshikawaState(prevState, llmState));
+  return { state: protectServerFields(prevState, kept.state, now), dropped: kept.dropped };
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +518,10 @@ export type ContextualBranchIntent =
   | "ANSWER_WHY"
   | "CONTINUE_SAME_CATEGORY"
   | "OTHER";
+
+// Por qué se escala a formulaciones concretas: rechazos deterministas seguidos, o varias
+// reformulaciones en el tope sin que el LLM vea una causa accionable.
+export type EscalationReason = WhyBlockReason | "not_actionable";
 
 export type FastPathWhyInput = {
   state: IshikawaState;
@@ -502,7 +543,7 @@ export type FastPathWhyOutcome =
       kind: "escalate";
       nextState: IshikawaState;
       labels: BranchLabels;
-      reason: WhyBlockReason;
+      reason: EscalationReason;
       hint: string;
       lastWhy: string | null;
     }
@@ -542,40 +583,28 @@ function planFastPathWhyTurn(input: FastPathWhyInput): FastPathPlan {
   const whyIntent = classifyWhyIntent(answerRaw);
   const guidedHelp = done({ kind: "guided_help", labels, whys: storedWhys });
 
-  // 1) Cambio de contexto/categoría: no se trata como causa.
+  // 1) Cambio de tema, rama, categoría o etapa: no es una respuesta. El clasificador por IA
+  //    solo puede sumar navegación; no convierte una respuesta en ayuda ni en consulta.
   if (whyIntent === "switch_context" || input.contextualIntent === "SWITCH_CATEGORY") {
     return done({ kind: "switch_category" });
   }
 
-  // 2) Consulta meta del proceso: se responde según la rama activa.
-  if (whyIntent === "meta_process" || input.contextualIntent === "META_PROCESS") {
-    return done({ kind: "meta" });
-  }
+  // 2) Consulta del proceso (o una confirmación de cierre que no se atendió antes).
+  if (whyIntent === "meta_process" || whyIntent === "close_request") return done({ kind: "meta" });
 
-  // 3) Pide ayuda o ejemplos, no responde una causa.
-  if (
-    whyIntent === "ask_guidance" ||
-    whyIntent === "ask_example" ||
-    input.contextualIntent === "ASK_GUIDANCE"
-  ) {
-    return guidedHelp;
-  }
+  // 3) Pide ayuda o un ejemplo, o solo acusa recibo: ayuda contextual, sin guardar nada.
+  if (whyIntent !== "answer_why") return guidedHelp;
 
-  // 4) Mensaje de navegación/control residual.
-  if (isNonCausalMessage(answerRaw)) return done({ kind: "meta" });
-
-  // 5) Todavía vaga, no sanitizable o no accionable como texto: ayuda contextual.
-  if (isVagueWhyAnswer(answerRaw)) return guidedHelp;
-
-  const cleanWhy = sanitizeWhyCandidate(answerRaw);
-  if (!cleanWhy) return guidedHelp;
-
-  const answer = normalizeWhyText(cleanWhy);
-  if (!isActionableWhyText(answer)) return guidedHelp;
+  // 4) Es una respuesta. Si sirve como causa lo decide la calidad (abajo), no este filtro.
+  const answer = extractWhyAnswer(answerRaw);
+  if (!answer) return guidedHelp;
 
   // Modo reformulación: el tope ya se alcanzó; la respuesta reemplaza al último porqué en
   // vez de agregar uno nuevo.
   const reformulating = sc.reformulateWhy === true || storedWhys.length >= MAX_WHY_DEPTH;
+  // Intentos fallidos seguidos en esta rama antes de este mensaje (rechazos deterministas o,
+  // en el tope, reformulaciones sin causa accionable).
+  const priorAttempts = sc.rejectedWhyAttempts ?? 0;
 
   // El candidato se evalúa ANTES de agregarlo (contrato de evaluateWhyDeterministic). Al
   // reformular no se compara contra el porqué que se está reemplazando.
@@ -586,8 +615,8 @@ function planFastPathWhyTurn(input: FastPathWhyInput): FastPathPlan {
   });
 
   if (!deterministic.closable) {
-    // Rechazo: no se guarda el candidato ni sube la profundidad.
-    const attempts = (sc.rejectedWhyAttempts ?? 0) + 1;
+    // Rechazo por calidad: no se guarda el candidato ni sube la profundidad.
+    const attempts = priorAttempts + 1;
 
     if (attempts < REJECTED_WHY_ATTEMPTS_LIMIT) {
       sc.rejectedWhyAttempts = attempts;
@@ -663,10 +692,29 @@ function planFastPathWhyTurn(input: FastPathWhyInput): FastPathPlan {
         path: { categoryId: cat.id, mainCauseId: mc.id, subCauseId: sc.id },
       });
 
-    case "reformulate":
-      // No se agrega un porqué más: el siguiente reemplaza al último.
+    case "reformulate": {
+      // No se agrega un porqué más: el siguiente reemplaza al último. Si el estudiante ya viene
+      // reformulando sin llegar a una causa accionable, al llegar a REJECTED_WHY_ATTEMPTS_LIMIT
+      // intentos se escala a formulaciones concretas para elegir, igual que con los rechazos
+      // deterministas: así no queda en un bucle de "reformula".
       sc.reformulateWhy = true;
+      const attempts = (reformulating ? priorAttempts : 0) + 1;
+
+      if (attempts >= REJECTED_WHY_ATTEMPTS_LIMIT) {
+        sc.rejectedWhyAttempts = 0;
+        return done({
+          kind: "escalate",
+          nextState,
+          labels,
+          reason: "not_actionable",
+          hint: decision.hint,
+          lastWhy,
+        });
+      }
+
+      sc.rejectedWhyAttempts = attempts;
       return done({ kind: "reformulate", nextState, hint: decision.hint, lastWhy });
+    }
 
     case "ask_next":
       return done({ kind: "ask_next", nextState, labels, whys: branchWhys, hint: decision.hint });

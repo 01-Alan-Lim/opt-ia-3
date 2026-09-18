@@ -221,7 +221,9 @@ function stemToken(token: string): string {
     : token;
 }
 
-function significantTokens(text: string): string[] {
+// Términos con contenido de un texto (sin palabras vacías, en singular aproximado). También lo
+// usa ishikawaResume.ts para reconocer una rama por su nombre.
+export function significantTokens(text: string): string[] {
   return normalizeWhyText(text)
     .split(" ")
     .filter((token) => token.length >= 2 && !SPANISH_STOPWORDS.has(token))

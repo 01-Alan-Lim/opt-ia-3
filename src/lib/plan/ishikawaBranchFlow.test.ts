@@ -207,21 +207,24 @@ async function main() {
     assert.deepEqual(outcome.nextState.cursor, state.cursor);
   }
 
-  // --- Caso 3: "el sitio queda cerrado" no dispara el cierre ----------------------
+  // --- Caso 3: "el sitio queda cerrado" no es una confirmación de cierre ------------
+  // Desde la Tanda 3 (Fase 1) el intérprete no exige frase causal: es una respuesta más, se
+  // guarda y la calidad decide (aquí, que todavía no es accionable). Antes caía en la ayuda.
   {
     const message = "el sitio queda cerrado";
     assert.equal(isCloseBranchConfirm(message), false);
 
     const state = buildState({ whys: WHYS.slice(0, 3) });
-    const { judge, calls } = mockJudge(ACTIONABLE);
+    const { judge, calls } = mockJudge(NOT_ACTIONABLE);
     const outcome = expectKind(
       await resolveFastPathWhyTurn({ state, studentMessage: message, contextualIntent: null, now: NOW }, judge),
-      "guided_help"
+      "ask_next"
     );
 
-    // No es una causa: se ayuda a precisarla con la cadena guardada completa; sin consultas.
-    assert.deepEqual(outcome.whys, WHYS.slice(0, 3));
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 1); // profundidad 4: consulta de calidad
+    assert.deepEqual(outcome.whys, [...WHYS.slice(0, 3), "El sitio queda cerrado"]);
+    assert.equal(outcome.hint, NOT_ACTIONABLE.reason);
+    assert.equal(subCause(outcome.nextState).closure, undefined);
   }
 
   // --- Caso 4: un cierre legítimo escribe closure.reviewed = true -----------------

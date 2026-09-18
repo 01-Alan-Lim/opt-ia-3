@@ -27,7 +27,7 @@ import {
   type PendingRootMatch,
   type RootCauseEntry,
 } from "@/lib/plan/ishikawaTree";
-import { deriveRootCauses } from "@/lib/plan/ishikawaRoots";
+import { evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
 import { normalizeEffectPercent, normalizeJustification } from "@/lib/plan/paretoCut";
 
 
@@ -1159,71 +1159,13 @@ function looksLikeProgressClosureRequest(text: string) {
     return generalOk && specificOk && linkedOk;
   }
 
+  // Mismas reglas que ishikawa/validate y el mapa del asistente (ishikawaReadiness.ts): problema,
+  // sin pregunta pendiente de causa raíz repetida (el "sí" del estudiante la respondería),
+  // categorías completas y el mínimo de raíces cerradas. Así el paso a Pareto solo se ofrece
+  // cuando validate lo va a aceptar.
   function isIshikawaReadyToClose(st: IshikawaState | null) {
     if (!st) return false;
-
-    // Con una pregunta abierta sobre causas raíz repetidas no se ofrece el paso a Pareto: el
-    // "sí" del estudiante responde esa pregunta.
-    if (st.pendingRootMatch) return false;
-
-    const problemText =
-      typeof st.problem === "string"
-        ? st.problem
-        : (typeof (st.problem as any)?.text === "string" ? (st.problem as any).text : "");
-
-    if (!problemText.trim()) return false;
-
-    const cats = Array.isArray(st.categories) ? st.categories : [];
-    const minCats = typeof st.minCategories === "number" ? st.minCategories : 4;
-    const minMain = typeof st.minMainCausesPerCategory === "number" ? st.minMainCausesPerCategory : 3;
-
-    // ✅ Para cierre (pasar a Pareto), consideramos suficiente 1 subcausa válida por causa principal,
-    // porque la profundidad real está en whys[].
-    const minSubForClose = 1;
-
-    const isPlaceholder = (x: any) => {
-      const t = (x ?? "").toString().trim().toLowerCase();
-      return !t || t === "causa" || t === "subcausa";
-    };
-
-    const normalizeWhys = (sc: any) => {
-      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
-      return whys
-        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-        .map((t: any) => (t ?? "").toString().trim())
-        .filter(Boolean);
-    };
-
-    const isSubValid = (sc: any) => {
-      const n = ((sc as any)?.name ?? (sc as any)?.text ?? "").toString().trim();
-      if (n && !isPlaceholder(n)) return true;
-      return normalizeWhys(sc).length > 0;
-    };
-
-    const isMainComplete = (mc: any) => {
-      const name = ((mc as any)?.name ?? (mc as any)?.text ?? "").toString().trim();
-      if (!name || isPlaceholder(name)) return false;
-
-      const subs = Array.isArray((mc as any)?.subCauses) ? (mc as any).subCauses : [];
-      const validSubs = subs.filter(isSubValid);
-      return validSubs.length >= minSubForClose;
-    };
-
-    const mainCompleteCount = (cat: any) => {
-      const mains = Array.isArray((cat as any)?.mainCauses) ? (cat as any).mainCauses : [];
-      return mains.filter(isMainComplete).length;
-    };
-
-    // ✅ Categoría completa = tiene ≥ minMain causas principales completas
-    const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
-
-    // ✅ NO exigimos todas las categorías: exigimos al menos minCats categorías completas
-    if (completeCats.length < minCats) return false;
-
-    // El mínimo no se lee del estado: estados antiguos guardaron 6. La derivación es la de
-    // ishikawa/validate: con REQUIRE_REVIEWED_CLOSURE solo cuentan las ramas cerradas.
-    return deriveRootCauses(st).roots.length >= MIN_ROOT_CAUSES;
-
+    return evaluateIshikawaReadiness(st).ready;
   }
 
   // El servidor indica si el turno admite ofrecer el paso a Pareto (ui.offerStageClose: no

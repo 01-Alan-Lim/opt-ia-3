@@ -8,7 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx src/lib/plan/paretoCut.test.ts && tsx src/lib/plan/paretoParsing.test.ts && tsx src/lib/plan/whyQuality.test.ts && tsx src/lib/plan/whyList.test.ts && tsx src/lib/plan/ishikawaRoots.test.ts && tsx src/lib/plan/ishikawaBranchFlow.test.ts && tsx src/lib/plan/ishikawaServerFields.test.ts && tsx src/lib/plan/ishikawaRootRegistry.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -189,7 +189,7 @@ export type RootMatcher = (input: {
 
 export type RootResolution =
   | { kind: "unchanged"; nextState: IshikawaState }
-  | { kind: "new"; nextState: IshikawaState; entryId: string }
+  | { kind: "new"; nextState: IshikawaState; entryId: string; deferred?: boolean }
   | {
       kind: "repeated";
       nextState: IshikawaState;
@@ -207,8 +207,10 @@ export type RootResolution =
 
 // Resuelve la raíz de una rama recién cerrada (closure revisado) contra el registro y
 // escribe closure.rootId. Consulta a la IA a lo sumo una vez y solo con candidatas.
+// canAsk = false cuando ya hay otra pregunta abierta: no se consulta ni se pisa esa pregunta;
+// la raíz queda como nueva y marcada para compararla después (resolveDeferredRootQuestion).
 export async function resolveBranchRoot(
-  input: { state: IshikawaState; path: RootPath; now: string; newId: () => string },
+  input: { state: IshikawaState; path: RootPath; now: string; newId: () => string; canAsk?: boolean },
   matcher: RootMatcher
 ): Promise<RootResolution> {
   const nextState = cloneIshikawaState(input.state);
@@ -267,6 +269,13 @@ export async function resolveBranchRoot(
   // 2) Parecido determinista. Sin candidatas, sin IA.
   const candidates = findRootCandidates(registry, text, entry.id);
   if (candidates.length === 0) return { kind: "new", nextState, entryId: entry.id };
+
+  // Ya hay otra pregunta abierta: no se consulta ahora; la raíz cuenta como nueva hasta que
+  // se compare, cuando el estudiante responda la pendiente.
+  if (input.canAsk === false) {
+    entry.recheck = true;
+    return { kind: "new", nextState, entryId: entry.id, deferred: true };
+  }
 
   // 3) Una sola consulta; su fallo nunca bloquea el cierre.
   let verdict: RootMatchVerdict | null = null;
@@ -345,6 +354,63 @@ export function answerPendingRootMatch(state: IshikawaState, answer: "yes" | "no
   return { kind: "kept_distinct", nextState, entry: provisional, other: candidate };
 }
 
+export type DeferredRootQuestion =
+  | { kind: "none"; nextState: IshikawaState }
+  | { kind: "question"; nextState: IshikawaState; entry: RootCauseEntry; candidate: RootCauseEntry; reason: string };
+
+// Raíces registradas mientras había otra pregunta abierta (recheck): cuando esa se responde, se
+// comparan una por una (a lo sumo una consulta a la IA por raíz) hasta que la IA proponga una
+// coincidencia, que se le pregunta al estudiante. Ninguna se revisa dos veces.
+export async function resolveDeferredRootQuestion(
+  input: { state: IshikawaState; now: string },
+  matcher: RootMatcher
+): Promise<DeferredRootQuestion> {
+  const nextState = cloneIshikawaState(input.state);
+  if (parsePendingRootMatch(nextState.pendingRootMatch)) return { kind: "none", nextState };
+
+  const registry = parseRootRegistry(nextState.rootCauses);
+  nextState.rootCauses = registry;
+
+  for (const entry of registry) {
+    if (!entry.recheck) continue;
+    delete entry.recheck;
+
+    const occurrence = entry.occurrences[0];
+    const candidates = findRootCandidates(registry, entry.canonicalText, entry.id);
+    if (!occurrence || candidates.length === 0) continue;
+
+    let verdict: RootMatchVerdict | null = null;
+    try {
+      verdict = await matcher({
+        newRoot: entry.canonicalText,
+        candidates: candidates.map(({ entry: candidate }) => ({
+          id: candidate.id,
+          text: candidate.canonicalText,
+        })),
+      });
+    } catch {
+      verdict = null;
+    }
+
+    const proposed = candidates.find(({ entry: candidate }) => candidate.id === verdict?.sameAs)?.entry;
+    if (!verdict || !proposed) continue;
+
+    nextState.pendingRootMatch = {
+      categoryId: occurrence.categoryId,
+      mainCauseId: occurrence.mainCauseId,
+      subCauseId: occurrence.subCauseId,
+      rootId: entry.id,
+      candidateId: proposed.id,
+      reason: verdict.reason,
+      askedAt: input.now,
+    };
+
+    return { kind: "question", nextState, entry, candidate: proposed, reason: verdict.reason };
+  }
+
+  return { kind: "none", nextState };
+}
+
 export type YesNoAnswer = "yes" | "no" | "unclear";
 
 const UNSURE_MARKERS = [
@@ -391,6 +457,40 @@ export function interpretYesNo(text: string): YesNoAnswer {
   if (!hasNegation && (startsYes || YES_PHRASES.some(has))) return "yes";
 
   return "unclear";
+}
+
+// Palabras con que el estudiante se refiere a la pregunta de causa raíz repetida.
+const ROOT_QUESTION_TERMS =
+  /\b(?:misma|mismas|mismo|mismos|igual|iguales|distinta|distintas|distinto|distintos|diferente|diferentes)\b/;
+
+// Sí/no explícitos: la palabra sola o seguida de un signo ("no.", "sí, es la misma"). "No hay
+// registro de temperatura" empieza con "no" pero es la respuesta a un porqué.
+const EXPLICIT_YES = /^\s*[¡!]?\s*(?:s[ií]|sip|claro|correcto|exacto|afirmativo|as[ií] es)\s*(?:[,.!;:]|$)/i;
+const EXPLICIT_NO = /^\s*[¡!]?\s*(?:no|nop|negativo)\s*(?:[,.!;:]|$)/i;
+
+// Respuesta a la pregunta pendiente cuando la pregunta NO bloquea el resto de la conversación
+// (ishikawaTurnRouter): solo cuenta un sí/no explícito o una frase sobre "la misma"/"distintas".
+// Un "ok" o un "dale" no aprueban una fusión, y un mensaje largo que no habla de la pregunta
+// sigue su camino.
+export function interpretPendingRootReply(text: string): YesNoAnswer {
+  const normalized = normalizeIntentText(text);
+  if (!normalized) return "unclear";
+
+  // Una pregunta ("¿son la misma causa?") no responde la pregunta: se le vuelve a mostrar.
+  if (text.includes("?") || text.includes("¿")) return "unclear";
+
+  const padded = ` ${normalized} `;
+  const has = (phrase: string) => padded.includes(` ${phrase} `);
+
+  if (UNSURE_MARKERS.some(has)) return "unclear";
+  if (EXPLICIT_NO.test(text) || NO_PHRASES.some(has)) return "no";
+  if (!has("no") && (EXPLICIT_YES.test(text) || YES_PHRASES.some(has))) return "yes";
+
+  return "unclear";
+}
+
+export function isAboutPendingRootQuestion(text: string): boolean {
+  return ROOT_QUESTION_TERMS.test(normalizeIntentText(text));
 }
 
 const RootMatchResponseSchema = z.object({

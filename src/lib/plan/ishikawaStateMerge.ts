@@ -12,7 +12,7 @@
 
 import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "./rootCauseLimits";
 import { dedupeWhys, mergeSubCause } from "./whyList";
-import { cloneIshikawaState, type IshikawaState } from "./ishikawaTree";
+import { cloneIshikawaState, type IshikawaCategory, type IshikawaState } from "./ishikawaTree";
 import { reconcileRootRegistry } from "./ishikawaRootRegistry";
 
 type LooseRecord = Record<string, unknown>;
@@ -274,4 +274,79 @@ export function serverFieldsFingerprint(state: unknown): string {
 
   const stateFields = isRecord(state) ? STATE_SERVER_KEYS.map((field) => state[field]) : [];
   return stableStringify([subCauses, stateFields]);
+}
+
+// ---------------------------------------------------------------------------
+// Camino general de ishikawa/assistant
+// ---------------------------------------------------------------------------
+
+function trimmedText(value: unknown): string {
+  return (typeof value === "string" ? value : "").trim();
+}
+
+// Estado que devuelve el LLM en el camino general, fusionado con el del turno: el problema no se
+// borra; categorías, causas y subcausas se unen por id sin borrar las que el LLM omitió; si el
+// LLM trae una subcausa sin porqués, se conservan los anteriores. (Movido sin cambios desde
+// ishikawa/assistant para usarlo también en el arnés de simulación.)
+export function mergeLlmIshikawaState(prev: IshikawaState, incoming: IshikawaState): IshikawaState {
+  const prevProblem = typeof prev.problem === "string" ? prev.problem : prev.problem?.text ?? "";
+  const incProblem = typeof incoming.problem === "string" ? incoming.problem : incoming.problem?.text ?? "";
+  const problemText = trimmedText(incProblem) || trimmedText(prevProblem);
+
+  const prevCats = prev.categories ?? [];
+  const incCats = incoming.categories ?? [];
+  const prevById = new Map(prevCats.map((c) => [c.id, c]));
+  const outCats: IshikawaCategory[] = [];
+
+  for (const ic of incCats) {
+    const pc = prevById.get(ic.id);
+    if (!pc) {
+      outCats.push(ic);
+      continue;
+    }
+
+    const prevMainById = new Map((pc.mainCauses ?? []).map((m) => [m.id, m]));
+    const mergedMain: IshikawaCategory["mainCauses"] = [];
+
+    for (const im of ic.mainCauses ?? []) {
+      const pm = prevMainById.get(im.id);
+      if (!pm) {
+        mergedMain.push(im);
+        continue;
+      }
+
+      const prevSubById = new Map((pm.subCauses ?? []).map((s) => [s.id, s]));
+      const mergedSub: typeof pm.subCauses = [];
+
+      for (const is of im.subCauses ?? []) {
+        const ps = prevSubById.get(is.id);
+        if (!ps) {
+          mergedSub.push(is);
+          continue;
+        }
+
+        const incWhys = Array.isArray(is.whys) ? is.whys : [];
+        const prevWhys = Array.isArray(ps.whys) ? ps.whys : [];
+        mergedSub.push({ ...ps, ...is, whys: incWhys.length ? incWhys : prevWhys });
+        prevSubById.delete(is.id);
+      }
+
+      for (const leftover of prevSubById.values()) mergedSub.push(leftover);
+      mergedMain.push({ ...pm, ...im, subCauses: mergedSub });
+      prevMainById.delete(im.id);
+    }
+
+    for (const leftover of prevMainById.values()) mergedMain.push(leftover);
+    outCats.push({ ...pc, ...ic, mainCauses: mergedMain });
+    prevById.delete(ic.id);
+  }
+
+  for (const leftover of prevById.values()) outCats.push(leftover);
+
+  return {
+    ...prev,
+    ...incoming,
+    problem: problemText ? { text: problemText } : prev.problem,
+    categories: outCats,
+  };
 }
