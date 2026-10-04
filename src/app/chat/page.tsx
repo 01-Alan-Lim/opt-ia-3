@@ -16,6 +16,7 @@ import {
   BrainstormState,
   sanitizeBrainstormState,
   resolveBrainstormStep,
+  isBrainstormReadyToClose,
 } from "@/lib/plan/brainstormFlow";
 import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 import {
@@ -27,7 +28,6 @@ import {
   type RootCauseEntry,
 } from "@/lib/plan/ishikawaTree";
 import { evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
-import { normalizeEffectPercent, normalizeJustification } from "@/lib/plan/paretoCut";
 import {
   isGreetingOrSmallTalk,
   isHoursIntent,
@@ -71,6 +71,35 @@ import {
   stage0HelpMessage,
   stage0StepForField,
 } from "@/lib/plan/stage0Context";
+import {
+  type AdvisorRuntimeStage,
+  type FinalDocState,
+  type FodaState,
+  type ImprovementState,
+  type ObjectivesState,
+  type ParetoState,
+  type PlanningState,
+  type ProdAssistantResponse,
+  type ProdStep,
+  type ProductivityDraft,
+  type ProgressState,
+  applyAssistantPatchToDraft,
+  canShowFinalDocUploadButton,
+  isAdvisorRuntimeStageValue,
+  isFinalDocReadyForUpload,
+  isFodaComplete,
+  isObjectivesReadyForValidation,
+  isObjectivesStateLike,
+  isProgressReadyForValidation,
+  mergeCosts,
+  normalizeParetoStateClient,
+  sanitizeFodaState,
+} from "@/lib/plan/advisorStates";
+import {
+  buildStage6ProgressTruthMessage,
+  getAdvisorStageLabel,
+  promptProd,
+} from "@/lib/plan/advisorMessages";
 import {
   createMessage,
   formatAssistantMessageForReadability,
@@ -300,142 +329,6 @@ export default function ChatPage() {
 
   const [editingField, setEditingField] = useState<EditTarget>(null);
 
-  // -----------------------------
-  // Etapa 1 (Productividad) Wizard
-  // -----------------------------
-  type ProdStep = 0 | 1 | 2 | 3 | 4 | 5;
-  // 0=idle, 1=tipo, 2=periodo, 3=ingreso, 4=costos, 5=confirmacion
-
-  type ProductivityDraft = {
-    type?: "monetaria" | "fisica";
-    unit_reason?: string;         // por qué eligió monetaria/física
-    required_costs?: number;      // 3 o 4 (configurable). Default 4
-    period_key?: string;          // YYYY-MM
-    line?: string;                // línea/producto
-    income_bs?: number;           // ingresos del mes
-    costs?: { name: string; amount_bs: number; note?: string }[];
-    notes?: string;
-  };
-
-  type FodaQuadrant = "F" | "D" | "O" | "A";
-
-  type FodaState = {
-    currentQuadrant: FodaQuadrant;
-    pendingEvidence?: { quadrant: FodaQuadrant; index: number } | null;
-    items: {
-      F: { text: string; evidence?: string }[];
-      D: { text: string; evidence?: string }[];
-      O: { text: string; evidence?: string }[];
-      A: { text: string; evidence?: string }[];
-    };
-  };
-
-  function sanitizeFodaState(raw: unknown): FodaState | null {
-    const source =
-      raw && typeof raw === "object"
-        ? (raw as Record<string, unknown>)
-        : null;
-
-    if (!source) return null;
-
-    const currentQuadrantRaw = source.currentQuadrant;
-    const currentQuadrant: FodaQuadrant =
-      currentQuadrantRaw === "F" ||
-      currentQuadrantRaw === "D" ||
-      currentQuadrantRaw === "O" ||
-      currentQuadrantRaw === "A"
-        ? currentQuadrantRaw
-        : "F";
-
-    const rawItems =
-      source.items && typeof source.items === "object"
-        ? (source.items as Record<string, unknown>)
-        : {};
-
-    const normalizeItemArray = (
-      value: unknown
-    ): { text: string; evidence?: string }[] => {
-      if (!Array.isArray(value)) return [];
-
-      return value
-        .map((entry) => {
-          if (typeof entry === "string") {
-            const text = entry.trim();
-            return text ? { text } : null;
-          }
-
-          if (!entry || typeof entry !== "object") return null;
-
-          const record = entry as Record<string, unknown>;
-
-          const text =
-            typeof record.text === "string"
-              ? record.text.trim()
-              : typeof record.label === "string"
-                ? record.label.trim()
-                : typeof record.title === "string"
-                  ? record.title.trim()
-                  : "";
-
-          const evidence =
-            typeof record.evidence === "string"
-              ? record.evidence.trim()
-              : typeof record.support === "string"
-                ? record.support.trim()
-                : typeof record.justification === "string"
-                  ? record.justification.trim()
-                  : "";
-
-          if (!text) return null;
-
-          return evidence ? { text, evidence } : { text };
-        })
-        .filter(
-          (item): item is { text: string; evidence?: string } => Boolean(item)
-        );
-    };
-
-    const pendingRaw =
-      source.pendingEvidence && typeof source.pendingEvidence === "object"
-        ? (source.pendingEvidence as Record<string, unknown>)
-        : null;
-
-    const pendingQuadrantRaw = pendingRaw?.quadrant;
-    const pendingIndexRaw = pendingRaw?.index;
-
-    const pendingQuadrant: FodaQuadrant | null =
-      pendingQuadrantRaw === "F" ||
-      pendingQuadrantRaw === "D" ||
-      pendingQuadrantRaw === "O" ||
-      pendingQuadrantRaw === "A"
-        ? pendingQuadrantRaw
-        : null;
-
-    const pendingIndex =
-      typeof pendingIndexRaw === "number" &&
-      Number.isInteger(pendingIndexRaw) &&
-      pendingIndexRaw >= 0
-        ? pendingIndexRaw
-        : null;
-
-    const pendingEvidence: FodaState["pendingEvidence"] =
-      pendingQuadrant !== null && pendingIndex !== null
-        ? { quadrant: pendingQuadrant, index: pendingIndex }
-        : null;
-
-    return {
-      currentQuadrant,
-      pendingEvidence,
-      items: {
-        F: normalizeItemArray(rawItems.F),
-        D: normalizeItemArray(rawItems.D),
-        O: normalizeItemArray(rawItems.O),
-        A: normalizeItemArray(rawItems.A),
-      },
-    };
-  }
-
-
   type IshikawaSubCause = {
     id: string;
     text: string;
@@ -471,324 +364,6 @@ export default function ChatPage() {
     pendingRootMatch?: PendingRootMatch | null;   // pregunta abierta sobre una raíz repetida
   };
 
-  type ParetoCriterion = { id: string; name: string; weight?: number };
-
-  type ParetoState = {
-    roots: string[];              // viene de ishikawa_final.validate
-    selectedRoots: string[];      // todas las raíces de Ishikawa (para trabajar en Excel)
-    criteria: ParetoCriterion[];  // 0..3 durante la conversación; 3 al validar
-    criticalRoots: string[];      // grupo crítico (el estudiante vuelve del Excel y lo pega)
-    criticalEffectPercent: number | null; // % del problema que concentra el grupo crítico (Excel)
-    criticalJustification: string | null;
-    step:
-      | "select_roots"
-      | "define_criteria"
-      | "set_weights"
-      | "excel_work"
-      | "collect_critical"
-      | "done";
-  };
-
-  const PARETO_STEPS = [
-    "select_roots",
-    "define_criteria",
-    "set_weights",
-    "excel_work",
-    "collect_critical",
-    "done",
-  ] as const;
-
-  function normalizeParetoStringArray(input: unknown): string[] {
-    if (!Array.isArray(input)) return [];
-    const out: string[] = [];
-    const seen = new Set<string>();
-
-    for (const item of input) {
-      const value = String(item ?? "").trim();
-      if (!value) continue;
-      const key = value.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(value);
-    }
-
-    return out;
-  }
-
-  function normalizeParetoCriterionKey(input: string) {
-    return String(input ?? "")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function isLegacyAutoParetoCriteria(criteria: ParetoCriterion[]) {
-    if (criteria.length !== 3) return false;
-
-    const names = criteria.map((item) => normalizeParetoCriterionKey(item.name)).sort();
-    const expected = ["impacto", "frecuencia", "controlabilidad"].sort();
-
-    const sameNames = names.every((value, index) => value === expected[index]);
-
-    const hasAnyWeight = criteria.some((item) => {
-      const weight = Number(item.weight);
-      return Number.isFinite(weight) && weight >= 1 && weight <= 10;
-    });
-
-    return sameNames && !hasAnyWeight;
-  }
-
-  function normalizeParetoStateClient(input: unknown): ParetoState | null {
-    if (!input || typeof input !== "object") return null;
-
-    const source = input as Record<string, unknown>;
-
-    const roots = normalizeParetoStringArray(source.roots);
-
-    // Pareto no tiene mínimo ni tope propio (CLAUDE.md): recibe todas las raíces de Ishikawa.
-    // minSelected/maxSelected de estados antiguos se ignoran.
-    const selectedRootsRaw = normalizeParetoStringArray(source.selectedRoots);
-    const selectedRoots = selectedRootsRaw.length > 0 ? selectedRootsRaw : roots;
-
-    const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
-    const criticalRoots = normalizeParetoStringArray(source.criticalRoots).filter((item) =>
-      selectedSet.size === 0 ? true : selectedSet.has(item.toLowerCase())
-    );
-
-    const rawCriteria = Array.isArray(source.criteria) ? source.criteria : [];
-    const parsedCriteria: ParetoCriterion[] = rawCriteria
-      .map((item) => {
-        const record =
-          typeof item === "object" && item !== null
-            ? (item as Record<string, unknown>)
-            : {};
-
-        const name = String(record.name ?? "").trim();
-        const id = String(record.id ?? "").trim() || crypto.randomUUID();
-        const weightRaw = Number(record.weight);
-        const weight =
-          Number.isFinite(weightRaw) && weightRaw >= 1 && weightRaw <= 10
-            ? weightRaw
-            : undefined;
-
-        if (!name) return null;
-
-        return {
-          id,
-          name,
-          ...(weight !== undefined ? { weight } : {}),
-        };
-      })
-      .filter((item): item is ParetoCriterion => Boolean(item))
-      .slice(0, 3);
-
-    const criteria = isLegacyAutoParetoCriteria(parsedCriteria) ? [] : parsedCriteria;
-
-    const rawStep = String(source.step ?? "").trim();
-    const step = (PARETO_STEPS as readonly string[]).includes(rawStep)
-      ? (rawStep as ParetoState["step"])
-      : "select_roots";
-
-    return {
-      roots,
-      selectedRoots,
-      criteria,
-      criticalRoots,
-      criticalEffectPercent: normalizeEffectPercent(source.criticalEffectPercent),
-      criticalJustification: normalizeJustification(source.criticalJustification),
-      step,
-    };
-  }
-
-
-  type ObjectivesState = {
-    generalObjective: string;
-    specificObjectives: string[];
-    linkedCriticalRoots: string[];
-    step: "general" | "specific" | "review";
-  };
-
-  type ImprovementInitiative = {
-    id: string;
-    title: string;
-    description: string;
-    linkedRoot: string | null;       // causa crítica (Pareto) o raíz (Ishikawa)
-    linkedObjective: string | null;  // objetivo específico (Etapa 6)
-    measurement: {
-      indicator: string | null;      // puede ser cualitativo
-      kpi: string | null;            // opcional
-      target: string | null;         // opcional
-    };
-    feasibility: {
-      estimatedWeeks: number | null;
-      notes: string | null;
-    };
-  };
-
-  type ImprovementState = {
-    stageIntroDone: boolean;
-    step: "discover" | "build" | "refine" | "review";
-    focus: {
-      chosenRoot: string | null;
-      chosenObjective: string | null;
-    };
-    initiatives: ImprovementInitiative[];
-    lastSummary: string | null;
-  };
-
-  // ================================
-  // ETAPA 8: Planificación (types + gate helper)
-  // ================================
-  type PlanningMilestone = {
-    id: string;
-    title: string;
-    week: number | null; // 1..N
-    deliverable: string | null;
-  };
-
-  type PlanningWeekItem = {
-    week: number;
-    focus: string;
-    tasks: string[];
-    evidence: string | null;
-    measurement: string | null;
-  };
-
-  type PlanningState = {
-    stageIntroDone: boolean;
-    step: "time_window" | "breakdown" | "schedule" | "review";
-    time: {
-      studentWeeks: number | null;
-      courseCutoffDate: string | null; // opcional si el contexto lo trae
-      effectiveWeeks: number | null;   // opcional
-      notes: string | null;
-    };
-    plan: {
-      weekly: PlanningWeekItem[];
-      milestones: PlanningMilestone[];
-      risks: string[];
-    };
-    lastSummary: string | null;
-  };
-
-  // ================================
-  // ETAPA 9: Reporte de avances
-  // ================================
-  type ProgressState = {
-    step: "intro" | "report" | "clarify" | "review";
-    reportText: string | null;
-    progressPercent: number | null; // 0–100
-    measurementNote: string | null; // solo textual
-    summary: string | null;
-    updatedAtLocal: string | null;
-  };
-
-  function isProgressReadyForValidation(st: ProgressState) {
-    if (!st) return false;
-
-    const textOk =
-      typeof st.reportText === "string" &&
-      st.reportText.trim().length >= 12;
-
-    return textOk;
-  }
-
-  // ================================
-  // ETAPA 10: Documento final (Word/PDF) - 2 versiones máximo
-  // ================================
-  type FinalDocState = {
-    // Nota: "review" coincide con lo que devuelve /api/plans/final_doc/assistant
-    step: "await_upload" | "review" | "needs_v2" | "finalized";
-    versionNumber: 1 | 2;
-    lastFeedback: string | null;
-
-    upload: {
-      fileName: string | null;
-      storagePath: string | null;
-      extractedText: string | null;
-      uploadedAt: string | null;
-    };
-
-    // Campo esperado por /api/plans/final_doc/validate (no es obligatorio en UI, pero se guarda)
-    extractedSections?: {
-      resumen_ejecutivo?: string | null;
-      diagnostico?: string | null;
-      objetivos?: string | null;
-      propuesta_mejora?: string | null;
-      plan_implementacion?: string | null;
-      conclusiones?: string | null;
-    } | null;
-
-    // Campo esperado por /api/plans/final_doc/validate (sale desde la IA)
-    evaluation?: {
-      total_score?: number;
-      total_label?: "Deficiente" | "Regular" | "Adecuado" | "Bien";
-      detail?: Record<string, unknown>;
-      signals?: Record<string, unknown>;
-      mejoras?: string[];
-      needs_resubmission?: boolean;
-    } | null;
-  };
-
-  function isFinalDocReadyForUpload(st: FinalDocState | null) {
-    if (!st) return false;
-
-    return (
-      st.step === "await_upload" ||
-      st.step === "review" ||
-      st.step === "needs_v2"
-    );
-  }
-
-  function canShowFinalDocUploadButton(
-    mode: "general" | "plan_mejora",
-    canInteract: boolean,
-    activeAdvisorStage: AdvisorRuntimeStage,
-    st: FinalDocState | null
-  ) {
-    if (mode !== "plan_mejora") return false;
-    if (!canInteract) return false;
-    if (activeAdvisorStage !== 10) return false;
-
-    // Si aún no cargó state desde BD, igual mostramos el botón
-    // porque Etapa 10 sí permite adjuntar.
-    if (!st) return true;
-
-    return isFinalDocReadyForUpload(st);
-  }
-
-  function isFodaComplete(st: FodaState) {
-    const quadrants: Array<keyof FodaState["items"]> = ["F", "D", "O", "A"];
-    const okCounts = quadrants.every((q) => Array.isArray(st.items?.[q]) && st.items[q].length >= 3);
-    const noPending = !st.pendingEvidence;
-    return okCounts && noPending;
-  }
-
-  function isBrainstormReadyToClose(st: BrainstormState | null) {
-    if (!st) return false;
-    return resolveBrainstormStep(st) === "review";
-  }
-
-  function isObjectivesReadyForValidation(st: {
-    generalObjective: string;
-    specificObjectives: string[];
-    linkedCriticalRoots: string[];
-  }) {
-    const generalOk = (st.generalObjective ?? "").trim().length >= 15;
-
-    const specificOk =
-      Array.isArray(st.specificObjectives) &&
-      st.specificObjectives.filter((s) => (s ?? "").trim().length > 0).length >= 3;
-
-    const linkedOk =
-      Array.isArray(st.linkedCriticalRoots) &&
-      st.linkedCriticalRoots.filter((r) => (r ?? "").trim().length > 0).length >= 1;
-
-    return generalOk && specificOk && linkedOk;
-  }
-
   // Mismas reglas que ishikawa/validate y el mapa del asistente (ishikawaReadiness.ts): problema,
   // sin pregunta pendiente de causa raíz repetida (el "sí" del estudiante la respondería),
   // categorías completas y el mínimo de raíces cerradas. Así el paso a Pareto solo se ofrece
@@ -804,8 +379,6 @@ export default function ChatPage() {
   function shouldOfferIshikawaStageClose(st: IshikawaState | null, ui: IshikawaTurnUi) {
     return ui.offerStageClose && isIshikawaReadyToClose(st);
   }
-
-  type AdvisorRuntimeStage = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null;
 
   const [activeAdvisorStage, setActiveAdvisorStage] = useState<AdvisorRuntimeStage>(null);
 
@@ -1703,80 +1276,6 @@ export default function ChatPage() {
     );
   }
 
-  function promptProd(step: ProdStep, ctxJson: any, draft: ProductivityDraft) {
-    const products = Array.isArray(ctxJson?.products) ? ctxJson.products.filter(Boolean) : [];
-    const line = draft.line || (products.length === 1 ? String(products[0]) : "");
-
-    if (step === 1) {
-      return (
-        "Perfecto 👍 Iniciamos **Etapa 1: Reporte de Productividad mensual**.\n\n" +
-        "🧩 **Paso 1/4 — Tipo de productividad**\n" +
-        "Puedes elegir:\n" +
-        "• **Monetaria** (Ingresos Bs / Costos Bs)\n" +
-        "• **Física** (ej: litros / horas, kg / Bs insumos)\n\n" +
-        "Dime cuál usarás y **por qué**.\n" +
-        "Ejemplo: *“Trabajaré con monetaria porque tengo ingresos y costos mensuales.”*"
-      );
-    }
-
-    if (step === 2) {
-      return (
-        "🧩 **Paso 2/4 — Periodo mensual**\n" +
-        "Dime el mes en formato **YYYY-MM**.\n" +
-        "Ejemplo: **2026-02**"
-      );
-    }
-
-    if (step === 3) {
-      const lineHint =
-        products.length > 1
-          ? `\n\n📌 Importante: dime solo de cuál línea es (ej: Yogurt o Refresco).`
-          : line
-          ? `\n\n📌 Solo de la línea: **${line}**`
-          : "";
-
-      return (
-        "🧩 **Paso 3/4 — Ingresos del mes (Bs)**\n" +
-        "👉 Solo del producto/línea\n" +
-        "👉 del mes completo\n\n" +
-        "Ejemplo: **Ingresos: 8500 Bs**" +
-        lineHint
-      );
-    }
-
-    if (step === 4) {
-      return (
-        "🧩 **Paso 4/4 — Costos principales del mes (2 a 4)**\n" +
-        "Escríbelos con monto aproximado en Bs.\n\n" +
-        "Ejemplo:\n" +
-        "- Mano de obra: 2800\n" +
-        "- Materia prima: 3200\n" +
-        "- Energía: 400"
-      );
-    }
-
-    // step === 5 (confirmación)
-    const income = typeof draft.income_bs === "number" ? draft.income_bs : null;
-    const costs = Array.isArray(draft.costs) ? draft.costs : [];
-    const costTotal = costs.reduce((a, c) => a + (c.amount_bs || 0), 0);
-
-    const prodByCost =
-      income !== null && costTotal > 0 ? (income / costTotal).toFixed(3) : null;
-
-    return (
-      "✅ **Resumen del Reporte de Productividad (borrador)**\n\n" +
-      `- Periodo: **${draft.period_key ?? "(pendiente)"}**\n` +
-      `- Tipo: **${draft.type ?? "(pendiente)"}**\n` +
-      `- Línea: **${draft.line ?? "(pendiente)"}**\n` +
-      `- Ingresos (Bs): **${income ?? "(pendiente)"}**\n` +
-      `- Costos: **${costs.length ? costs.map((c) => `${c.name}: ${c.amount_bs}`).join(", ") : "(pendiente)"}**\n` +
-      `- Total costos (Bs): **${costs.length ? costTotal : "(pendiente)"}**\n` +
-      (prodByCost ? `- Productividad global aprox: **${prodByCost}** (Ingresos/Costos)\n` : "") +
-      "\n¿Confirmas que **ingresos y costos** corresponden SOLO a esa línea y al MISMO mes?\n" +
-      "Responde: **sí** / **confirmo** / **ok**"
-    );
-  }
-
   function pushAssistantOnce(text: string) {
     setMessages((prev) => {
       const last = [...prev].reverse().find((m) => m.role === "assistant")?.content ?? "";
@@ -1870,15 +1369,6 @@ export default function ChatPage() {
     };
   }
 
-  function isAdvisorRuntimeStageValue(value: unknown): value is Exclude<AdvisorRuntimeStage, null> {
-    return (
-      typeof value === "number" &&
-      Number.isInteger(value) &&
-      value >= 0 &&
-      value <= 10
-    );
-  }
-
   function asRecordOrNull(value: unknown): Record<string, unknown> | null {
     return value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -1967,90 +1457,6 @@ export default function ChatPage() {
     clearAdvisorStageStatesLocal();
     setActiveAdvisorStage(0);
     return 0 as AdvisorRuntimeStage;
-  }
-
-  function getAdvisorStageLabel(stage: Exclude<AdvisorRuntimeStage, null>) {
-    switch (stage) {
-      case 0:
-        return "Etapa 0: Contexto del caso";
-      case 1:
-        return "Etapa 1: Productividad";
-      case 2:
-        return "Etapa 2: FODA";
-      case 3:
-        return "Etapa 3: Lluvia de ideas";
-      case 4:
-        return "Etapa 4: Ishikawa";
-      case 5:
-        return "Etapa 5: Pareto";
-      case 6:
-        return "Etapa 6: Objetivos";
-      case 7:
-        return "Etapa 7: Plan de Mejora";
-      case 8:
-        return "Etapa 8: Planificacion";
-      case 9:
-        return "Etapa 9: Reporte de avances";
-      case 10:
-        return "Etapa 10: Documento final";
-    }
-
-    return `Etapa ${stage}`;
-  }
-
-  function isObjectivesStateLike(value: unknown): value is ObjectivesState {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const record = value as Record<string, unknown>;
-    return (
-      typeof record.generalObjective === "string" &&
-      Array.isArray(record.specificObjectives) &&
-      Array.isArray(record.linkedCriticalRoots) &&
-      (record.step === "general" || record.step === "specific" || record.step === "review")
-    );
-  }
-
-  function getObjectivesMissingItems(st: ObjectivesState | null) {
-    if (!st) return ["estado guardado de Objetivos"];
-
-    const missing: string[] = [];
-    if ((st.generalObjective ?? "").trim().length < 15) {
-      missing.push("objetivo general claro");
-    }
-
-    const specificCount = Array.isArray(st.specificObjectives)
-      ? st.specificObjectives.filter((item) => (item ?? "").trim().length > 0).length
-      : 0;
-    if (specificCount < 3) {
-      missing.push(`3 objetivos especificos (${specificCount}/3)`);
-    }
-
-    const linkedCount = Array.isArray(st.linkedCriticalRoots)
-      ? st.linkedCriticalRoots.filter((item) => (item ?? "").trim().length > 0).length
-      : 0;
-    if (linkedCount < 1) {
-      missing.push("vinculo con al menos una causa critica priorizada");
-    }
-
-    return missing;
-  }
-
-  function buildStage6ProgressTruthMessage(st: ObjectivesState | null) {
-    const missing = getObjectivesMissingItems(st);
-
-    if (missing.length === 0) {
-      return (
-        "Actualmente el sistema todavia registra tu avance en **Etapa 6: Objetivos**. " +
-        "Tus objetivos ya se ven listos para validarse; solo despues de que esa validacion se complete correctamente " +
-        "el progreso debe pasar a **Etapa 7: Plan de Mejora**."
-      );
-    }
-
-    return (
-      "Actualmente el sistema todavia registra tu avance en **Etapa 6: Objetivos**. " +
-      "Para pasar a **Etapa 7** falta completar: " +
-      missing.join(", ") +
-      "."
-    );
   }
 
   async function syncActiveAdvisorStageFromBackend() {
@@ -2793,34 +2199,6 @@ export default function ChatPage() {
     };
   }
 
-  type ProdAssistantPatch = {
-    unit_type?: "monetaria" | "fisica" | null;
-    unit_reason?: string | null;
-    period?: string | null;          // YYYY-MM
-    income_bs?: number | null;
-    income_line?: string | null;
-  };
-
-  type ProdAssistantCost = { name: string; amount_bs: number; note?: string };
-
-  type ProdAssistantResponse = {
-    assistantMessage: string;
-    updates: {
-      step: number;
-      patch: ProdAssistantPatch;
-      addCosts: ProdAssistantCost[];
-    };
-    control: {
-      needsClarification: boolean;
-      doneWithStage: boolean;
-    };
-    signals?: {
-      uncertainty?: number;
-      confusion?: number;
-      confidence_extract?: number;
-    };
-  };
-
   function buildRecentHistoryForAssistant(maxTurns = 10) {
     const msgs = messagesRef.current
       .filter((m) => m.role === "user" || m.role === "assistant")
@@ -2868,44 +2246,6 @@ export default function ChatPage() {
         content: String(m.content ?? "").trim(),
       }))
       .filter((m) => m.content.length > 0);
-  }
-
-  function mergeCosts(existing: any, add: ProdAssistantCost[], requiredCosts: number) {
-    const prev: ProdAssistantCost[] = Array.isArray(existing) ? existing : [];
-
-    const seen = new Set(prev.map((c) => normalizeText(c.name)));
-    const merged: ProdAssistantCost[] = [...prev];
-
-    for (const c of add) {
-      const key = normalizeText(c.name);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push({
-        name: c.name,
-        amount_bs: c.amount_bs,
-        note: c.note,
-      });
-      if (merged.length >= requiredCosts) break;
-    }
-
-    return merged;
-  }
-
-  function applyAssistantPatchToDraft(
-    current: ProductivityDraft,
-    patch: ProdAssistantPatch
-  ): ProductivityDraft {
-    const next: ProductivityDraft = { ...current };
-
-    // ✅ MAPEO (para que no se rompa tu estado)
-    if (patch.unit_type) next.type = patch.unit_type;
-    if (typeof patch.unit_reason === "string" && patch.unit_reason.trim()) next.unit_reason = patch.unit_reason.trim();
-
-    if (patch.period) next.period_key = patch.period;
-    if (typeof patch.income_bs === "number") next.income_bs = patch.income_bs;
-    if (patch.income_line) next.line = patch.income_line;
-
-    return next;
   }
 
   async function callProductivityAssistant(input: {
