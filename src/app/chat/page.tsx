@@ -5,7 +5,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import { HoursInlinePanel } from "@/components/chat/HoursInlinePanel";
-import Link from "next/link";
 import Image from "next/image";
 
 import { ChatLayout } from "@/components/chat/ChatLayout";
@@ -161,7 +160,6 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // -----------------------------
@@ -199,7 +197,6 @@ export default function ChatPage() {
   const advisorChatBootstrapErrorRef = useRef<string | null>(null);
   const modeRef = useRef<ChatMode>("general");
   const messagesRef = useRef<Message[]>([]);
-  const suppressNextHistoryHydrationRef = useRef(false);
 
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const composerMeasureRef = useRef<HTMLDivElement | null>(null);
@@ -277,7 +274,6 @@ export default function ChatPage() {
   // -----------------------------
   // Etapa 0 Wizard (plan_mejora)
   // -----------------------------
-  type Stage0Step = 0 | 1 | 2 | 3; // 0=idle, 1=sector, 2=producto, 3=proceso (listo para confirmar)
   type Stage0ContextJson = {
     stage?: string;
     sector?: string;
@@ -293,7 +289,6 @@ export default function ChatPage() {
     needsClarification?: unknown;
     clarificationQuestion?: unknown;
   };
-  const [stage0Step, setStage0Step] = useState<Stage0Step>(0);
   const [stage0Draft, setStage0Draft] = useState<{
     sector?: string;
     products?: string[];
@@ -641,23 +636,6 @@ export default function ChatPage() {
     lastSummary: string | null;
   };
 
-  function isImprovementReadyForValidation(st: ImprovementState) {
-    const initiatives = Array.isArray(st.initiatives) ? st.initiatives : [];
-    if (initiatives.length < 2) return false;
-
-    const allHaveObjective = initiatives.every((i) => Boolean((i.linkedObjective ?? "").trim()));
-    if (!allHaveObjective) return false;
-
-    const allHaveMeasurement = initiatives.every((i) => {
-      const indicator = (i.measurement?.indicator ?? "").trim();
-      const kpi = (i.measurement?.kpi ?? "").trim();
-      return Boolean(indicator || kpi);
-    });
-    if (!allHaveMeasurement) return false;
-
-    return true;
-  }
-
   // ================================
   // ETAPA 8: Planificación (types + gate helper)
   // ================================
@@ -692,27 +670,6 @@ export default function ChatPage() {
     };
     lastSummary: string | null;
   };
-
-  function isPlanningReadyForValidation(st: PlanningState) {
-    const studentWeeksOk =
-      typeof st?.time?.studentWeeks === "number" && Number.isFinite(st.time.studentWeeks) && st.time.studentWeeks > 0;
-
-    const cutoffOk = typeof st?.time?.courseCutoffDate === "string" && st.time.courseCutoffDate.trim().length > 0;
-
-    // Basta con semanas o con fecha de corte (si el estudiante no sabe semanas)
-    if (!studentWeeksOk && !cutoffOk) return false;
-
-    const weekly = Array.isArray(st?.plan?.weekly) ? st.plan.weekly : [];
-    const milestones = Array.isArray(st?.plan?.milestones) ? st.plan.milestones : [];
-
-    if (weekly.length < 1) return false;
-    if (milestones.length < 2) return false;
-
-    const hasMeasurement = weekly.some((w) => Boolean((w?.measurement ?? "").toString().trim()));
-    if (!hasMeasurement) return false;
-
-    return true;
-  }
 
   // ================================
   // ETAPA 9: Reporte de avances
@@ -904,100 +861,6 @@ function looksLikeObjectivesClosureRequest(text: string) {
   );
 }
 
-function looksLikeImprovementClosureRequest(text: string) {
-  const normalized = normalizeClosureText(text);
-
-  return (
-    normalized.includes("revisa mi plan de mejora") ||
-    normalized.includes("revisa el plan de mejora") ||
-    normalized.includes("puedes revisar mi plan de mejora") ||
-    normalized.includes("puedes validar mi plan de mejora") ||
-    normalized.includes("valida mi plan de mejora") ||
-    normalized.includes("valida el plan de mejora") ||
-    normalized.includes("mi plan de mejora ya esta listo") ||
-    normalized.includes("el plan de mejora ya esta listo") ||
-    normalized.includes("mi plan de mejora ya esta completo") ||
-    normalized.includes("el plan de mejora ya esta completo") ||
-    normalized.includes("considero terminada la etapa 7") ||
-    normalized.includes("considero finalizada la etapa 7") ||
-    normalized.includes("ya termine la etapa 7") ||
-    normalized.includes("ya complete la etapa 7") ||
-    normalized.includes("podemos cerrar la etapa 7") ||
-    normalized.includes("cierra la etapa 7") ||
-    normalized.includes("cerramos la etapa 7") ||
-    normalized.includes("finalizamos la etapa 7") ||
-    normalized.includes("ya cerramos la etapa 7") ||
-    normalized.includes("ya finalizamos la etapa 7") ||
-    normalized.includes("etapa 7 completa") ||
-    normalized.includes("la etapa 7 esta completa") ||
-    normalized.includes("la etapa 7 ya esta lista") ||
-    normalized.includes("pasemos a la etapa 8") ||
-    normalized.includes("pasar a la etapa 8") ||
-    normalized.includes("podemos pasar a la etapa 8") ||
-    normalized.includes("sigamos con la etapa 8") ||
-    normalized.includes("continuemos con la etapa 8") ||
-    normalized.includes("podemos continuar") ||
-    normalized.includes("ya esta") ||
-    normalized.includes("ya quedo") ||
-    normalized.includes("ya termine") ||
-    normalized.includes("ya esta listo") ||
-    normalized.includes("ya esta completa") ||
-    normalized === "ok avancemos" ||
-    normalized === "avancemos" ||
-    normalized === "sigamos" ||
-    normalized === "continuemos" ||
-    normalized === "pasemos" ||
-    normalized === "pasemos nomas"
-  );
-}
-
-function looksLikePlanningClosureRequest(text: string) {
-  const normalized = normalizeClosureText(text);
-
-  return (
-    normalized.includes("revisa mi planificacion") ||
-    normalized.includes("revisa la planificacion") ||
-    normalized.includes("puedes revisar mi planificacion") ||
-    normalized.includes("puedes validar mi planificacion") ||
-    normalized.includes("valida mi planificacion") ||
-    normalized.includes("valida la planificacion") ||
-    normalized.includes("mi planificacion ya esta lista") ||
-    normalized.includes("la planificacion ya esta lista") ||
-    normalized.includes("mi cronograma ya esta listo") ||
-    normalized.includes("el cronograma ya esta listo") ||
-    normalized.includes("considero terminada la etapa 8") ||
-    normalized.includes("considero finalizada la etapa 8") ||
-    normalized.includes("ya termine la etapa 8") ||
-    normalized.includes("ya complete la etapa 8") ||
-    normalized.includes("podemos cerrar la etapa 8") ||
-    normalized.includes("cierra la etapa 8") ||
-    normalized.includes("cerramos la etapa 8") ||
-    normalized.includes("finalizamos la etapa 8") ||
-    normalized.includes("ya cerramos la etapa 8") ||
-    normalized.includes("ya finalizamos la etapa 8") ||
-    normalized.includes("etapa 8 completa") ||
-    normalized.includes("la etapa 8 esta completa") ||
-    normalized.includes("la etapa 8 ya esta lista") ||
-    normalized.includes("pasemos a la etapa 9") ||
-    normalized.includes("pasar a la etapa 9") ||
-    normalized.includes("podemos pasar a la etapa 9") ||
-    normalized.includes("sigamos con la etapa 9") ||
-    normalized.includes("continuemos con la etapa 9") ||
-    normalized.includes("podemos continuar") ||
-    normalized.includes("ya esta") ||
-    normalized.includes("ya quedo") ||
-    normalized.includes("ya termine") ||
-    normalized.includes("ya esta listo") ||
-    normalized.includes("ya esta completa") ||
-    normalized === "ok avancemos" ||
-    normalized === "avancemos" ||
-    normalized === "sigamos" ||
-    normalized === "continuemos" ||
-    normalized === "pasemos" ||
-    normalized === "pasemos nomas"
-  );
-}
-
 function isShortAffirmativeReply(text: string) {
   const normalized = normalizeClosureText(text);
 
@@ -1175,66 +1038,6 @@ function looksLikeProgressClosureRequest(text: string) {
     return ui.offerStageClose && isIshikawaReadyToClose(st);
   }
 
-  function isProgressQuestion(text: string) {
-    const raw = (text ?? "").trim();
-    const t = normalizeText(raw);
-
-    if (!t) return false;
-
-    // 1) Señales fuertes: casi imposible que sea otra cosa
-    const strongSignals =
-      t.includes("en que etapa estoy") ||
-      t.includes("en qué etapa estoy") ||
-      t.includes("que etapa sigue") ||
-      t.includes("qué etapa sigue") ||
-      t.includes("cuantas faltan") ||
-      t.includes("cuántas faltan") ||
-      t.includes("que etapas ya hice") ||
-      t.includes("qué etapas ya hice") ||
-      t.includes("pasar a la siguiente etapa") ||
-      t.includes("pasar a la otra etapa") ||
-      t.includes("podemos pasar a la siguiente") ||
-      t.includes("puedo pasar a la siguiente") ||
-      t.includes("puedo avanzar de etapa") ||
-      t.includes("avanzar de etapa");
-
-    if (strongSignals) return true;
-
-    // 2) Señal media: "qué falta / culminar" SOLO si es claramente pregunta
-    const looksLikeQuestion =
-      raw.includes("?") ||
-      t.startsWith("que ") ||
-      t.startsWith("qué ") ||
-      t.startsWith("como ") ||
-      t.startsWith("cómo ") ||
-      t.startsWith("está bien") ||
-      t.startsWith("esta bien") ||
-      t.startsWith("podemos ") ||
-      t.startsWith("puedo ");
-
-    const mediumSignals =
-      t.includes("que falta para") ||
-      t.includes("qué falta para") ||
-      t.includes("falta para cerrar") ||
-      t.includes("culminar esta etapa") ||
-      t.includes("terminar esta etapa");
-
-    // Evitar falsos positivos típicos dentro de Ishikawa (causas)
-    const falsePositives =
-      t.includes("falta manual") ||
-      t.includes("falta de manual") ||
-      t.includes("falta de recursos") ||
-      t.includes("falta de apoyo") ||
-      t.includes("falta de capacitacion") ||
-      t.includes("falta de capacitación") ||
-      t.includes("falta de estandar") ||
-      t.includes("falta de estándar");
-
-    if (falsePositives) return false;
-
-    return looksLikeQuestion && mediumSignals;
-  }
-
   type AdvisorRuntimeStage = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null;
 
   const [activeAdvisorStage, setActiveAdvisorStage] = useState<AdvisorRuntimeStage>(null);
@@ -1260,14 +1063,11 @@ function looksLikeProgressClosureRequest(text: string) {
   const [prodStep, setProdStep] = useState<ProdStep>(0);
   const [prodDraft, setProdDraft] = useState<ProductivityDraft>({});
 
-  const [planContextJson, setPlanContextJson] = useState<Record<string, unknown>>({});
-
   // Fuerza re-evaluación del effect del asesor cuando el usuario presiona "Nuevo chat"
   const [advisorRefreshNonce, setAdvisorRefreshNonce] = useState(0);
 
   // Gate final (solo /api/me)
   const [gateChecked, setGateChecked] = useState(false);
-  const [gateReason, setGateReason] = useState<GateReason | null>(null);
   const [gateMessage, setGateMessage] = useState<string | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
   const [canInteract, setCanInteract] = useState(true); // false => solo lectura
@@ -1278,27 +1078,15 @@ function looksLikeProgressClosureRequest(text: string) {
   const [ishikawaClosePending, setIshikawaClosePending] = useState(false);
 
   const [paretoState, setParetoState] = useState<ParetoState | null>(null);
-  const saveParetoTimerRef = useRef<number | null>(null);
 
   const [objectivesState, setObjectivesState] = useState<ObjectivesState | null>(null);
-  const saveObjectivesTimerRef = useRef<number | null>(null);
 
   const [improvementState, setImprovementState] = useState<ImprovementState | null>(null);
-  const saveImprovementTimerRef = useRef<number | null>(null);
 
   const [planningState, setPlanningState] = useState<PlanningState | null>(null);
-  const savePlanningTimerRef = useRef<number | null>(null);
 
   const [progressState, setProgressState] = useState<ProgressState | null>(null);
   const [finalDocState, setFinalDocState] = useState<FinalDocState | null>(null);
-
-  const saveProgressTimerRef = useRef<number | null>(null);
-
-
-  const [ishikawaProblemPending, setIshikawaProblemPending] = useState(false);
-
-  const saveBrainstormTimerRef = useRef<number | null>(null);
-  const brainstormValidatedRef = useRef(false);
 
   // -----------------------------
   // Redirect si no está autenticado
@@ -1382,7 +1170,6 @@ function looksLikeProgressClosureRequest(text: string) {
         }
 
         const reason = (payload?.gates?.reason ?? null) as GateReason | null;
-        setGateReason(reason);
 
         if (!reason) {
           setGateChecked(true);
@@ -1486,12 +1273,6 @@ function looksLikeProgressClosureRequest(text: string) {
   useEffect(() => {
     if (!ready) return;
 
-    // ✅ Si acabamos de crear chatId y ya pintamos respuesta en UI, no hidratar (solo una vez)
-    if (suppressNextHistoryHydrationRef.current) {
-      suppressNextHistoryHydrationRef.current = false;
-      return;
-    }
-
     if (!authenticated) {
       setChatId(null);
       setMessages(modeRef.current === "general"
@@ -1504,7 +1285,6 @@ function looksLikeProgressClosureRequest(text: string) {
     if (!chatId) return;
 
     async function loadMessages() {
-      setIsLoadingHistory(true);
       try {
         const authHeaders = await getAuthHeaders();
         const res = await fetch(`/api/messages?chatId=${chatId}`, {
@@ -1533,8 +1313,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
       } catch (err) {
         console.error("Error al cargar mensajes:", err);
-      } finally {
-        setIsLoadingHistory(false);
       }
     }
 
@@ -1554,8 +1332,6 @@ function looksLikeProgressClosureRequest(text: string) {
       const ctx = await getPlanContextStatusCached();
       if (!active) return;
       if (!ctx.ok) return;
-
-      setPlanContextJson(ctx.contextJson ?? {});
 
       const fresh = getPlanFresh(clientId);
 
@@ -1614,7 +1390,6 @@ function looksLikeProgressClosureRequest(text: string) {
                 });
               }
 
-              setStage0Step(0);
               setStage0Draft({});
               return;
             }
@@ -1640,7 +1415,6 @@ function looksLikeProgressClosureRequest(text: string) {
               });
             }
 
-            setStage0Step(0);
             setStage0Draft({});
             return;
           }
@@ -1648,20 +1422,12 @@ function looksLikeProgressClosureRequest(text: string) {
 
         // Si está draft, iniciamos wizard en el step correcto (sin guardar nada todavía)
         const next = getNextStage0StepFromContext(ctx.contextJson);
-        setStage0Step(next === 0 ? 1 : (next as any));
 
         setStage0Draft({
           sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
           products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
           process_focus: Array.isArray(ctx.contextJson?.process_focus) ? ctx.contextJson.process_focus : undefined,
         });
-
-        const stepToAsk = (next === 0 ? 1 : next) as 1 | 2 | 3;
-
-        const intro =
-        stepToAsk === 1
-          ? buildAdvisorGreeting(displayName)
-          : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
 
         const step = ((next === 0 ? 1 : next) as 1 | 2 | 3);
         const greet = advisorResumeGreeting(ctx.contextJson, step);
@@ -1705,7 +1471,6 @@ function looksLikeProgressClosureRequest(text: string) {
           ]);
         }
 
-        setStage0Step(0);
         setStage0Draft({});
         return;
       }
@@ -1714,7 +1479,6 @@ function looksLikeProgressClosureRequest(text: string) {
       const nextStep = getNextStage0StepFromContext(ctx.contextJson);
       const step = (nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3;
 
-      setStage0Step(step as any);
       setStage0Draft({
         sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
         products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
@@ -1973,8 +1737,6 @@ function looksLikeProgressClosureRequest(text: string) {
       const ctx = await getPlanContextStatusCached();
       if (!active) return;
       if (!ctx.ok) return;
-
-      setPlanContextJson(ctx.contextJson ?? {});
 
       // Solo tiene sentido si Etapa 0 está confirmada
       if (ctx.status !== "confirmed") return;
@@ -2279,48 +2041,6 @@ function looksLikeProgressClosureRequest(text: string) {
   }
 
   // -----------------------------
-  // Helpers FODA
-  // -----------------------------
-  function quadrantLabel(q: FodaQuadrant) {
-    return q === "F" ? "Fortalezas"
-      : q === "D" ? "Debilidades"
-      : q === "O" ? "Oportunidades"
-      : "Amenazas";
-  }
-
-  function isFodaQuestion(text: string) {
-    const t = normalizeText(text);
-    return (
-      t.endsWith("?") ||
-      t.includes("no se") ||
-      t.includes("no estoy seguro") ||
-      t.includes("ejemplo") ||
-      t.includes("como") ||
-      t.includes("que significa")
-    );
-  }
-
-  function looksGenericFoda(text: string) {
-    const t = normalizeText(text);
-    const generic = [
-      "hay mercado",
-      "buena ubicacion",
-      "personal capacitado",
-      "alta demanda",
-      "competencia",
-      "problemas economicos",
-      "crisis",
-      "inflacion",
-    ];
-    return generic.some((g) => t.includes(g));
-  }
-
-  function needsEvidence(q: FodaQuadrant) {
-    // Externo exige sustento
-    return q === "O" || q === "A";
-  }
-
-  // -----------------------------
   // Etapa 0 (Contexto del caso) helpers
   // -----------------------------
 
@@ -2369,37 +2089,6 @@ function looksLikeProgressClosureRequest(text: string) {
       t.startsWith("saludos");
 
     if (startsWithGreeting && t.length <= 25) return true;
-
-    return false;
-  }
-
-  function isOnlyGreeting(text: string) {
-    const t = normalizeText(text).trim();
-    // solo saludo / small talk MUY corto (no pregunta real)
-    if (!t) return false;
-
-    const greetings = [
-      "hola",
-      "holaa",
-      "hi",
-      "hello",
-      "buenas",
-      "buenos dias",
-      "buen dia",
-      "buenas tardes",
-      "buenas noches",
-      "hey",
-      "que tal",
-      "como estas",
-      "como esta",
-      "saludos",
-      "ola",
-    ];
-
-    if (greetings.includes(t)) return true;
-    if (t.length <= 10 && (t.startsWith("hola") || t.startsWith("hey") || t.startsWith("hi"))) {
-      return true;
-    }
 
     return false;
   }
@@ -2824,86 +2513,6 @@ function looksLikeProgressClosureRequest(text: string) {
     return "answer";
   }
 
-  function parseBsAmount(text: string): number | null {
-    // captura 9000, 9.000, 9,000, 9000.50, 9000,50
-    const m = text.match(/(-?\d[\d.,]*)/);
-    if (!m) return null;
-
-    let raw = m[1];
-
-    // si tiene ambos , y . asumimos separador de miles + decimales
-    // regla simple: el último separador es decimal si hay 2 dígitos después
-    const lastComma = raw.lastIndexOf(",");
-    const lastDot = raw.lastIndexOf(".");
-
-    if (lastComma > lastDot) {
-      // coma podría ser decimal
-      const dec = raw.slice(lastComma + 1);
-      if (dec.length === 2) {
-        raw = raw.replace(/\./g, "").replace(",", ".");
-      } else {
-        raw = raw.replace(/,/g, "");
-      }
-    } else if (lastDot > lastComma) {
-      const dec = raw.slice(lastDot + 1);
-      if (dec.length === 2) {
-        raw = raw.replace(/,/g, "").replace(".", ".");
-      } else {
-        raw = raw.replace(/\./g, "");
-      }
-    } else {
-      raw = raw.replace(/,/g, "");
-    }
-
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return null;
-    if (n < 0) return null;
-    return n;
-  }
-
-  function parseCostItems(text: string): { name: string; amount_bs: number }[] {
-    // acepta: "mano de obra 2800, materia prima 3200, energia 400"
-    // o por líneas:
-    // Mano de obra: 2800 Bs
-    const parts = text
-      .split(/\n|,|;+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const items: { name: string; amount_bs: number }[] = [];
-
-    for (const p of parts) {
-      const amt = parseBsAmount(p);
-      if (amt === null) continue;
-
-      // nombre: quitar monto y símbolos
-      const name = p
-        .replace(/(-?\d[\d.,]*)/g, "")
-        .replace(/bs\.?/gi, "")
-        .replace(/:/g, "")
-        .trim();
-
-      if (!name) continue;
-
-      items.push({
-        name: name.slice(0, 80),
-        amount_bs: amt,
-      });
-    }
-
-    // dedup por name
-    const seen = new Set<string>();
-    const out: typeof items = [];
-    for (const it of items) {
-      const key = normalizeText(it.name);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(it);
-    }
-
-    return out.slice(0, 30);
-  }
-
   function isProdQuestion(text: string) {
     const t = normalizeText(text);
     return (
@@ -3248,7 +2857,6 @@ function looksLikeProgressClosureRequest(text: string) {
   function advisorResumeGreeting(ctxJson: any, step: 1 | 2 | 3) {
     const sector = String(ctxJson?.sector ?? "").trim();
     const products = Array.isArray(ctxJson?.products) ? ctxJson.products.filter(Boolean) : [];
-    const area = Array.isArray(ctxJson?.process_focus) ? ctxJson.process_focus.filter(Boolean) : [];
 
     if (step === 1) {
       return (
@@ -3274,48 +2882,6 @@ function looksLikeProgressClosureRequest(text: string) {
     );
   }
 
-  async function finalizeContextAfterEdit(updatedContextJson: any) {
-    // 1) re-confirmamos en backend por si el POST dejó status draft
-    const confirmed = await confirmPlanContext();
-
-    // 2) marcamos que estamos esperando iniciar Etapa 1
-    setAwaitingStage1Start(clientId, true);
-
-    // 3) armamos resumen y lo mostramos
-    const summary = formatContextSummary(updatedContextJson);
-
-    setMessages((prev) => [
-      ...prev,
-      createMessage(
-        "assistant",
-        "✅ Listo, ya actualicé tu **Contexto del Caso (Etapa 0)**:\n\n" +
-          summary +
-          "\n\n👉 **Importante:** la **Etapa 1 (Productividad)** se puede completar **más adelante**, cuando tengas datos del mes.\n" +
-          "Para avanzar, podemos iniciar con **Etapa 2 (FODA)**.\n\n" +
-          "Puedes decir: **ok**, **vamos**, **listo** para continuar.\n" +
-          "O escribe: **productividad** si ya tienes tus datos.\n\n" +
-          "Si quieres cambiar algo: **cambiar sector/producto/área**."
-      ),
-    ]);
-
-    // 4) limpiamos wizard local (IMPORTANTE)
-    setStage0Step(0);
-    setStage0Draft({});
-    setEditingField(null);
-
-    // si por algún motivo confirm falla, avisamos (pero NO volvemos al wizard)
-    if (!confirmed.ok) {
-      setMessages((prev) => [
-        ...prev,
-        createMessage(
-          "assistant",
-          confirmed?.payload?.message ||
-            "⚠️ Guardé el cambio, pero no pude re-confirmar el contexto. Intenta nuevamente."
-        ),
-      ]);
-    }
-  }
-
   function getNextStage0StepFromContext(ctxJson: any): 1 | 2 | 3 | 0 {
     const sector = String(ctxJson?.sector ?? "").trim();
     const products = Array.isArray(ctxJson?.products) ? ctxJson.products : [];
@@ -3325,10 +2891,6 @@ function looksLikeProgressClosureRequest(text: string) {
     if (!products.length) return 2;
     if (!process.length) return 3;
     return 0; // listo (mínimo completo)
-  }
-
-  function isContextComplete(ctxJson: any) {
-    return getNextStage0StepFromContext(ctxJson) === 0;
   }
 
   function lastAssistantIsStage0Prompt(msgs: Message[]) {
@@ -3364,28 +2926,6 @@ function looksLikeProgressClosureRequest(text: string) {
     } catch {
       return false;
     }
-  }
-
-  function looksLikeDiagnosis(text: string) {
-    const t = normalizeText(text);
-
-    // Si está pidiendo editar/cambiar, NO es diagnóstico
-    if (t.includes("cambiar") || t.includes("editar") || t.includes("modificar")) return false;
-    const hits = [
-      "problema",
-      "demora",
-      "retras",
-      "error",
-      "falla",
-      "cuello",
-      "cola",
-      "merma",
-      "defecto",
-      "desperdicio",
-      "tiempo de espera",
-    ];
-
-    return hits.some((k) => t.includes(k));
   }
 
   function setPlanFresh(cid: string, value: boolean) {
@@ -4007,8 +3547,6 @@ function looksLikeProgressClosureRequest(text: string) {
         message: null,
       },
     };
-
-    setPlanContextJson(contextJson);
   }
 
   async function createAdvisorChatOnly(): Promise<{ ok: boolean; chatId: string | null; payload: AdvisorContextPayload | null }> {
@@ -4189,8 +3727,6 @@ function looksLikeProgressClosureRequest(text: string) {
     const nextStep = getNextStage0StepFromContext(ctxJson);
     const step = editingStep ?? ((nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3);
 
-    setStage0Step(step);
-
     const localIntent = detectStage0Intent(text);
     const decisionIntent = classifyStage0DecisionIntent(text, localIntent);
     const correctionTarget =
@@ -4267,7 +3803,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
       if (liveMissingStep !== 0) {
         setStage0Draft(liveContext);
-        setStage0Step(liveMissingStep);
         setEditingField(null);
 
         planContextCacheRef.current = {
@@ -4323,7 +3858,6 @@ function looksLikeProgressClosureRequest(text: string) {
       };
 
       setStage0Draft(readStage0Context(finalContext));
-      setStage0Step(0);
       setEditingField(null);
       setAwaitingStage1Start(clientId, true);
 
@@ -4341,7 +3875,6 @@ function looksLikeProgressClosureRequest(text: string) {
       const targetStep = stage0StepForField(correctionTarget);
       if (correctionTarget && targetStep) {
         setEditingField(correctionTarget);
-        setStage0Step(targetStep);
         await appendAssistant(
           "Claro, lo ajustamos. Dime el nuevo dato para actualizarlo sin reiniciar el contexto.\n\n" +
             askForMissingStage0Field(targetStep, currentStage0Context)
@@ -4456,78 +3989,6 @@ function looksLikeProgressClosureRequest(text: string) {
       status: res.status,
       ...(json ?? {}),
     };
-  }
-
-  async function handleSendGeneral(text: string) {
-    if (!text.trim()) return;
-
-    // ✅ 1. PINTAR SIEMPRE el mensaje del usuario
-    const userMsg = createMessage("user", text);
-    setMessages((prev) => [...prev, userMsg]);
-
-    // intercept horas (no cambia)
-    if (isHoursIntent(text)) {
-      setShowHoursInline(true);
-      setMessages((prev) => [
-        ...prev,
-        createMessage(
-          "assistant",
-          "Listo ✅ Aquí tienes el formulario para registrar tus horas de esta semana."
-        ),
-      ]);
-      return;
-    }
-
-    setShowHoursInline(false);
-    setIsSending(true);
-
-    try {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({
-          message: text,
-          chatId: chatIdRef.current,
-          mode: modeRef.current,
-        }),
-      });
-
-      const data = await res.json();
-      const ok = res.ok && data?.ok !== false;
-      const payload = data?.data ?? data;
-
-      if (!ok) {
-        setMessages((prev) => [
-          ...prev,
-          createMessage(
-            "assistant",
-            payload?.message || payload?.error || "⚠️ Error desde el servidor."
-          ),
-        ]);
-        return;
-      }
-
-      if (payload?.chatId && payload.chatId !== chatIdRef.current) {
-        suppressNextHistoryHydrationRef.current = true;
-        chatIdRef.current = payload.chatId;
-        setChatId(payload.chatId);
-        window.sessionStorage.setItem(storageKeyChat, payload.chatId);
-      }
-
-      // ✅ 2. Ahora sí, la respuesta de la IA
-      setMessages((prev) => [
-        ...prev,
-        createMessage("assistant", payload.reply ?? "Listo."),
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        createMessage("assistant", "⚠️ Ocurrió un error al procesar tu mensaje."),
-      ]);
-    } finally {
-      setIsSending(false);
-    }
   }
 
   type ProdAssistantPatch = {
@@ -4988,24 +4449,6 @@ function looksLikeProgressClosureRequest(text: string) {
     return { ok, payload };
   }
 
-  async function getParetoState(chatIdArg?: string | null) {
-    const authHeaders = await getAuthHeaders();
-
-    const effectiveChatId =
-      chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
-
-    const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
-
-    const res = await fetch(`/api/plans/pareto/state${qs}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
-  }
-
   async function saveParetoState(state: ParetoState, chatId?: string | null) {
   if (!accessToken) {
     console.warn("[PARETO] Guardado sin accessToken. Se omite.");
@@ -5137,25 +4580,6 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       return { ok, payload };
-    }
-
-
-    async function getResumeGate(targetStage: number, sourceChatId?: string | null) {
-      const authHeaders = await getAuthHeaders();
-
-      const qs = new URLSearchParams({
-        targetStage: String(targetStage),
-      });
-
-      if (sourceChatId) qs.set("chatId", sourceChatId);
-
-      const res = await fetch(`/api/plans/resume-gate?${qs.toString()}`, {
-        headers: { ...authHeaders },
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
-      return { ok, payload: json };
     }
 
 
@@ -5810,7 +5234,6 @@ function looksLikeProgressClosureRequest(text: string) {
       const next = getNextStage0StepFromContext(ctx.contextJson);
       const step = (next === 0 ? 1 : next) as 1 | 2 | 3;
 
-      setStage0Step(step);
       setStage0Draft({
         sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
         products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
@@ -6204,7 +5627,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
         // ⚠️ IMPORTANTE: dentro de este handleSend usamos un chatId "efectivo" local,
         let effectiveChatId: string | null = chatIdRef.current;
-        let skipCtxSync = false;
 
         if (!effectiveChatId) {
           effectiveChatId = await ensureAdvisorChatId({ createNew: mustStartFresh });
@@ -7162,8 +6584,6 @@ function looksLikeProgressClosureRequest(text: string) {
           return;
         }
 
-        const intent = detectStage0Intent(text);
-
         const st = await getProductivityState(chatIdRef.current);
         const hasWizard = st.ok && st.payload?.exists && st.payload?.state?.prodStep > 0;
 
@@ -7465,7 +6885,6 @@ function looksLikeProgressClosureRequest(text: string) {
 
       // También resetea wizard local para evitar “arrastres”
       if (!targetMode) {
-        setStage0Step(0);
         setStage0Draft({});
       }
 
@@ -7505,7 +6924,6 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       try {
-        if (saveBrainstormTimerRef.current) window.clearTimeout(saveBrainstormTimerRef.current);
         if (brainstormState) await saveBrainstormState(brainstormState, chatIdRef.current);
       } catch {}
 
@@ -7744,7 +7162,6 @@ function looksLikeProgressClosureRequest(text: string) {
             setMode(m);
             setChatId(id);
             setShowHoursInline(false);
-            setStage0Step(0);
             setStage0Draft({});
           }}
           onNewChat={() => handleNewChat()}
