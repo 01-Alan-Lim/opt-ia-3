@@ -32,6 +32,7 @@ const TESTS = [
   "ishikawaRootDeferred",
   "stageAuthority",
   "ishikawaE4Simulation",
+  "advisorClientIntent",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
