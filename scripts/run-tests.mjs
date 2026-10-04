@@ -33,6 +33,7 @@ const TESTS = [
   "stageAuthority",
   "ishikawaE4Simulation",
   "advisorClientIntent",
+  "stage0Context",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
