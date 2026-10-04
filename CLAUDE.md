@@ -151,6 +151,37 @@ Los documentos históricos NO son fuente final de verdad.
   Windows, una cadena "tsx a && tsx b && …" de 15 archivos en package.json colgaba el
   cmd.exe con que npm ejecuta el script.
 
+### Completado — Tanda de seguridad (rama fix/security-authority-fields-rls, sin push)
+Código en 9ded60c; migraciones en 8acf582, aplicadas el 2026-10-04 (ver "Seguridad Supabase").
+Precedida de un diagnóstico de solo lectura de E0-E10. Hallazgo de fondo: los gates de
+cada etapa se podían saltar por código (no por RLS) y la nota final la ponía el cliente.
+
+- /api/plans/stage-state corría con service role y escribía el objeto del cliente tal cual
+  para las etapas 0-5 (el `default` de mergeStageState): por ahí se escribía el estado de
+  E4 sin pasar por ishikawa/state, que es quien descarta closure, rootCauses y
+  pendingRootMatch. Ahora el endpoint genérico solo acepta las etapas que el cliente guarda
+  por ahí (6-10); 0-5 se rechazan con STAGE_NOT_ALLOWED nombrando su ruta propia
+  (stageAuthority.ts). No se duplicó lógica: cada ruta propia sigue siendo la única puerta
+  de su etapa, y E4 sigue usando ishikawaStateMerge.
+- DELETE de /api/plans/stage-state: restringido a 2-9, que son las que el cliente limpia al
+  avanzar. Decisión: NO se borra el artefacto validado junto con el estado. Borrar el
+  estado es el paso normal al cerrar una etapa, el artefacto es la fuente de verdad de las
+  siguientes (pareto lee ishikawa_final, objectives lee pareto_final…) y el upsert no
+  guarda historial: cascadear destruiría trabajo validado sin vuelta atrás. E10 queda fuera
+  del borrado porque guarda la evaluación del servidor.
+- E10: evaluation y versionNumber pasan a ser autoridad del servidor. final_doc/assistant
+  los escribe en plan_stage_states antes de responder (finalDocStore.ts) y el guardado del
+  cliente los descarta (stageAuthority.withStoredFinalDocAuthority, usado por
+  stageState.ts). versionNumber ya no se acepta del cuerpo: se deriva de los artefactos
+  guardados (v1 si no hay final_doc_v1, si no v2) porque mandar 2 cerraba la etapa sin
+  importar la nota. Si ya hay final_doc_final, el assistant responde 409.
+- E3: minIdeas sale de MIN_BRAINSTORM_IDEAS (brainstormFlow.ts), nunca del estado. Antes
+  venía del cliente acotado a [3,20], así que el mínimo de 10 causas se bajaba a 3.
+- src/proxy.ts (convención de Next 16; antes middleware.ts): 404 en /dev/* cuando
+  NODE_ENV === "production". La página /dev/index-pdf no tenía guarda; las rutas /api/dev/*
+  sí la tienen y el matcher excluye /api. El resto de la Fase 3 quedó BLOQUEADO, ver abajo.
+- Pruebas: stageAuthority.test.ts (npm test, 16 archivos).
+
 ### Pendiente — Tanda 3: "¿qué me falta?" transversal
 Que en cualquiera de las 11 etapas el estudiante pueda preguntar qué le falta
 o por qué no puede avanzar, y reciba respuesta concreta. Las reglas de cierre
@@ -158,6 +189,23 @@ de cada etapa ya son deterministas y están mapeadas. (E4 ya lo responde con el 
 y las reglas de validate.)
 
 ### Deuda técnica conocida (no tocada)
+- BLOQUEADO — el resto de src/proxy.ts (sesión en /chat, /hours, /onboarding y rol
+  docente en /docente). No se puede hoy: la sesión de Supabase vive en localStorage
+  (createClient de @supabase/supabase-js, sin @supabase/ssr) y las APIs autentican con
+  Authorization: Bearer. La petición de navegación no lleva credencial, así que un gate de
+  sesión en el proxy redirigiría al 100% de los usuarios con sesión válida.
+  Prerrequisito: mover la sesión a cookies con @supabase/ssr (createServerClient).
+- E2: pendingEvidence es autoridad de facto y NO está protegido. foda/validate:152 rechaza
+  si está puesto, pero el campo lo manda el cliente (FodaStateSchema en foda/state) y
+  borrarlo salta el gate de evidencia. Protegerlo exige que foda/assistant lo escriba en la
+  base, como hace ishikawa/assistant con los suyos. El mínimo de 3 por cuadrante sigue.
+- /api/companies y /api/method-experiences usan el cliente ANON dentro del servidor
+  (companies/route.ts:8 y :56, method-experiences/route.ts:8). companies_select_teacher
+  exige authenticated + role teacher, y el cliente anon no lleva sesión: esas rutas
+  devuelven CERO filas hoy. Además ningún componente las llama: son endpoints muertos.
+  Probablemente rotos en silencio desde fix/rls-companies-method-experiences.
+- Las tres rutas /api/dev/index-* también importan el cliente anon. Sí tienen guarda de
+  producción (NODE_ENV === "production" -> FORBIDDEN_IN_PRODUCTION).
 - conversationIntent.ts clasifica mal "no se..." en Pareto; también atrapa
   "no seleccione". Peor que el caso de Ishikawa.
 - parseCriteriaFromMessage se llama dos veces por turno en pareto/assistant.
@@ -165,7 +213,15 @@ y las reglas de validate.)
   (chat/route.ts:630, order asc). El agente pierde contexto reciente.
 - foda/validate guarda el artefacto y avanza ANTES de evaluar; si el JSON del
   LLM falla, responde 500 con la DB ya en E3 y el frontend en E2.
-- Sin middleware.ts: las páginas no tienen protección server-side.
+- Fuera de /dev/*, las páginas no tienen protección server-side (ver BLOQUEADO arriba).
+- E10 trabaja por mes: final_doc/assistant y final_doc/validate filtran por period_key
+  (YYYY-MM, America/La_Paz) la línea de tiempo de E2-E9, el final_doc_final y la versión.
+  Un plan que cruza de mes no ve en E10 lo validado antes. Además PERIOD_KEY es una const
+  de módulo en 18 rutas de api/plans/: se fija al cargar el módulo, no por petición.
+- Orden y gates entre algunas etapas requieren revisión funcional (además del caso E2).
+- src/app/chat/page.tsx (~7900 líneas) pendiente de refactor arquitectónico.
+- Dashboard docente: solo incrusta el informe de Looker Studio en un iframe
+  (components/teacher/TeacherDashboard.tsx); falta un dashboard nativo.
 - Hasta 4-5 llamadas secuenciales a Gemini por turno.
 - Siguiente tramo: autoridad total del turno de E4. Hoy el árbol y los porqués
   siguen viniendo del cliente; solo closure, contadores, registro de raíces y la
@@ -193,8 +249,31 @@ y las reglas de validate.)
 - Con una pregunta de raíz repetida abierta, un "sí"/"no" suelto siempre la responde a
   ella, aunque el último mensaje del asistente preguntara otra cosa.
 
-## Pendientes de seguridad (NO tocar sin autorización)
-- 7 views BI son SECURITY DEFINER y anon tiene SELECT: fuga de datos de
-  estudiantes con la anon key pública.
-- profiles_update_own no restringe columnas: un estudiante puede ponerse
-  role='teacher' y activar las policies IS_TEACHER de RLS.
+## Seguridad Supabase (aplicada y verificada el 2026-10-04)
+Proyecto luvcduxkasaeyobdyafj. Cualquier cambio nuevo de esquema, RLS o grants sigue
+necesitando autorización explícita de Alan. apply_migration asigna una versión nueva: después
+de aplicar, renombrar el archivo local a esa versión (git mv, contenido intacto). Hoy los
+filenames de supabase/migrations/ coinciden con el historial remoto.
+
+| Versión remota | Migración | Qué cierra |
+|---|---|---|
+| 20261004170835 | profiles_update_own_column_scope | authenticated sin INSERT/UPDATE en profiles (tampoco por columna) y sin profiles_insert_own: ya no se puede poner role='teacher' ni aprobarse |
+| 20261004195245 | plan_tables_readonly_for_authenticated | sin INSERT/UPDATE del cliente en plan_stage_artifacts, plan_stage_states y plan_case_contexts; queda SELECT propio |
+| 20261004200351 | plan_stage_evaluations_no_client_insert | sin INSERT del cliente en plan_stage_evaluations; queda SELECT propio |
+| 20261004200840 | bi_views_revoke_anon | 7 views BI sin privilegios para anon ni authenticated. SECURITY DEFINER y el SELECT de looker_reader se conservan a propósito (sin ellos Looker queda en blanco) |
+| 20261004200939 | revoke_broad_anon_grants | anon sin privilegios en ninguna relación de public |
+| 20261004201031 | hours_insert_student_authenticated | hours_insert_student `to authenticated` (antes `to public`), mismo WITH CHECK |
+
+Toda escritura de esas tablas pasa por rutas de API con service role (src/lib/supabaseServer.ts).
+Las 18 tablas de public tienen RLS activa.
+
+### Deuda de seguridad y rendimiento (no tocada)
+- authenticated conserva grants de tabla amplios (arwdDxtm) en cohort_events, cohorts,
+  hours_entries, plan_* y user_google_calendar_*; en profiles, rdDxtm. La RLS impide escribir
+  donde no hay policy, pero el grant incluye TRUNCATE, que la RLS no cubre (PostgREST no lo
+  expone).
+- public.set_updated_at sin search_path fijo (advisor function_search_path_mutable).
+- Auth: leaked password protection deshabilitado (poco relevante: el acceso es Google OAuth).
+- Advisors de rendimiento: 40 auth_rls_initplan (auth.uid() sin `(select ...)`),
+  4 multiple_permissive_policies (cohort_events, cohorts, hours_entries, profiles),
+  4 pares de índices duplicados, 5 foreign keys sin índice, 15 índices sin uso.
