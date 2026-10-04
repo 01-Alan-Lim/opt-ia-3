@@ -17,7 +17,10 @@ export type ApiErrorCode =
   | "ACCESS_EXPIRED"
   | "PAYLOAD_TOO_LARGE"
   | "AUTH_UPSTREAM_TIMEOUT"
-  | "FORBIDDEN_IN_PRODUCTION";
+  | "FORBIDDEN_IN_PRODUCTION"
+  // La ruta existe pero no atiende esa etapa (p. ej. el estado de E4 se guarda por
+  // /api/plans/ishikawa/state, que es quien protege sus campos de autoridad).
+  | "STAGE_NOT_ALLOWED";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

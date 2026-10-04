@@ -30,6 +30,7 @@ const TESTS = [
   "ishikawaTurnRouter",
   "ishikawaPromptContext",
   "ishikawaRootDeferred",
+  "stageAuthority",
   "ishikawaE4Simulation",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 

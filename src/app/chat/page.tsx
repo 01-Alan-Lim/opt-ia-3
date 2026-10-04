@@ -5398,12 +5398,13 @@ function looksLikeProgressClosureRequest(text: string) {
     return saveGenericStageState(10, state as unknown as Record<string, unknown>, effectiveChatId);
   }
 
+  // versionNumber no se envía: lo decide el servidor a partir de los artefactos ya
+  // guardados y vuelve dentro de updates.nextState.
   async function callFinalDocAssistant(args: {
     effectiveChatId?: string | null;
     fileName: string;
     storagePath: string;
     extractedText: string;
-    versionNumber: 1 | 2;
   }) {
     const authHeaders = await getAuthHeaders();
 
@@ -5415,7 +5416,6 @@ function looksLikeProgressClosureRequest(text: string) {
         fileName: args.fileName,
         storagePath: args.storagePath,
         extractedText: args.extractedText,
-        versionNumber: args.versionNumber,
         recentHistory: buildRecentHistoryForAssistant(12),
       }),
     });
@@ -7649,14 +7649,11 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       // 2) Llamar IA de Etapa 10 (NO usar /api/plans/review)
-      const versionNumber = currentFinalDocState.versionNumber;
-
       const a = await callFinalDocAssistant({
         effectiveChatId,
         fileName: file.name,
         storagePath,
         extractedText,
-        versionNumber,
       });
 
       if (!a.ok || !a.payload?.assistantMessage || !a.payload?.updates?.nextState) {
@@ -7669,6 +7666,9 @@ function looksLikeProgressClosureRequest(text: string) {
       }
 
       const nextFromApi = a.payload.updates.nextState as any;
+
+      // La versión la fija el servidor; el cliente solo la refleja.
+      const versionNumber: 1 | 2 = nextFromApi?.versionNumber === 2 ? 2 : 1;
 
       const nextState: FinalDocState = {
         step: "review",

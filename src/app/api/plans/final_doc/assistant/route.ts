@@ -13,6 +13,11 @@ import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
 } from "@/lib/chat/studentIdentity";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
+import {
+  resolveFinalDocVersionNumber,
+  saveFinalDocServerFields,
+} from "@/lib/plan/finalDocStore";
 
 export const runtime = "nodejs";
 
@@ -24,7 +29,9 @@ const BodySchema = z.object({
   fileName: z.string().min(1),
   storagePath: z.string().min(1),
   extractedText: z.string().min(50), // texto ya extraído desde /api/plans/upload
-  versionNumber: z.number().int().min(1).max(2), // 1 o 2
+  // versionNumber ya NO se acepta del cliente: lo deriva el servidor de los artefactos ya
+  // guardados (resolveFinalDocVersionNumber). Mandar 2 cerraba la Etapa 10 sin importar la
+  // nota, porque final_doc/validate cierra siempre cuando isV2.
   recentHistory: z.string().optional(),
 });
 
@@ -126,7 +133,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { chatId, fileName, storagePath, extractedText, versionNumber, recentHistory } = parsed.data;
+    const { chatId, fileName, storagePath, extractedText, recentHistory } = parsed.data;
+
+    // El estado de E10 se escribe aquí abajo: la propiedad del chat se verifica en el
+    // servidor, no se confía en el chatId del cuerpo.
+    const owner = await assertChatOwner(user.userId, chatId);
+    if (!owner.ok) {
+      return failResponse(owner.code, owner.message, owner.status);
+    }
+
+    // Qué versión es esta entrega lo decide el servidor, no el cliente.
+    const version = await resolveFinalDocVersionNumber({
+      userId: user.userId,
+      periodKey: PERIOD_KEY,
+    });
+
+    if (!version.ok) {
+      console.error("[plans] final_doc/assistant: resolución de versión", version.error);
+      return failResponse("INTERNAL", "No se pudo resolver la versión del documento.", 500);
+    }
+
+    if (version.alreadyClosed) {
+      return failResponse(
+        "CONFLICT",
+        "La Etapa 10 ya fue cerrada con una versión final. No se admiten más entregas.",
+        409
+      );
+    }
+
+    const versionNumber = version.versionNumber;
+
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
       .select("first_name,last_name,email")
@@ -571,22 +607,33 @@ ${String(recentHistory ?? "")}
       }
     }
 
-    // Construir nextState mínimo para guardar en Stage 10
-    const nextState = {
-      step: "review",
+    // La evaluación y la versión las escribe el servidor en plan_stage_states ANTES de
+    // responder. final_doc/validate las lee de ahí; el guardado del cliente
+    // (/api/plans/stage-state) las descarta y conserva estas. Antes viajaban por el
+    // navegador dentro de updates.nextState y se podían editar en el camino.
+    const persisted = await saveFinalDocServerFields({
+      userId: user.userId,
+      chatId,
+      periodKey: PERIOD_KEY,
       versionNumber,
+      evaluation: json.evaluation ?? null,
+      extractedSections: json.extractedSections ?? null,
       upload: {
         fileName,
         storagePath,
         extractedText,
         uploadedAt: new Date().toISOString(),
       },
-      extractedSections: json.extractedSections ?? null,
-      evaluation: json.evaluation ?? null,
-      finalized: false,
-    };
+    });
 
+    if (!persisted.ok) {
+      console.error("[plans] final_doc/assistant: guardado del estado de E10", persisted.error);
+      return failResponse("INTERNAL", "No se pudo guardar la evaluación del documento.", 500);
+    }
 
+    // Lo que se devuelve es lo que quedó guardado, para que el cliente pinte exactamente
+    // el estado del servidor.
+    const nextState = persisted.stateJson;
 
     return NextResponse.json(
       {
