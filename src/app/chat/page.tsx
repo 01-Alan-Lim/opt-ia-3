@@ -14,6 +14,8 @@ import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScr
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ModeSelector } from "@/components/chat/ModeSelector";
 import * as advisorApi from "./_lib/advisorApi";
+import { useAccessGate } from "./_lib/useAccessGate";
+import { useChatSession } from "./_lib/useChatSession";
 import { Message } from "@/lib/types";
 import {
   BrainstormState,
@@ -111,28 +113,11 @@ import {
 
 type ChatMode = "general" | "plan_mejora";
 
-type GateReason =
-  | "OK"
-  | "NEEDS_ONBOARDING"
-  | "PENDING_APPROVAL"
-  | "COHORT_INACTIVE"
-  | "ACCESS_NOT_STARTED"
-  | "ACCESS_EXPIRED";
-
 const GREETING =
   "Hola, soy OPT-IA. Me conecto a Supabase y Google AI para ayudarte con productividad en MyPEs.";
 
 export default function ChatPage() {
   const router = useRouter();
-
-  // -----------------------------
-  // Auth (Supabase)
-  // -----------------------------
-  const [ready, setReady] = useState(false);
-  const [sessionEmail, setSessionEmail] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [sessionFullName, setSessionFullName] = useState<string | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   //------------------------------------------
   useEffect(() => {
@@ -148,60 +133,9 @@ export default function ChatPage() {
     return () => mq.removeEventListener?.("change", apply);
   }, []);
 
-  // Mantiene el estado de sesión actualizado
-  useEffect(() => {
-    let active = true;
-
-    async function loadSession() {
-      const { data } = await supabase.auth.getSession();
-      if (!active) return;
-
-      setSessionEmail(data.session?.user?.email ?? null);
-      setUserId(data.session?.user?.id ?? null);
-      setAccessToken(data.session?.access_token ?? null);
-
-      const meta = data.session?.user?.user_metadata as Record<string, unknown> | undefined;
-      const full =
-        (typeof meta?.full_name === "string" && meta.full_name.trim()) ||
-        (typeof meta?.name === "string" && meta.name.trim()) ||
-        null;
-
-      setSessionFullName(full);
-      setReady(true);
-    }
-
-    loadSession();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSessionEmail(newSession?.user?.email ?? null);
-      setUserId(newSession?.user?.id ?? null);
-      setAccessToken(newSession?.access_token ?? null);
-
-      const meta = (newSession?.user?.user_metadata ?? {}) as Record<string, unknown>;
-      const full =
-        (typeof meta.full_name === "string" && meta.full_name.trim()) ||
-        (typeof meta.name === "string" && meta.name.trim()) ||
-        null;
-
-      setSessionFullName(full);
-      setReady(true);
-    });
-
-    return () => {
-      active = false;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
-
-  const authenticated = useMemo(() => Boolean(userId), [userId]);
-
-  const displayName = useMemo(() => {
-    if (sessionFullName) return sessionFullName;
-
-    const email = sessionEmail ?? "";
-    const base = email.split("@")[0]?.trim();
-    return base || "Usuario";
-  }, [sessionFullName, sessionEmail]);
+  // Sesión de Supabase Auth del cliente (useChatSession: solo obtiene la sesión y el token)
+  const { ready, sessionEmail, userId, accessToken, authenticated, displayName, getAuthHeaders } =
+    useChatSession();
 
   // -----------------------------
   // Estado de UI / Chat
@@ -408,12 +342,6 @@ export default function ChatPage() {
   // Fuerza re-evaluación del effect del asesor cuando el usuario presiona "Nuevo chat"
   const [advisorRefreshNonce, setAdvisorRefreshNonce] = useState(0);
 
-  // Gate final (solo /api/me)
-  const [gateChecked, setGateChecked] = useState(false);
-  const [gateMessage, setGateMessage] = useState<string | null>(null);
-  const [accessDenied, setAccessDenied] = useState(false);
-  const [canInteract, setCanInteract] = useState(true); // false => solo lectura
-
   const [ishikawaState, setIshikawaState] = useState<IshikawaState | null>(null);
   const saveIshikawaTimerRef = useRef<number | null>(null);
 
@@ -431,147 +359,9 @@ export default function ChatPage() {
   const [finalDocState, setFinalDocState] = useState<FinalDocState | null>(null);
 
   // -----------------------------
-  // Redirect si no está autenticado
+  // Redirect si no está autenticado y gate final del chat (FUENTE DE VERDAD: /api/me)
   // -----------------------------
-  useEffect(() => {
-    if (ready && !authenticated) {
-      router.replace("/");
-    }
-  }, [ready, authenticated, router]);
-
-  // -----------------------------
-  // Gate final del chat (FUENTE DE VERDAD: /api/me)
-  // -----------------------------
-  useEffect(() => {
-    if (!ready || !authenticated) return;
-
-    let active = true;
-
-    (async () => {
-      try {
-        setGateChecked(false);
-
-        const { data } = await supabase.auth.getSession();
-        const token = data.session?.access_token;
-        if (!token) {
-          if (!active) return;
-          setGateChecked(true);
-          return;
-        }
-
-        const res = await fetch("/api/me", {
-          method: "GET",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        const json = await res.json().catch(() => null);
-        const isOk = res.ok && json?.ok !== false;
-        const payload = isOk ? (json?.data ?? json) : null;
-
-        if (!active) return;
-
-        // defaults
-        setAccessDenied(false);
-        setCanInteract(true);
-        setGateMessage(null);
-
-        // Si /api/me falla, manejamos 401/403 explícitamente
-        if (!payload) {
-          // 401: token inválido / sesión muerta => cerrar sesión y volver al home
-          if (res.status === 401) {
-            await supabase.auth.signOut();
-            setGateChecked(true);
-            router.replace("/");
-            return;
-          }
-
-          // 403: correo no autorizado
-          if (res.status === 403) {
-            await supabase.auth.signOut(); // 🔥 importante: evita que "recuerde" la sesión
-            setAccessDenied(true);
-            setCanInteract(false);
-            setGateMessage(
-              "Acceso restringido. Debes iniciar sesión con un correo institucional autorizado."
-            );
-            setGateChecked(true);
-            router.replace("/?reason=forbidden");
-            return;
-          }
-
-          // Otros fallos: no bloqueamos, pero marcamos gate como chequeado
-          setGateChecked(true);
-          return;
-        }
-
-        // ✅ /api/me => { user, profile, gates }
-        const role = (payload?.user?.role ?? "student") as "student" | "teacher";
-        if (role === "teacher") {
-          setGateChecked(true);
-          router.replace("/docente");
-          return;
-        }
-
-        const reason = (payload?.gates?.reason ?? null) as GateReason | null;
-
-        if (!reason) {
-          setGateChecked(true);
-          return;
-        }
-
-        if (reason === "NEEDS_ONBOARDING") {
-          setGateChecked(true);
-          router.replace("/onboarding");
-          return;
-        }
-
-        if (reason === "PENDING_APPROVAL") {
-          setCanInteract(false);
-          setGateMessage(
-            "Tu registro fue enviado y está pendiente de aprobación del docente."
-          );
-          setGateChecked(true);
-          return;
-        }
-
-        if (reason === "COHORT_INACTIVE") {
-          setCanInteract(false);
-          setGateMessage(
-            "Tu cohorte está inactiva. Puedes ver tu historial, pero no enviar mensajes."
-          );
-          setGateChecked(true);
-          return;
-        }
-
-        if (reason === "ACCESS_NOT_STARTED") {
-          setCanInteract(false);
-          setGateMessage(
-            "Tu acceso aún no ha iniciado. Puedes ver tu historial, pero no enviar mensajes."
-          );
-          setGateChecked(true);
-          return;
-        }
-
-        if (reason === "ACCESS_EXPIRED") {
-          setCanInteract(false);
-          setGateMessage(
-            "Tu acceso al asistente ha finalizado. Puedes ver tu historial, pero no enviar mensajes."
-          );
-          setGateChecked(true);
-          return;
-        }
-
-        setGateChecked(true);
-      } catch (e) {
-        if (!active) return;
-        console.error("Chat gate (/api/me) failed:", e);
-        setGateChecked(true);
-      }
-    })();
-
-    return () => {
-      active = false;
-    };
-  }, [ready, authenticated, router]);
+  const { gateChecked, gateMessage, accessDenied, canInteract } = useAccessGate({ ready, authenticated, router });
 
   // -----------------------------
   // 2a. Cargar desde sessionStorage
@@ -1476,16 +1266,6 @@ export default function ChatPage() {
 
     await appendAssistant(message);
     return true;
-  }
-
-
-  async function getAuthHeaders(): Promise<Record<string, string>> {
-    if (accessToken) return { Authorization: `Bearer ${accessToken}` };
-
-    // Fallback por seguridad
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
   async function persistMessageDB(input: {
