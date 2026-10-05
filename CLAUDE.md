@@ -208,9 +208,17 @@ es un dispatcher (decide la rama y llama al turno).
 - E1→E2 sigue fijado por el cliente (turns/productivityTurn.ts): decisión vigente.
 - Pruebas: npm test, 23 archivos (lista en scripts/run-tests.mjs).
 
-### Siguiente prioridad — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
+### En curso — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
 Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales
 conocidos (ver deuda) no se corrigen dentro del panel.
+- Dashboard docente: NATIVO (GET /api/teacher/dashboard + src/components/teacher/dashboard).
+  Looker Studio está descartado y eliminado de la UI; NEXT_PUBLIC_LOOKER_REPORT_URL ya no la
+  usa el código.
+- Siguiente objetivo: detalle nativo por estudiante y filtros académicos.
+  - Nivel 1, cohorte: visión general, estudiantes, aprobación, horas, avance E0-E10, filtros.
+  - Nivel 2, estudiante: selección, progreso E0-E10, evaluaciones disponibles, horas,
+    actividad, documento final y versiones, y cortes/avances SOLO según datos reales: se
+    auditan antes de D3, sin inventar tablas ni columnas.
 
 ### Pendiente — Tanda 3: "¿qué me falta?" transversal
 Que en cualquiera de las 11 etapas el estudiante pueda preguntar qué le falta
@@ -265,8 +273,9 @@ y las reglas de validate.)
   - E4: validateIshikawa usa el chatId del render (puede ser viejo).
   - Tipos duplicados: ChatRouter (useAccessGate.ts y useChatHistory.ts); ChatMode (page.tsx y
     Sidebar.tsx).
-- Dashboard docente: solo incrusta el informe de Looker Studio en un iframe
-  (components/teacher/TeacherDashboard.tsx); falta un dashboard nativo.
+- Restos de Looker en la base (no tocados): el rol looker_reader y las 7 views BI siguen
+  existiendo. v_student_usage NO es descartable: /api/teacher/dashboard la usa para la
+  actividad del estudiante.
 - Hasta 4-5 llamadas secuenciales a Gemini por turno.
 - Siguiente tramo: autoridad total del turno de E4. Hoy el árbol y los porqués
   siguen viniendo del cliente; solo closure, contadores, registro de raíces y la
