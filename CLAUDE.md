@@ -65,7 +65,10 @@ Los documentos históricos NO son fuente final de verdad.
 
 ## Estado del trabajo
 
-### Completado — Tanda 1 (commit 7e92d36, rama fix/advisor-unblock-e4-e5, sin push)
+Las ramas de las tandas completadas (abajo) están publicadas en origin y NINGUNA está mergeada
+a main (origin/main no contiene 7e92d36 ni lo posterior).
+
+### Completado — Tanda 1 (commit 7e92d36, rama fix/advisor-unblock-e4-e5)
 - Ishikawa exige 10 causas raíz. Constante compartida en rootCauseLimits.ts.
 - Pareto sin mínimo ni tope propio: recibe todas las raíces de Ishikawa.
 - Corte 20% fijo reemplazado por evaluateParetoCut (paretoCut.ts):
@@ -75,7 +78,7 @@ Los documentos históricos NO son fuente final de verdad.
   y responde OK.
 - "no se controla/revisa/verifica" ya no se clasifica como pedido de ayuda.
 
-### Completado — Tanda 2: profundidad variable de porqués en Ishikawa (misma rama, sin push)
+### Completado — Tanda 2: profundidad variable de porqués en Ishikawa (misma rama)
 - Paso A (2b024bb): whyQuality.ts. Filtro determinista barato (tautología,
   causa solo externa, generalidad) + juicio de accionabilidad del LLM +
   decideWhyStep. Profundidad 3-5 (MIN_WHY_DEPTH / MAX_WHY_DEPTH en
@@ -151,7 +154,7 @@ Los documentos históricos NO son fuente final de verdad.
   Windows, una cadena "tsx a && tsx b && …" de 15 archivos en package.json colgaba el
   cmd.exe con que npm ejecuta el script.
 
-### Completado — Tanda de seguridad (rama fix/security-authority-fields-rls, sin push)
+### Completado — Tanda de seguridad (rama fix/security-authority-fields-rls)
 Código en 9ded60c; migraciones en 8acf582, aplicadas el 2026-10-04 (ver "Seguridad Supabase").
 Precedida de un diagnóstico de solo lectura de E0-E10. Hallazgo de fondo: los gates de
 cada etapa se podían saltar por código (no por RLS) y la nota final la ponía el cliente.
@@ -181,6 +184,33 @@ cada etapa se podían saltar por código (no por RLS) y la nota final la ponía 
   NODE_ENV === "production". La página /dev/index-pdf no tenía guarda; las rutas /api/dev/*
   sí la tienen y el matcher excluye /api. El resto de la Fase 3 quedó BLOQUEADO, ver abajo.
 - Pruebas: stageAuthority.test.ts (npm test, 16 archivos).
+
+### Completado — Refactor de src/app/chat/page.tsx (rama refactor/chat-page-architecture, 265832d..9048927)
+Solo se movió código, sin cambiar comportamiento; cada tanda se verificó con equivalencia de AST
+y pruebas de mutación. page.tsx pasó de 7906 a ~2728 líneas; handleSend de 1273 a ~333 y ahora
+es un dispatcher (decide la rama y llama al turno).
+- src/app/chat/_lib/:
+  - useChatSession.ts: sesión de Supabase Auth y header Bearer. No autoriza.
+  - useAccessGate.ts: aplica la respuesta de /api/me (redirecciones, solo lectura).
+  - useChatHistory.ts: carga del historial y persistencia en sessionStorage.
+  - useAdvisorStages.ts: estado E0-E10 y effects de carga y autoguardado.
+  - advisorTransitions.ts: modelo Ishikawa DEL CHAT (no unificado con ishikawaTree.ts) y
+    createAdvisorTransitions(deps): restauración y avance E2-E10 según next.toStage del servidor.
+  - advisorApi.ts: transporte HTTP; recibe los headers ya resueltos.
+  - turns/: un handler por etapa E1-E9 y el contrato AdvisorTurnDeps (turns/types.ts). E3 inicio
+    y el cierre de E2 devuelven true/false (true = turno atendido).
+- Componentes extraídos: src/components/chat/ChatGateScreen, ChatHeader y ModeSelector.
+- Módulos puros: lib/plan/advisorClientIntent, stage0Context, advisorStates y advisorMessages;
+  lib/chat/assistantFormat y chatStorage.
+- Siguen en page.tsx: bootstrap del asesor, E0 (handleStage0DraftFlowV2), Ishikawa residual,
+  ensure/adopt del chat, wrappers con closure, handleNewChat, handleLogout,
+  handleUploadPlanFile (E10) y el JSX.
+- E1→E2 sigue fijado por el cliente (turns/productivityTurn.ts): decisión vigente.
+- Pruebas: npm test, 23 archivos (lista en scripts/run-tests.mjs).
+
+### Siguiente prioridad — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
+Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales
+conocidos (ver deuda) no se corrigen dentro del panel.
 
 ### Pendiente — Tanda 3: "¿qué me falta?" transversal
 Que en cualquiera de las 11 etapas el estudiante pueda preguntar qué le falta
@@ -219,7 +249,22 @@ y las reglas de validate.)
   Un plan que cruza de mes no ve en E10 lo validado antes. Además PERIOD_KEY es una const
   de módulo en 18 rutas de api/plans/: se fija al cargar el módulo, no por petición.
 - Orden y gates entre algunas etapas requieren revisión funcional (además del caso E2).
-- src/app/chat/page.tsx (~7900 líneas) pendiente de refactor arquitectónico.
+- Chat, bugs funcionales verificados al cerrar el refactor (no corregidos):
+  - E0: una pregunta ("¿Qué es un sector?") se guarda en el borrador como "?" (normalizeText
+    quita el signo); "Fabricamos/Vendemos/Ofrecemos…" extrae "Mos …" como producto; "no estoy
+    seguro del sector" guarda "Del Sector"; "área" con tilde no se limpia;
+    lastAssistantIsStage0Prompt no reconoce las preguntas actuales (pueden repetirse).
+  - Historial (useChatHistory): sin guarda de respuesta vieja al cambiar de chat; un chat vacío
+    conserva los mensajes anteriores; messagesRef/chatIdRef se actualizan en effects.
+  - Auth (useAccessGate): en un 403 compiten dos redirecciones; el gate no se reevalúa si la
+    cuenta cambia sin pasar por "sin sesión".
+  - Transiciones: E5 restaurado con estado inválido queda sin estado (cae en /api/plans/review);
+    E3 se restaura saneado o no según el camino; clearAdvisorStageStatesLocal no limpia
+    prodStep, prodDraft, stage0Draft, editingField ni brainstormClosePending; mínimos iniciales
+    de Ishikawa 3/2/1 frente al comentario 4-5/2-3/2-3.
+  - E4: validateIshikawa usa el chatId del render (puede ser viejo).
+  - Tipos duplicados: ChatRouter (useAccessGate.ts y useChatHistory.ts); ChatMode (page.tsx y
+    Sidebar.tsx).
 - Dashboard docente: solo incrusta el informe de Looker Studio en un iframe
   (components/teacher/TeacherDashboard.tsx); falta un dashboard nativo.
 - Hasta 4-5 llamadas secuenciales a Gemini por turno.
