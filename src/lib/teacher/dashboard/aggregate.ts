@@ -13,13 +13,16 @@
 // - La nota de una etapa es la última evaluación de su artefacto final; sin evaluación es null.
 // - Sin registros de horas el total es null, no 0: son horas declaradas, no verificadas.
 // - Las filas de usuarios que no están en la cohorte se ignoran.
+// - analytics (series temporales) se arma en analytics.ts sobre este mismo snapshot.
 
 import {
   FINAL_ARTIFACT_BY_STAGE,
   FINAL_DOC_VERSION_ARTIFACT_TYPES,
   type PlanStageNumber,
 } from "@/lib/plan/stageArtifacts";
+import { buildDashboardAnalytics, type DashboardAnalytics } from "./analytics";
 import type {
+  DashboardAdvanceEventRow,
   DashboardArtifactRow,
   DashboardCaseContextRow,
   DashboardCohortRow,
@@ -27,8 +30,12 @@ import type {
   DashboardHoursRow,
   DashboardStateRow,
   DashboardStudentRow,
+  DashboardUsageDailyRow,
   DashboardUsageRow,
 } from "./rows";
+import { normalizeUserId, round2, timeOf, toFiniteNumber } from "./values";
+
+export { normalizeUserId };
 
 export const DASHBOARD_STAGES: readonly PlanStageNumber[] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
@@ -88,6 +95,7 @@ export type TeacherDashboard = {
   };
   stageTotals: Record<DashboardStageKey, number>;
   students: DashboardStudent[];
+  analytics: DashboardAnalytics;
 };
 
 export type TeacherDashboardInput = {
@@ -99,6 +107,10 @@ export type TeacherDashboardInput = {
   evaluations: DashboardEvaluationRow[];
   hours: DashboardHoursRow[];
   usage: DashboardUsageRow[];
+  usageDaily: DashboardUsageDailyRow[];
+  advanceEvents: DashboardAdvanceEventRow[];
+  // Momento de la consulta: el eje mensual no pasa del mes actual.
+  now: Date;
 };
 
 const CONTEXT_CONFIRMED = "confirmed";
@@ -108,29 +120,6 @@ const ARTIFACT_VALIDATED = "validated";
 const STAGE_BY_FINAL_ARTIFACT: ReadonlyMap<string, number> = new Map(
   [...FINAL_ARTIFACT_BY_STAGE].map(([stage, artifactType]) => [artifactType, stage] as const)
 );
-
-// profiles.user_id es text y otras tablas lo guardan como uuid: se comparan normalizados.
-export function normalizeUserId(id: string): string {
-  return id.trim().toLowerCase();
-}
-
-function toFiniteNumber(value: number | string | null): number | null {
-  if (value === null) return null;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function roundHours(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-function timeOf(value: string): number {
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : 0;
-}
 
 function groupByUser<T extends { user_id: string | null }>(
   rows: T[],
@@ -235,7 +224,7 @@ function buildStudent(
     activeStateUpdatedAt: latestState ? latestState.updated_at : null,
     hours: {
       entries: rows.hours.length,
-      total: rows.hours.length ? roundHours(hoursTotal) : null,
+      total: rows.hours.length ? round2(hoursTotal) : null,
     },
     activity: {
       messagesSent: usage ? toFiniteNumber(usage.messages_user) : null,
@@ -277,6 +266,7 @@ export function buildTeacherDashboard(input: TeacherDashboardInput): TeacherDash
   const evaluations = groupByUser(input.evaluations, members);
   const hours = groupByUser(input.hours, members);
   const usage = groupByUser(input.usage, members);
+  const usageDaily = groupByUser(input.usageDaily, members);
 
   const students = [...profiles].map(([id, profile]) =>
     buildStudent(profile, {
@@ -323,10 +313,22 @@ export function buildTeacherDashboard(input: TeacherDashboardInput): TeacherDash
       planClosed: stageTotals.e10,
       studentsWithHours: withHours.length,
       totalHours: withHours.length
-        ? roundHours(withHours.reduce((sum, student) => sum + (student.hours.total ?? 0), 0))
+        ? round2(withHours.reduce((sum, student) => sum + (student.hours.total ?? 0), 0))
         : null,
     },
     stageTotals,
     students,
+    analytics: buildDashboardAnalytics({
+      cohort: {
+        accessStartsAt: input.cohort.access_starts_at,
+        accessEndsAt: input.cohort.access_ends_at,
+      },
+      now: input.now,
+      students,
+      evaluations,
+      hours: [...hours.values()].flat(),
+      usageDaily: [...usageDaily.values()].flat(),
+      advanceEvents: input.advanceEvents,
+    }),
   };
 }

@@ -59,9 +59,12 @@ export const DashboardEvaluationRowSchema = z.object({
   created_at: z.string(),
 });
 
+// period_start/period_end: semana sábado-viernes (date) que asigna /api/hours al registrar.
 export const DashboardHoursRowSchema = z.object({
   user_id: z.string(),
   hours: NumericSchema,
+  period_start: z.string(),
+  period_end: z.string(),
 });
 
 // v_student_usage: mensajes por estudiante en todos sus chats (asesor y general).
@@ -69,6 +72,22 @@ export const DashboardUsageRowSchema = z.object({
   user_id: z.string().nullable(),
   messages_user: NumericSchema.nullable(),
   last_message_at: z.string().nullable(),
+});
+
+// v_bi_usage_daily, leída como "user_id:student_id": mensajes por estudiante y día. El día es
+// la fecha en UTC (la vista hace date_trunc en la zona de la base, que es UTC).
+export const DashboardUsageDailyRowSchema = z.object({
+  user_id: z.string().nullable(),
+  day: z.string(),
+  messages_user: NumericSchema.nullable(),
+});
+
+// cohort_events con event_kind = 'ADVANCE' de la cohorte (event_index 1..3 por CHECK).
+export const DashboardAdvanceEventRowSchema = z.object({
+  event_kind: z.string(),
+  event_index: z.number().nullable(),
+  event_date: z.string(),
+  is_enabled: z.boolean(),
 });
 
 export type DashboardCohortRow = z.infer<typeof DashboardCohortRowSchema>;
@@ -79,3 +98,5 @@ export type DashboardStateRow = z.infer<typeof DashboardStateRowSchema>;
 export type DashboardEvaluationRow = z.infer<typeof DashboardEvaluationRowSchema>;
 export type DashboardHoursRow = z.infer<typeof DashboardHoursRowSchema>;
 export type DashboardUsageRow = z.infer<typeof DashboardUsageRowSchema>;
+export type DashboardUsageDailyRow = z.infer<typeof DashboardUsageDailyRowSchema>;
+export type DashboardAdvanceEventRow = z.infer<typeof DashboardAdvanceEventRowSchema>;

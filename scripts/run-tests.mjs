@@ -41,7 +41,9 @@ const TESTS = [
   "advisorTurns",
   "stageArtifacts",
   "stageEvaluationRow",
+  "advanceStages",
   "teacherDashboard",
+  "teacherDashboardAnalytics",
   "teacherDashboardView",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 

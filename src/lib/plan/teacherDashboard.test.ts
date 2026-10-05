@@ -4,6 +4,7 @@ import { buildTeacherDashboard, type TeacherDashboardInput } from "../teacher/da
 import type {
   DashboardArtifactRow,
   DashboardEvaluationRow,
+  DashboardHoursRow,
   DashboardStudentRow,
 } from "../teacher/dashboard/rows";
 
@@ -76,6 +77,11 @@ function evaluation(
   };
 }
 
+// Semana sábado-viernes de /api/hours; estas pruebas no miran las series de analytics.
+function hoursRow(userId: string, hours: number | string): DashboardHoursRow {
+  return { user_id: userId, hours, period_start: "2026-03-07", period_end: "2026-03-13" };
+}
+
 function input(overrides: Partial<TeacherDashboardInput>): TeacherDashboardInput {
   return {
     cohort: COHORT,
@@ -86,6 +92,9 @@ function input(overrides: Partial<TeacherDashboardInput>): TeacherDashboardInput
     evaluations: [],
     hours: [],
     usage: [],
+    usageDaily: [],
+    advanceEvents: [],
+    now: new Date("2026-10-05T12:00:00Z"),
     ...overrides,
   };
 }
@@ -305,11 +314,7 @@ const C = "c0000000-0000-4000-8000-00000000000c";
   const dash = buildTeacherDashboard(
     input({
       students: [student(A, "Alba"), student(B, "Bravo")],
-      hours: [
-        { user_id: A, hours: 0.1 },
-        { user_id: A, hours: "0.2" },
-        { user_id: A, hours: 4 },
-      ],
+      hours: [hoursRow(A, 0.1), hoursRow(A, "0.2"), hoursRow(A, 4)],
     })
   );
   const [a, b] = dash.students;
@@ -328,7 +333,7 @@ const C = "c0000000-0000-4000-8000-00000000000c";
       caseContexts: [{ user_id: A, status: "confirmed" }],
       artifacts: [validated(` ${A} `, 1, "2026-01-10T10:00:00+00:00"), validated(C, 2, "2026-01-10T10:00:00+00:00")],
       states: [{ user_id: A, stage: 3, updated_at: "2026-02-01T00:00:00+00:00" }],
-      hours: [{ user_id: C, hours: 10 }],
+      hours: [hoursRow(C, 10)],
       usage: [
         { user_id: A, messages_user: "42", last_message_at: "2026-06-01T12:00:00+00:00" },
         { user_id: null, messages_user: 5, last_message_at: null },
