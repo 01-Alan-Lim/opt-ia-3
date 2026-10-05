@@ -146,10 +146,11 @@ export type IshikawaState = {
 // Dependencias de las transiciones: referencias que ya existían en ChatPage
 // -----------------------------
 
-type Setter<T> = (value: T) => void;
+export type Setter<T> = (value: T) => void;
 
-// Resultado de saveFodaState que lee la restauración de E2 (y getFodaSaveErrorMessage).
-type FodaSaveResult = { ok: boolean; skipped?: boolean; reason?: string; status?: number; json?: unknown };
+// Resultado de saveFodaState que leen la restauración de E2, los turnos de E1/E2
+// (src/app/chat/_lib/turns) y getFodaSaveErrorMessage.
+export type FodaSaveResult = { ok: boolean; skipped?: boolean; reason?: string; status?: number; json?: unknown };
 
 export type AdvisorTransitionDeps = {
   state: {

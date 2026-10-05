@@ -26,13 +26,21 @@ import {
   createAdvisorTransitions,
   type IshikawaState,
 } from "./_lib/advisorTransitions";
+import { handleProgressTurn } from "./_lib/turns/progressTurn";
+import { handlePlanningTurn } from "./_lib/turns/planningTurn";
+import { handleImprovementTurn } from "./_lib/turns/improvementTurn";
+import { handleObjectivesTurn } from "./_lib/turns/objectivesTurn";
+import { handleParetoTurn } from "./_lib/turns/paretoTurn";
+import { handleIshikawaTurn } from "./_lib/turns/ishikawaTurn";
+import { handleBrainstormStartTurn, handleBrainstormTurn } from "./_lib/turns/brainstormTurn";
+import { handleFodaCloseTurn, handleFodaTurn } from "./_lib/turns/fodaTurn";
+import { handleProductivityStartTurn, handleProductivityWizardTurn } from "./_lib/turns/productivityTurn";
+import type { AdvisorTurnDeps, LastProductivityReport, PlanContextStatus } from "./_lib/turns/types";
 import { GREETING, useChatHistory, useChatHistoryPersistence } from "./_lib/useChatHistory";
 import { Message } from "@/lib/types";
 import {
   BrainstormState,
   sanitizeBrainstormState,
-  resolveBrainstormStep,
-  isBrainstormReadyToClose,
 } from "@/lib/plan/brainstormFlow";
 import {
   NO_TURN_UI,
@@ -43,16 +51,7 @@ import { evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
 import {
   isGreetingOrSmallTalk,
   isHoursIntent,
-  isProdQuestion,
-  isReadyIntent,
-  isShortAffirmativeReply,
   looksLikeAdvisorProgressStatusQuestion,
-  looksLikeObjectivesClosureRequest,
-  looksLikeProgressClosureRequest,
-  looksLikeStage6NextStepQuestion,
-  normalizeText,
-  wantsAdvanceStage,
-  wantsKeepAdding,
   wantsStage6ValidationNow,
 } from "@/lib/plan/advisorClientIntent";
 import {
@@ -89,23 +88,18 @@ import {
   type ObjectivesState,
   type ParetoState,
   type PlanningState,
-  type ProdStep,
   type ProductivityDraft,
   type ProgressState,
-  applyAssistantPatchToDraft,
   canShowFinalDocUploadButton,
   isFinalDocReadyForUpload,
   isFodaComplete,
   isObjectivesReadyForValidation,
   isObjectivesStateLike,
-  isProgressReadyForValidation,
-  mergeCosts,
   normalizeParetoStateClient,
 } from "@/lib/plan/advisorStates";
 import {
   buildStage6ProgressTruthMessage,
   getAdvisorStageLabel,
-  promptProd,
 } from "@/lib/plan/advisorMessages";
 import {
   createMessage,
@@ -208,16 +202,6 @@ export default function ChatPage() {
   // -----------------------------
   // Cache ligero para evitar GETs repetidos en Ishikawa
   // -----------------------------
-  type PlanContextStatus = {
-    ok: boolean;
-    status: "draft" | "confirmed";
-    exists: boolean;
-    chatId: string | null;
-    contextJson: any;
-    contextText: string | null;
-    message?: string | null;
-  };
-
   type AdvisorContextPayload = {
     status?: "draft" | "confirmed";
     version?: number;
@@ -229,8 +213,6 @@ export default function ChatPage() {
     error?: string;
     code?: string;
   };
-
-  type LastProductivityReport = { ok: boolean; payload: any | null };
 
   const planContextCacheRef = useRef<{ at: number; data: PlanContextStatus } | null>(null);
   const lastProdReportCacheRef = useRef<{ at: number; data: LastProductivityReport } | null>(null);
@@ -1944,6 +1926,82 @@ export default function ChatPage() {
   // Enviar mensaje
   // -----------------------------
 
+  // -----------------------------
+  // Dependencias de los turnos del asesor (src/app/chat/_lib/turns): referencias de este render.
+  // -----------------------------
+  const advisorTurnDeps: AdvisorTurnDeps = {
+    state: {
+      brainstormClosePending,
+      brainstormState,
+      chatIdRef,
+      clientId,
+      fodaState,
+      ishikawaClosePending,
+      messagesRef,
+      prodDraft,
+      prodStep,
+      setActiveAdvisorStage,
+      setBrainstormClosePending,
+      setBrainstormState,
+      setFodaState,
+      setImprovementState,
+      setIshikawaClosePending,
+      setIshikawaState,
+      setObjectivesState,
+      setParetoState,
+      setPlanningState,
+      setProdDraft,
+      setProdStep,
+      setProgressState,
+    },
+    api: {
+      callBrainstormAssistant,
+      callFodaAssistant,
+      callImprovementAssistant,
+      callIshikawaAssistant,
+      callObjectivesAssistant,
+      callParetoAssistant,
+      callPlanningAssistant,
+      callProductivityAssistant,
+      callProgressAssistant,
+      clearProductivityState,
+      clearStageState,
+      getBrainstormState,
+      getFodaSaveErrorMessage,
+      getIshikawaState,
+      saveBrainstormState,
+      saveFodaState,
+      saveImprovementState,
+      saveIshikawaState,
+      saveObjectivesState,
+      saveParetoState,
+      savePlanningState,
+      saveProductivity,
+      saveProgressState,
+      validateBrainstorm,
+      validateFoda,
+      validateImprovement,
+      validateIshikawa,
+      validateObjectives,
+      validatePareto,
+      validatePlanning,
+      validateProductivity,
+      validateProgress,
+    },
+    chat: {
+      appendAssistant,
+      buildRecentMessagesForIshikawa,
+    },
+    flow: {
+      applyBackendAdvisorAdvance,
+      handleStage6NextStepQuestion,
+      isIshikawaReadyToClose,
+      restoreLatestAdvisorStageToNewChat,
+      setAwaitingStage1Start,
+      shouldOfferIshikawaStageClose,
+    },
+  };
+
   async function handleSend(text: string) {
     if (!text.trim()) return;
     if (!canInteract) return;
@@ -2039,66 +2097,7 @@ export default function ChatPage() {
         // ETAPA 9: Reporte de avances (fluido con assistant)
         // ================================
         if (activeAdvisorStage === 9 && progressState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const assistant = await callProgressAssistant({
-            studentMessage: text,
-            progressState,
-            effectiveChatId,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMsg =
-              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
-                ? `⚠️ ${assistant.payload.message}`
-                : "⚠️ No pude procesar tu reporte. Cuéntame brevemente qué lograste implementar hasta hoy.";
-            await appendAssistant(backendMsg);
-            return;
-          }
-
-          const nextState = assistant.payload.updates.nextState as ProgressState;
-
-          setProgressState(nextState);
-          await saveProgressState(nextState, effectiveChatId);
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          const progressAction = assistant.payload?.updates?.action;
-
-          if (nextState.step === "review" && isProgressReadyForValidation(nextState)) {
-            const shouldValidateNow =
-              progressAction === "ready_to_validate" ||
-              looksLikeProgressClosureRequest(text);
-
-            if (!shouldValidateNow) {
-              return;
-            }
-
-            const v = await validateProgress(effectiveChatId);
-
-            if (!v.ok) {
-              await appendAssistant("⚠️ No se pudo cerrar el reporte de avances.");
-              return;
-            }
-
-            if (v.payload?.valid) {
-              const moved = await applyBackendAdvisorAdvance({
-                fromStage: 9,
-                payload: v.payload,
-                effectiveChatId: advisorChatId,
-              });
-
-              if (!moved) {
-                await appendAssistant(
-                  "✅ La Etapa 9 quedó validada, pero no pude preparar automáticamente la Etapa 10. Recarga el chat y retomamos."
-                );
-              }
-              return;
-            }
-
-            await appendAssistant(
-              `⚠️ ${v.payload?.message ?? "Todavía falta ajustar la Etapa 9 antes de cerrarla."}`
-            );
-          }
-
+          await handleProgressTurn(advisorTurnDeps, { text, effectiveChatId, advisorChatId, progressState });
           return;
         }
 
@@ -2106,67 +2105,7 @@ export default function ChatPage() {
         // ETAPA 8: Planificación (assistant decide intención y cierre)
         // ================================
         if (activeAdvisorStage === 8 && planningState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const assistant = await callPlanningAssistant({
-            studentMessage: text,
-            planningState,
-            caseContext: (ctx.contextJson ?? null) as any,
-            effectiveChatId,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMsg =
-              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
-                ? `⚠️ ${assistant.payload.message}`
-                : "⚠️ No pude procesar tu Planificación. Dime en 1 línea cuántas semanas te quedan o qué parte del cronograma quieres ajustar.";
-            await appendAssistant(backendMsg);
-            return;
-          }
-
-          const nextState = assistant.payload.updates.nextState as PlanningState;
-          const shouldValidateNow = assistant.payload?.decision?.shouldValidateNow === true;
-
-          setPlanningState(nextState);
-          await savePlanningState(nextState, effectiveChatId);
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          if (!shouldValidateNow) {
-            return;
-          }
-
-          const v = await validatePlanning(effectiveChatId);
-
-          if (!v.ok) {
-            const msg = v.payload?.message ?? "No se pudo cerrar Etapa 8 (Planificación).";
-            await appendAssistant(`⚠️ ${msg}`);
-            return;
-          }
-
-          if (!v.payload?.valid) {
-            const msg =
-              v.payload?.message ??
-              "La Etapa 8 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 9.";
-
-            await appendAssistant(
-              "Aún no podemos cerrar la **Etapa 8 (Planificación)**.\n\n" +
-                `⚠️ ${msg}\n\n` +
-                "Si quieres, te ayudo a completar exactamente lo que falta."
-            );
-            return;
-          }
-
-          const moved = await applyBackendAdvisorAdvance({
-            fromStage: 8,
-            payload: v.payload,
-            effectiveChatId: advisorChatId,
-          });
-
-          if (!moved) {
-            await appendAssistant(
-              "✅ La Etapa 8 quedó validada, pero no pude preparar automáticamente la Etapa 9. Recarga el chat y retomamos."
-            );
-          }
-
+          await handlePlanningTurn(advisorTurnDeps, { text, ctx, effectiveChatId, advisorChatId, planningState });
           return;
         }
 
@@ -2174,67 +2113,7 @@ export default function ChatPage() {
         // ETAPA 7: Plan de mejora (assistant decide intención y cierre)
         // ================================
         if (activeAdvisorStage === 7 && improvementState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const assistant = await callImprovementAssistant({
-            studentMessage: text,
-            improvementState,
-            caseContext: (ctx.contextJson ?? null) as any,
-            effectiveChatId,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMsg =
-              typeof assistant.payload?.message === "string" && assistant.payload.message.trim()
-                ? `⚠️ ${assistant.payload.message}`
-                : "⚠️ No pude procesar tu Plan de Mejora. Dime en 1 o 2 líneas qué parte quieres ajustar o si quieres que revise si ya está listo.";
-            await appendAssistant(backendMsg);
-            return;
-          }
-
-          const nextState = assistant.payload.updates.nextState as ImprovementState;
-          const shouldValidateNow = assistant.payload?.decision?.shouldValidateNow === true;
-
-          setImprovementState(nextState);
-          await saveImprovementState(nextState, effectiveChatId);
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          if (!shouldValidateNow) {
-            return;
-          }
-
-          const v = await validateImprovement(effectiveChatId);
-
-          if (!v.ok) {
-            const msg = v.payload?.message ?? "No se pudo cerrar Etapa 7 (Plan de Mejora).";
-            await appendAssistant(`⚠️ ${msg}`);
-            return;
-          }
-
-          if (!v.payload?.valid) {
-            const msg =
-              v.payload?.message ??
-              "La Etapa 7 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 8.";
-
-            await appendAssistant(
-              "Aún no podemos cerrar la **Etapa 7 (Plan de Mejora)**.\n\n" +
-                `⚠️ ${msg}\n\n` +
-                "Si quieres, te ayudo a corregir exactamente lo que falta."
-            );
-            return;
-          }
-
-          const moved = await applyBackendAdvisorAdvance({
-            fromStage: 7,
-            payload: v.payload,
-            effectiveChatId: advisorChatId,
-          });
-
-          if (!moved) {
-            await appendAssistant(
-              "✅ La Etapa 7 quedó validada, pero no pude preparar automáticamente la Etapa 8. Recarga el chat y retomamos."
-            );
-          }
-
+          await handleImprovementTurn(advisorTurnDeps, { text, ctx, effectiveChatId, advisorChatId, improvementState });
           return;
         }
 
@@ -2242,99 +2121,7 @@ export default function ChatPage() {
         // ETAPA 6: Objetivos (en progreso)
         // ================================
         if (activeAdvisorStage === 6 && objectivesState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          if (looksLikeStage6NextStepQuestion(text)) {
-            await handleStage6NextStepQuestion({
-              text,
-              objectivesState,
-              effectiveChatId,
-              advisorChatId,
-            });
-            return;
-          }
-
-          const assistant = await callObjectivesAssistant({
-            studentMessage: text,
-            objectivesState,
-            caseContext: (ctx.contextJson ?? null) as any,
-            effectiveChatId,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-          const backendCode = assistant.payload?.code ?? null;
-          const backendMessage =
-            assistant.payload?.message ??
-            assistant.payload?.detail?.message ??
-            null;
-
-          if (backendCode === "BAD_REQUEST") {
-            setObjectivesState(null);
-            await clearStageState(6, effectiveChatId);
-
-            const restored = await restoreLatestAdvisorStageToNewChat(effectiveChatId);
-            if (restored) {
-              return;
-            }
-          }
-
-          await appendAssistant(
-            backendMessage
-              ? `⚠️ ${backendMessage}`
-              : "⚠️ No pude procesar tus objetivos en este momento. Cuéntame brevemente qué quieres mejorar y te ayudo a redactar un objetivo general."
-          );
-          return;
-        }
-
-          const nextState = assistant.payload.updates.nextState as ObjectivesState;
-
-          setObjectivesState(nextState);
-          await saveObjectivesState(nextState, effectiveChatId);
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          // Validamos Etapa 6 cuando el estado ya está en review
-          // y el estudiante confirma cierre con una frase natural o una respuesta corta.
-          if (nextState.step === "review" && isObjectivesReadyForValidation(nextState)) {
-            const wantsToCloseObjectives =
-              looksLikeObjectivesClosureRequest(text) || isShortAffirmativeReply(text);
-
-            if (!wantsToCloseObjectives) {
-              return;
-            }
-
-            const v = await validateObjectives(effectiveChatId);
-
-            if (!v.ok) {
-              const msg = v.payload?.message ?? "No se pudo cerrar Etapa 6 (Objetivos).";
-              await appendAssistant(`⚠️ ${msg}`);
-              return;
-            }
-
-            if (!v.payload?.valid) {
-              const msg =
-                v.payload?.message ??
-                "La Etapa 6 aún no quedó validada. Revisa los ajustes pendientes antes de pasar a la Etapa 7.";
-
-              await appendAssistant(
-                "Aún no podemos cerrar la **Etapa 6 (Objetivos)**.\n\n" +
-                  `⚠️ ${msg}\n\n` +
-                  "Cuando quieras, te ayudo a corregir exactamente lo que falta."
-              );
-              return;
-            }
-
-            const moved = await applyBackendAdvisorAdvance({
-              fromStage: 6,
-              payload: v.payload,
-              effectiveChatId: advisorChatId,
-            });
-
-            if (!moved) {
-              await appendAssistant(
-                "✅ La Etapa 6 quedó validada, pero no pude preparar automáticamente la Etapa 7. Recarga el chat y retomamos."
-              );
-            }
-            return;
-          }
+          await handleObjectivesTurn(advisorTurnDeps, { text, effectiveChatId, advisorChatId, ctx, objectivesState });
           return;
         }
 
@@ -2343,82 +2130,7 @@ export default function ChatPage() {
         // ================================
 
         if (activeAdvisorStage === 5 && paretoState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const assistant = await callParetoAssistant({
-            studentMessage: text,
-            paretoState,
-            caseContext: (ctx.contextJson ?? null) as any,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            await appendAssistant("⚠️ No pude procesar tu avance en Pareto. ¿Puedes reformular en 1–2 líneas lo que hiciste?");
-            return;
-          }
-
-          const nextState = normalizeParetoStateClient(assistant.payload.updates.nextState);
-
-          if (!nextState) {
-            await appendAssistant("⚠️ El estado de Pareto llegó incompleto. Vuelve a enviar tu último avance para continuar.");
-            return;
-          }
-
-          setParetoState(nextState);
-          await saveParetoState(nextState, effectiveChatId);
-
-          // Si aún no está cerrado, mostramos guía normal
-          if (nextState.step !== "done") {
-            await appendAssistant(assistant.payload.assistantMessage);
-            return;
-          }
-
-          // Si llegó a done, primero validamos y recién luego cerramos de verdad
-          const v = await validatePareto(effectiveChatId);
-
-          if (!v.ok) {
-            const rollbackState: ParetoState = {
-              ...nextState,
-              step: "collect_critical",
-            };
-
-            setParetoState(rollbackState);
-            await saveParetoState(rollbackState, effectiveChatId);
-
-            const msg =
-              v.payload?.message ??
-              "No se pudo cerrar Etapa 5 (Pareto). Revisa que hayas enviado tu grupo crítico y el porcentaje del problema que concentra.";
-            await appendAssistant(`⚠️ ${msg}`);
-            return;
-          }
-
-          if (!v.payload?.valid) {
-            const rollbackState: ParetoState = {
-              ...nextState,
-              step: "collect_critical",
-            };
-
-            setParetoState(rollbackState);
-            await saveParetoState(rollbackState, effectiveChatId);
-
-            const msg =
-              v.payload?.message ??
-              "Pareto aún no quedó validado. Revisa tu grupo crítico antes de pasar a Objetivos.";
-            await appendAssistant(`⚠️ ${msg}`);
-            return;
-          }
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          const moved = await applyBackendAdvisorAdvance({
-            fromStage: 5,
-            payload: v.payload,
-            effectiveChatId: advisorChatId,
-          });
-
-          if (!moved) {
-            await appendAssistant(
-              "✅ La Etapa 5 quedó validada, pero no pude preparar automáticamente la Etapa 6. Recarga el chat y retomamos."
-            );
-          }
-
+          await handleParetoTurn(advisorTurnDeps, { text, ctx, effectiveChatId, advisorChatId, paretoState });
           return;
         }
 
@@ -2457,174 +2169,7 @@ export default function ChatPage() {
         }        
 
         if (activeAdvisorStage === 4 && effectiveIshikawaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const ishikawaState = effectiveIshikawaState;
-          // 1) Si aún no hay problema, el primer mensaje del estudiante se toma como problema (1 línea)
-          const problemText =
-            typeof ishikawaState.problem === "string"
-              ? ishikawaState.problem
-              : (typeof ishikawaState.problem?.text === "string" ? ishikawaState.problem.text : "");
-
-          if (!problemText.trim()) {
-            const hasConversation = messagesRef.current.length > 0;
-
-            // ✅ Si ya hay conversación, NO asumas que estamos empezando Ishikawa.
-            // Probablemente llegó un ishikawaState desfasado/vacío (race).
-            if (hasConversation) {
-            const resIshFresh = await getIshikawaState({
-              chatId: effectiveChatId ?? chatIdRef.current ?? null,
-            });
-            const freshState = resIshFresh.ok && resIshFresh.payload?.exists && resIshFresh.payload?.state
-              ? (resIshFresh.payload.state as IshikawaState)
-              : null;
-
-              if (freshState) {
-                setIshikawaState(freshState);
-                await saveIshikawaState(freshState, effectiveChatId);
-
-                // No agregamos ningún mensaje robótico.
-                // Reintentamos el flujo normal (Gemini) con el state ya sincronizado.
-                const ai = await callIshikawaAssistant({
-                  studentMessage: text,
-                  chatId: advisorChatId,
-                  ishikawaState: freshState,
-                  caseContext: ctx?.contextJson ?? null,
-                  stage1Summary: null,
-                  brainstormState: null,
-                  recentMessages: buildRecentMessagesForIshikawa(6),
-                });
-
-                if (ai.ok) {
-                  setIshikawaState(ai.nextState);
-                  await saveIshikawaState(ai.nextState, effectiveChatId);
-                  await appendAssistant(ai.assistantMessage);
-                } else {
-                  await appendAssistant("⚠️ Estoy detectando que el Ishikawa no tiene el problema cargado. ¿Puedes volver a pegar el problema principal en 1 línea?");
-                }
-
-                return;
-              }
-
-              // Si no logramos refrescar el state, pedimos el problema sin reiniciar el chat.
-              await appendAssistant("⚠️ Parece que no tengo el **problema principal** en el Ishikawa. Pégalo en **1 línea** y seguimos con la misma categoría.");
-              return;
-            }
-
-            // ✅ Caso real de inicio (no hay conversación): aquí sí tomamos el primer mensaje como problema.
-            const next: IshikawaState = {
-              ...ishikawaState,
-              problem: { text: text.trim().slice(0, 1200) },
-            };
-            setIshikawaState(next);
-            await saveIshikawaState(next, effectiveChatId);
-
-            // 🔁 En vez de un texto robótico fijo, pedimos 1ra causa de forma corta y natural:
-            await appendAssistant(
-              "Perfecto — ya registré el problema. 🙌\n\n" +
-              "Ahora dime **una causa concreta** (qué pasa / dónde pasa) y la ubico en Hombre/Máquina/Método/etc., y empezamos con los **¿por qué?**."
-            );
-            return;
-          }
-
-
-          // ✅ Si el usuario solo confirma (OK/Sí) al iniciar Ishikawa, NO lo mandamos al assistant.
-          // Esto evita el loop de “No pude ubicar tu respuesta”.
-          const tConfirm = normalizeText(text).trim();
-
-          // ✅ Acepta confirmaciones aunque tengan texto extra: "ok, está bien", "sí ok", "listo entonces"
-          const isConfirmOnly = /^(ok|okey|okay|si|sí|listo|dale|vamos)\s*[!.?,]*\s*$/.test(tConfirm);
-
-          const hasAnyCauses = (ishikawaState.categories ?? []).some((c) => {
-            const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-            return mains.length > 0;
-          });
-
-          const tNorm = normalizeText(text);
-          const isBareAdvance =
-            isConfirmOnly || (wantsAdvanceStage(text) && tNorm.split(" ").length <= 4);
-
-          if (isBareAdvance && !hasAnyCauses) {
-            await appendAssistant(
-              "✅ **Etapa 4 – Análisis de Causa Raíz (Ishikawa + 5 Porqués)**\n\n" +
-              `🎯 **Problema principal:**\n${problemText}\n\n` +
-              "Vamos a trabajar como en clase:\n" +
-              "👉 **Primer paso:** responde a esta pregunta:\n\n" +
-              `❓ **¿Por qué ocurre este problema?**\n\n` +
-              "Escribe una causa que tú consideres importante. Puede venir de la lluvia de ideas que ya hicimos.\n\n" +
-              "Yo me encargo de ubicarla en la categoría correcta (Hombre, Máquina, Método, etc.) y luego bajamos con más **porqués** hasta llegar a la causa raíz."
-            );
-            return;
-          }
-
-          // Si ya estábamos pidiendo confirmación para pasar a Pareto
-          if (ishikawaClosePending && isIshikawaReadyToClose(ishikawaState)) {
-            if (wantsAdvanceStage(text)) {
-              const v = await validateIshikawa();
-              if (!v.ok) {
-                const msg = v.payload?.message ?? "No se pudo cerrar Etapa 4.";
-                await appendAssistant(`⚠️ ${msg}`);
-                return;
-              }
-
-              setIshikawaClosePending(false);
-
-              const moved = await applyBackendAdvisorAdvance({
-                fromStage: 4,
-                payload: v.payload,
-                effectiveChatId: advisorChatId,
-              });
-
-              if (!moved) {
-                await appendAssistant(
-                  "✅ Ishikawa validado, pero no pude preparar automáticamente la Etapa 5. Recarga el chat para continuar desde Pareto."
-                );
-              }
-
-              return;
-            }
-
-            if (wantsKeepAdding(text)) {
-              setIshikawaClosePending(false);
-              // seguimos normal para refinar
-            } else {
-              await appendAssistant(
-                "Ya tenemos una base suficiente del Ishikawa.\n\n" +
-                  "Ahora tú decides cómo seguir:\n" +
-                  "• podemos revisar o ajustar alguna causa\n" +
-                  "• agregar otra subcausa o ir a otra categoría\n" +
-                  "• o pasar a Pareto (Etapa 5)\n\n" +
-                  "Dime qué prefieres."
-              );
-              return;
-            }
-          }
-
-          // 2) Ya hay problema: delegamos al assistant para clasificar + guiar + 5 porqués
-          const assistant = await callIshikawaAssistant({
-            studentMessage: text,
-            chatId: advisorChatId,
-            ishikawaState,
-            caseContext: ctx.contextJson ?? null,
-            stage1Summary: lastReport.ok ? lastReport.payload ?? null : null,
-            brainstormState: brainstormState ?? null,
-            recentMessages: buildRecentMessagesForIshikawa(6),
-          });
-
-          const nextState = assistant.nextState ?? ishikawaState;
-          setIshikawaState(nextState);
-          await saveIshikawaState(nextState, effectiveChatId);
-
-          await appendAssistant(assistant.assistantMessage);
-
-          // ✅ Solo ofrecemos pasar de etapa si el servidor lo admite en este turno (no justo tras cerrar una rama)
-          if (shouldOfferIshikawaStageClose(nextState, assistant.ui)) {
-            setIshikawaClosePending(true);
-            await appendAssistant(
-              "✅ Ya tenemos una base suficiente del Ishikawa. " +
-                "Si quieres, podemos **seguir refinando**, **revisar otra causa o categoría**, o **pasar a la Etapa 5 (Pareto)**."
-            );
-          } else {
-            setIshikawaClosePending(false);
-          }
+          await handleIshikawaTurn(advisorTurnDeps, { effectiveIshikawaState, effectiveChatId, text, advisorChatId, ctx, lastReport });
           return;
         }
 
@@ -2633,101 +2178,7 @@ export default function ChatPage() {
         // ================================
 
         if (activeAdvisorStage === 3 && brainstormState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const readyToClose = isBrainstormReadyToClose(brainstormState);
-
-          // Si ya completó el mínimo y estamos esperando confirmación del estudiante:
-          if (brainstormClosePending && readyToClose) {
-            if (wantsAdvanceStage(text)) {
-              const v = await validateBrainstorm();
-              if (!v.ok) {
-                const msg = v.payload?.message ?? "No se pudo cerrar Etapa 3.";
-                await appendAssistant(`⚠️ ${msg}`);
-                return;
-              }
-
-
-
-              const problemFromBrainstorm = (brainstormState?.problem?.text ?? "").trim();
-              const problemFromFoda = (typeof (fodaState as any)?.problem === "string"
-                ? ((fodaState as any).problem as string)
-                : ((fodaState as any)?.problem?.text ?? "")
-              ).trim();
-
-              const problemFromContext = (
-                ctx?.contextJson?.problem?.text ??
-                ctx?.contextJson?.problem ??
-                ""
-              ).toString().trim();
-
-              const finalProblem = (problemFromBrainstorm || problemFromFoda || problemFromContext).trim();
-
-              setBrainstormClosePending(false);
-
-              const moved = await applyBackendAdvisorAdvance({
-                fromStage: 3,
-                payload: v.payload,
-                effectiveChatId: advisorChatId,
-                initialProblemText: finalProblem || null,
-              });
-
-              if (!moved) {
-                await appendAssistant(
-                  "✅ Etapa 3 validada, pero no pude preparar automáticamente Ishikawa. Recarga el chat para continuar."
-                );
-              }
-
-              return;
-            }
-
-            if (wantsKeepAdding(text)) {
-              // El estudiante quiere seguir: quitamos el “pendiente” y dejamos que el flujo normal procese la idea
-              setBrainstormClosePending(false);
-              // OJO: no hacemos return, para que el código continúe y procese la causa con el assistant
-            } else {
-              // Si responde algo ambiguo, pedimos confirmación clara
-              await appendAssistant("¿Quieres **seguir agregando** causas o **pasamos a Ishikawa (Etapa 4)**?");
-              return;
-            }
-          }
-
-          const assistant = await callBrainstormAssistant({
-            studentMessage: text,
-            brainstormState,
-            caseContext: ctx.contextJson,
-            stage1Summary: lastReport.ok ? lastReport.payload : null,
-            // Para no inventar otro endpoint, usamos el propio estado FODA si existe (si está validado, igual sirve como resumen)
-            fodaSummary: fodaState ?? null,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMessage =
-              typeof assistant.payload?.message === "string" && assistant.payload.message.trim().length > 0
-                ? assistant.payload.message.trim()
-                : null;
-
-            await appendAssistant(
-              backendMessage ??
-                "⚠️ Tuve un problema momentáneo para interpretar este turno de la Etapa 3. Vuelve a enviarlo y continuamos desde aquí."
-            );
-            return;
-          }
-
-          const nextState = sanitizeBrainstormState(assistant.payload.updates.nextState);
-
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          setBrainstormState(nextState);
-          await saveBrainstormState(nextState, effectiveChatId);
-
-          // ✅ Si ya se completó el mínimo, NO cerramos automático: pedimos confirmación natural
-          if (isBrainstormReadyToClose(nextState)) {
-            setBrainstormClosePending(true);
-            await appendAssistant(
-              "✅ Ya tenemos suficientes causas.\n\n" +
-              "¿Quieres **seguir agregando** más causas o **pasamos a la Etapa 4 (Ishikawa)**?"
-            );
-            return;
-          }
+          await handleBrainstormTurn(advisorTurnDeps, { text, ctx, advisorChatId, lastReport, effectiveChatId, brainstormState });
           return;
         }
 
@@ -2735,84 +2186,7 @@ export default function ChatPage() {
         // ETAPA 3: Enganche inicial (si no existe estado)
         // ================================
         if (activeAdvisorStage === 3 && ctx.ok && ctx.status === "confirmed" && diagUnlocked && !brainstormState) {
-          // Si el usuario escribe "etapa 3" o "lluvia" o "ideas", iniciamos.
-          const t = text.toLowerCase();
-          const wantsE3 = t.includes("etapa 3") || t.includes("lluvia") || t.includes("ideas") || t.includes("brainstorm");
-
-          if (wantsE3) {
-            const resBS = await getBrainstormState();
-            const exists = resBS.ok && resBS.payload?.exists;
-
-            if (!exists) {
-              const initial: BrainstormState = {
-                step: "choose_strategy",
-                strategy: null,
-                problem: null,
-                ideas: [],
-                minIdeas: 10,
-              };
-
-              setBrainstormState(initial);
-              await saveBrainstormState(initial, effectiveChatId);
-
-              await appendAssistant(
-                "Perfecto 👍 Iniciamos la **Etapa 3: Lluvia de ideas (causas)**.\n\n" +
-                "✅ Primero debes elegir tu **estrategia obligatoria**: **FO / DO / FA / DA**.\n" +
-                "👉 Escríbeme: por ejemplo **FO** y dime el motivo en 1–2 líneas.\n\n" +
-                "Luego definiremos la **problemática principal** y recién empezaremos con las causas."
-              );
-              return;
-            }
-
-            const existingRaw = resBS.payload?.state ?? null;
-            const existing = existingRaw ? sanitizeBrainstormState(existingRaw) : null;
-
-            if (existing) {
-              setBrainstormState(existing);
-
-              const n = Array.isArray(existing.ideas) ? existing.ideas.length : 0;
-              const step = resolveBrainstormStep(existing);
-
-              if (step === "choose_strategy") {
-                await appendAssistant(
-                  "📌 Retomemos tu **Etapa 3: Lluvia de ideas**.\n\n" +
-                    "Primero debemos elegir la **estrategia obligatoria**: **FO / DO / FA / DA**.\n\n" +
-                    "Si quieres, puedo ayudarte a escoger la más conveniente según tu FODA."
-                );
-                return;
-              }
-
-              if (step === "define_problem") {
-                await appendAssistant(
-                  `📌 Retomemos tu **Etapa 3**.\n\n` +
-                    `Estrategia elegida: **${existing.strategy?.type ?? "-"}**.\n\n` +
-                    "Ahora falta aterrizar la **problemática principal** que vas a trabajar.\n\n" +
-                    "Puedes escribirme tu propuesta y yo te ayudo a formularla mejor."
-                );
-                return;
-              }
-
-              if (step === "review") {
-                await appendAssistant(
-                  `📌 Retomemos tu **Etapa 3**.\n\n` +
-                    `Estrategia: **${existing.strategy?.type ?? "-"}**\n` +
-                    `Problema: **${existing.problem?.text ?? "(pendiente)"}**\n` +
-                    `Causas registradas: **${n}**.\n\n` +
-                    "✅ Ya cumples el mínimo. Puedes agregar más causas o decirme que pasemos a Ishikawa."
-                );
-                return;
-              }
-
-              await appendAssistant(
-                `📌 Retomemos tu **Etapa 3**.\n\n` +
-                  `Estrategia: **${existing.strategy?.type ?? "-"}**\n` +
-                  `Problema: **${existing.problem?.text ?? "(pendiente)"}**\n` +
-                  `Causas registradas: **${n}**.\n\n` +
-                  "👉 Continúa con otra causa y yo te ayudo a pulirla si hace falta."
-              );
-              return;
-            }
-          }
+          if (await handleBrainstormStartTurn(advisorTurnDeps, { text, effectiveChatId })) return;
         }
 
         // ================================
@@ -2829,107 +2203,13 @@ export default function ChatPage() {
           isFodaComplete(fodaState) &&
           !brainstormState
         ) {
-          const t = normalizeText(text);
-          const wantsNext =
-            isReadyIntent(text) ||
-            t.includes("que sigue") ||
-            t.includes("siguiente") ||
-            t.includes("pasamos") ||
-            t.includes("continuar");
-
-          if (wantsNext) {
-            const v = await validateFoda();
-            if (!v?.ok) {
-              await appendAssistant(
-                v?.payload?.message ??
-                  "⚠️ Aún no puedo validar el FODA. Revisa que haya 3 puntos en cada cuadrante y sustento en O/A."
-              );
-              return;
-            }
-
-            const moved = await applyBackendAdvisorAdvance({
-              fromStage: 2,
-              payload: v.payload,
-              effectiveChatId: advisorChatId,
-            });
-
-            if (!moved) {
-              await appendAssistant(
-                "✅ FODA validado, pero no pude preparar automáticamente la Etapa 3. Recarga el chat para continuar."
-              );
-            }
-
-            return;
-
-          }
+          if (await handleFodaCloseTurn(advisorTurnDeps, { text, advisorChatId })) return;
         }
 
         // ETAPA 2: FODA en progreso (con IA)
         if (activeAdvisorStage === 2 && fodaState && ctx.ok && ctx.status === "confirmed" && diagUnlocked) {
-          const assistant = await callFodaAssistant({
-            studentMessage: text,
-            fodaState,
-            caseContext: ctx.contextJson,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage || !assistant.payload?.updates?.nextState) {
-            const backendMessage =
-              typeof assistant.payload?.message === "string" && assistant.payload.message.trim().length > 0
-                ? assistant.payload.message.trim()
-                : null;
-
-            await appendAssistant(
-              backendMessage ??
-                "⚠️ Seguimos en esta parte del FODA, pero tuve un problema momentáneo para procesar tu mensaje. Vuelve a enviarlo y continuamos desde aquí."
-            );
-            return;
-          }
-
-          const nextState = assistant.payload.updates.nextState as FodaState;
-          const action = assistant.payload.updates?.action as string | undefined;
-
-          // 1) mostrar respuesta “docente”
-          await appendAssistant(assistant.payload.assistantMessage);
-
-          // 2) aplicar estado y guardar
-          setFodaState(nextState);
-
-          const saveResult = await saveFodaState(nextState, advisorChatId);
-          if (!saveResult.ok) {
-            await appendAssistant(getFodaSaveErrorMessage(saveResult));
-            return;
-          }
-
-          // 3) ✅ Si ya está completo (o el LLM lo marca como complete) → VALIDAR y saltar a Etapa 3
-          const completed = action === "complete" || isFodaComplete(nextState);
-
-          if (completed) {
-            const v = await validateFoda();
-
-          if (!v?.ok) {
-            const msg =
-              v?.payload?.message ??
-              "⚠️ Aún no puedo validar el FODA. Revisa que haya 3 puntos en cada cuadrante y sustento en O/A.";
-            await appendAssistant(msg);
-            return;
-          }
-
-          const moved = await applyBackendAdvisorAdvance({
-            fromStage: 2,
-            payload: v.payload,
-            effectiveChatId: advisorChatId,
-          });
-
-          if (!moved) {
-            await appendAssistant(
-              "✅ FODA validado, pero no pude preparar automáticamente la Etapa 3. Recarga el chat para continuar."
-            );
-          }
-
+          await handleFodaTurn(advisorTurnDeps, { text, ctx, advisorChatId, fodaState });
           return;
-          }
-
-          return; // importante: ya atendimos FODA
         }
 
         // 1) Si ya está confirmado: recién llamamos /api/plans/review
@@ -2958,65 +2238,7 @@ export default function ChatPage() {
           isAwaitingStage1Start(clientId) &&
           (activeAdvisorStage == null || activeAdvisorStage <= 1)
         ) {
-          // si el usuario pregunta (no robótico), respondemos y re-preguntamos el paso actual
-          if (isProdQuestion(text) && !isReadyIntent(text)) {
-            await appendAssistant(
-              "Claro 🙂 En esta etapa trabajaremos una **medición básica de productividad mensual**.\n\n" +
-                "Necesito una línea, producto o servicio concreto, junto con **ingresos del mes** y **costos del mes**.\n\n" +
-                "No te preocupes: iremos paso a paso."
-            );
-
-            setActiveAdvisorStage(1);
-            setProdStep(1);
-
-            await appendAssistant(promptProd(1, ctx.contextJson, prodDraft));
-            return;
-          }
-
-          // Si escribe "productividad", iniciar Etapa 1
-          if (text.toLowerCase().includes("productividad")) {
-            setAwaitingStage1Start(clientId, false);
-
-            const products = Array.isArray(ctx.contextJson?.products)
-              ? ctx.contextJson.products.filter(Boolean)
-              : [];
-            const autoLine = products.length === 1 ? String(products[0]) : undefined;
-
-            setActiveAdvisorStage(1);
-            setProdDraft({ line: autoLine, required_costs: 3 });
-            setProdStep(1);
-
-            await appendAssistant(
-              "Perfecto. Empecemos con la **Etapa 1: Productividad mensual**."
-            );
-            await appendAssistant(promptProd(1, ctx.contextJson, { line: autoLine }));
-            return;
-          }
-
-          if (isReadyIntent(text)) {
-            setAwaitingStage1Start(clientId, false);
-
-            const products = Array.isArray(ctx.contextJson?.products)
-              ? ctx.contextJson.products.filter(Boolean)
-              : [];
-            const autoLine = products.length === 1 ? String(products[0]) : undefined;
-
-            setActiveAdvisorStage(1);
-            setProdDraft({ line: autoLine, required_costs: 3 });
-            setProdStep(1);
-
-            await appendAssistant(
-              "Excelente. Continuemos con la **Etapa 1: Productividad mensual**."
-            );
-            await appendAssistant(promptProd(1, ctx.contextJson, { line: autoLine }));
-            return;
-          }
-
-          // si no confirmó, pedimos confirmación para iniciar productividad
-          await appendAssistant(
-            "Antes de avanzar necesito tu confirmación para iniciar la **Etapa 1: Productividad mensual**.\n\n" +
-              "Cuando quieras, responde **ok**, **listo** o **vamos**."
-          );
+          await handleProductivityStartTurn(advisorTurnDeps, { text, ctx });
           return;
         }
 
@@ -3024,112 +2246,8 @@ export default function ChatPage() {
         // ETAPA 1: Productividad Wizard (LLM fluido con JSON estructurado)
         // -----------------------------
         if (ctx.ok && ctx.status === "confirmed" && prodStep > 0) {
-          // 1) Llamar al orquestador fluido
-          const requiredCosts = prodDraft.required_costs === 3 ? 3 : 4;
-
-          const assistant = await callProductivityAssistant({
-            studentMessage: text,
-            prodStep,
-            prodDraft: {
-              ...prodDraft,
-              required_costs: requiredCosts,
-            },
-            caseContext: ctx.contextJson,
-          });
-
-          if (!assistant.ok || !assistant.payload?.assistantMessage) {
-            await appendAssistant("⚠️ No pude interpretar bien tu respuesta. ¿Puedes decirlo en una frase corta (con números si aplica)?");
-            return;
-          }
-
-          const a = assistant.payload;
-
-          // 2) Mostrar mensaje “humano”
-          await appendAssistant(a.assistantMessage);
-
-          // 3) Aplicar patch + acumular costos
-          const patched = applyAssistantPatchToDraft(prodDraft, a.updates?.patch ?? {});
-          const mergedCosts = mergeCosts(patched.costs, a.updates?.addCosts ?? [], requiredCosts);
-
-          const nextDraft: ProductivityDraft = {
-            ...patched,
-            required_costs: requiredCosts,
-            costs: mergedCosts.length ? mergedCosts : patched.costs,
-          };
-
-          const nextStepRaw = typeof a.updates?.step === "number" ? a.updates.step : prodStep;
-          const nextStep = Math.max(1, Math.min(5, Math.trunc(nextStepRaw))) as ProdStep;
-
-          setProdDraft(nextDraft);
-          setProdStep(nextStep);
-
-          // 4) Si el modelo dice “doneWithStage=true”, guardamos y validamos
-          if (a.control?.doneWithStage) {
-            // Construir payload en el formato que tu /api/plans/productivity espera
-            const payload = {
-              type: nextDraft.type ?? "monetaria",
-              period_key: nextDraft.period_key!,
-              line: nextDraft.line,
-              income_bs: nextDraft.income_bs,
-              costs: nextDraft.costs,
-              notes: nextDraft.notes,
-            };
-
-            const saved = await saveProductivity(payload, chatIdRef.current);
-            if (!saved.ok) {
-              await appendAssistant(saved?.data?.message || "⚠️ No pude guardar el reporte.");
-              return;
-            }
-
-
-
-            const validated = await validateProductivity(payload.period_key);
-              if (!validated.ok) {
-                const issues = validated?.details?.issues;
-                const score = validated?.details?.score;
-
-                await appendAssistant(
-                  "⚠️ Aún no está listo para validar.\n" +
-                    (Array.isArray(issues) ? `\nProblemas:\n- ${issues.join("\n- ")}` : "") +
-                    (score
-                      ? `\n\nRúbrica:\n- coherencia: ${score.coherence}\n- tipo: ${score.type_choice}\n- claridad: ${score.clarity}\n- total: ${score.total}`
-                      : "") +
-                    "\n\nCorrige eso y me lo envías de nuevo 🙂"
-                );
-                return;
-              }
-
-              const initial: FodaState = {
-                currentQuadrant: "F",
-                items: {
-                  F: [],
-                  D: [],
-                  O: [],
-                  A: [],
-                },
-              };
-
-              await clearProductivityState();
-
-              setProdStep(0);
-              setProdDraft({});
-              setActiveAdvisorStage(2);
-
-              setFodaState(initial);
-              await saveFodaState(initial, effectiveChatId);
-
-              await appendAssistant(
-                "✅ **Etapa 1 (Productividad) validada**.\n\n" +
-                  "Ahora pasamos a la **Etapa 2: Análisis FODA**.\n\n" +
-                  "Empezamos con **Fortalezas (internas)**.\n\n" +
-                  "Dime una fortaleza real del proceso o área que analizas."
-              );
-
-              return;
-
-          }
-
-          return; // importante: ya atendimos el mensaje
+          await handleProductivityWizardTurn(advisorTurnDeps, { text, ctx, effectiveChatId });
+          return;
         }
 
         const res = await fetch("/api/plans/review", {
