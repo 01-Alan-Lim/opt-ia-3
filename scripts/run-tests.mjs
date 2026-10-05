@@ -40,6 +40,7 @@ const TESTS = [
   "advisorTransitions",
   "advisorTurns",
   "stageArtifacts",
+  "stageEvaluationRow",
   "teacherDashboard",
   "teacherDashboardView",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));

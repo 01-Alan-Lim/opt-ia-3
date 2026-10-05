@@ -11,6 +11,7 @@ import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 
 import { loadLatestStageStateByChat, loadLatestValidatedArtifact} from "@/lib/plan/stageValidation";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
 
 export const runtime = "nodejs";
 
@@ -367,28 +368,18 @@ ${JSON.stringify(
         .maybeSingle();
 
       if (!existingEvalErr && !existingEval) {
-        const payloadEval = {
-          status: "validated",
-          specificObjectivesCount: specificObjectives.length,
-          linkedCriticalRootsCount: linkedCriticalRoots.length,
-        };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: user.userId,
-          chat_id: chatId,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          status: "validated",
-          payload_json: payloadEval,
-
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId: user.userId,
+            chatId,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 6 validada, pero no se pudo insertar la evaluación IA." };

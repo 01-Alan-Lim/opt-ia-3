@@ -9,6 +9,7 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
 import { MIN_ROOT_CAUSES, REQUIRE_REVIEWED_CLOSURE } from "@/lib/plan/rootCauseLimits";
 import { parsePendingRootMatch, parseRootRegistry, type IshikawaState } from "@/lib/plan/ishikawaTree";
 import { deriveRootCauses, type RootCauseSummary } from "@/lib/plan/ishikawaRoots";
@@ -432,26 +433,18 @@ ${JSON.stringify(
       if (existingEvalErr) {
         evalWarning = { warning: "Etapa 4 validada, pero no se pudo verificar evaluación existente." };
       } else if (!existingEval) {
-        const payloadEval = { status: "validated", rootsCount: roots.length };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: userId,
-          chat_id: chatId ?? stateChatId ?? null,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          // ✅ mantenemos lo que ya tenías:
-          status: "validated",
-          payload_json: payloadEval,
-
-          // ✅ añadimos rúbrica IA estilo E2/E3:
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId,
+            chatId: chatId ?? stateChatId ?? null,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 4 validada, pero no se pudo insertar la evaluación IA." };
