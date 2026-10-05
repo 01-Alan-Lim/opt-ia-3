@@ -13,6 +13,7 @@ import { MessageInput } from "@/components/chat/MessageInput";
 import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScreen";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ModeSelector } from "@/components/chat/ModeSelector";
+import * as advisorApi from "./_lib/advisorApi";
 import { Message } from "@/lib/types";
 import {
   BrainstormState,
@@ -81,7 +82,6 @@ import {
   type ObjectivesState,
   type ParetoState,
   type PlanningState,
-  type ProdAssistantResponse,
   type ProdStep,
   type ProductivityDraft,
   type ProgressState,
@@ -1330,21 +1330,7 @@ export default function ChatPage() {
   async function getActiveAdvisorStage() {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/active-stage", {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const isOk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? null;
-    const error = !isOk && json && json.ok === false ? json : null;
-
-    return {
-      ok: isOk,
-      status: res.status,
-      payload,
-      error,
-    };
+    return advisorApi.getActiveAdvisorStage(authHeaders);
   }
 
   function asRecordOrNull(value: unknown): Record<string, unknown> | null {
@@ -1509,20 +1495,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: input.chatId,
-        role: input.role,
-        content: input.content,
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-
-    return { ok: okk, data: json?.data ?? json };
+    return advisorApi.persistMessageDB(authHeaders, input);
   }
 
   async function appendAssistant(content: unknown) {
@@ -1558,107 +1531,34 @@ export default function ChatPage() {
   async function interpretStage0WithLLM(step: 1 | 2 | 3, userText: string, ctxJson: any) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/context/interpret", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        step,
-        userText,
-        currentContextJson: ctxJson ?? {},
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-
-    return { ok: okk, payload };
+    return advisorApi.interpretStage0WithLLM(authHeaders, step, userText, ctxJson);
   }
 
   async function getPlanContextStatus() {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/context", { headers: { ...authHeaders } });
-
-    const json = await res.json().catch(() => null);
-    const ctxOk = res.ok && json?.ok !== false;
-    const ctxPayload = json?.data ?? json;
-    const message =
-      typeof ctxPayload?.message === "string"
-        ? ctxPayload.message
-        : typeof ctxPayload?.error === "string"
-          ? ctxPayload.error
-          : null;
-
-    return {
-      ok: ctxOk,
-      status: (ctxPayload?.status ?? "draft") as "draft" | "confirmed",
-      exists: Boolean(ctxPayload?.exists),
-      chatId: (ctxPayload?.chatId ?? null) as string | null,
-      contextJson: (ctxPayload?.contextJson ?? {}) as any,
-      contextText: (ctxPayload?.contextText ?? null) as string | null,
-      message,
-    };
+    return advisorApi.getPlanContextStatus(authHeaders);
   }
 
   async function getProductivityState(currentChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const qs = currentChatId ? `?chatId=${encodeURIComponent(currentChatId)}` : "";
-    const res = await fetch(`/api/plans/productivity/state${qs}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok: okk, payload };
+    return advisorApi.getProductivityState(authHeaders, currentChatId);
   }
 
   async function saveProductivityState(state: { prodStep: number; prodDraft: any }, currentChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch(`/api/plans/productivity/state`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: currentChatId ?? null,
-        state,
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok: okk, payload };
+    return advisorApi.saveProductivityState(authHeaders, state, currentChatId);
   }
 
   async function clearProductivityState() {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch(`/api/plans/productivity/state`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ clear: true }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok: okk, payload };
+    return advisorApi.clearProductivityState(authHeaders);
   }
 
   async function getLastProductivityReport() {
     try {
       const authHeaders = await getAuthHeaders();
-      const res = await fetch("/api/plans/productivity", {
-        method: "GET",
-        headers: { ...authHeaders },
-      });
-
-      const data = await res.json().catch(() => null);
-      const ok = res.ok && data?.ok === true;
-
-      const payload = ok && data?.data?.exists === false ? null : (ok ? data.data : null);
-
-      return { ok, payload };
+      return await advisorApi.getLastProductivityReport(authHeaders);
     } catch (err) {
       return { ok: false, payload: null };
     }
@@ -1888,17 +1788,7 @@ export default function ChatPage() {
 
   async function confirmPlanContext() {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/context/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({}),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-
-    return { ok, payload, status: res.status };
+    return advisorApi.confirmPlanContext(authHeaders);
   }
 
   async function handleStage0DraftFlowV2(input: {
@@ -2143,38 +2033,13 @@ export default function ChatPage() {
   async function saveProductivity(payload: any, chatId?: string | null) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/productivity", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: chatId ?? undefined,
-        payload,
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const data = json?.data ?? json;
-    return { ok, data, status: res.status };
+    return advisorApi.saveProductivity(authHeaders, payload, chatId);
   }
 
   async function validateProductivity(period: string) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/productivity/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ period }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-
-    return {
-      ok,
-      status: res.status,
-      ...(json ?? {}),
-    };
+    return advisorApi.validateProductivity(authHeaders, period);
   }
 
   function buildRecentHistoryForAssistant(maxTurns = 10) {
@@ -2234,23 +2099,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/productivity/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        studentMessage: input.studentMessage,
-        prodStep: input.prodStep,
-        prodDraft: input.prodDraft,
-        caseContext: input.caseContext ?? {},
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const okk = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-
-    return { ok: okk, payload: payload as ProdAssistantResponse };
+    return advisorApi.callProductivityAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
   }
 
   async function getFodaState(chatIdArg?: string | null) {
@@ -2259,15 +2108,7 @@ export default function ChatPage() {
     const effectiveChatId =
       chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
 
-    const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
-
-    const res = await fetch(`/api/plans/foda/state${qs}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.getFodaState(authHeaders, effectiveChatId);
   }
 
 
@@ -2283,24 +2124,7 @@ export default function ChatPage() {
 
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/foda/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ state, chatId: effectiveChatId }),
-    });
-
-
-    const json = await res.json().catch(() => null);
-
-    // criterio correcto: ok si HTTP ok y el JSON no dice explícitamente ok:false
-    const ok = res.ok && json?.ok !== false;
-
-    if (!ok) {
-      // ⚠️ warn (no error) para que no salga el overlay rojo de Next
-      console.warn("[FODA] autosave failed (non-blocking)", { status: res.status, json });
-    }
-
-    return { ok, status: res.status, json };
+    return advisorApi.saveFodaState(authHeaders, state, effectiveChatId);
   }
 
   function getFodaSaveErrorMessage(result: {
@@ -2341,22 +2165,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/foda/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        studentMessage: input.studentMessage,
-        fodaState: input.fodaState,
-        caseContext: input.caseContext ?? {},
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-
-    return { ok, payload };
+    return advisorApi.callFodaAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
   }
 
   async function getBrainstormState(chatIdArg?: string | null) {
@@ -2365,16 +2174,7 @@ export default function ChatPage() {
     const effectiveChatId =
       chatIdArg === undefined ? (chatIdRef.current ?? null) : chatIdArg;
 
-    const qs = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : "";
-
-    const res = await fetch(`/api/plans/brainstorm/state${qs}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.getBrainstormState(authHeaders, effectiveChatId);
   }
 
   async function saveBrainstormState(state: BrainstormState, chatId?: string | null) {
@@ -2392,49 +2192,14 @@ export default function ChatPage() {
     }
 
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/brainstorm/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ state, chatId: effectiveChatId }),
-    });
-
-    const contentType = res.headers.get("content-type") ?? "";
-      let json: any = null;
-      let text: string | null = null;
-
-      if (contentType.includes("application/json")) {
-        json = await res.json().catch(() => null);
-      } else {
-        text = await res.text().catch(() => null);
-      }
-
-      const ok = res.ok && json?.ok !== false;
-
-      if (!ok) {
-        console.warn("[BRAINSTORM] save state failed", {
-          status: res.status,
-          contentType,
-          json,
-          text,
-        });
-      }
-
-      return { ok };
+    return advisorApi.saveBrainstormState(authHeaders, state, effectiveChatId);
   }
 
     async function validateFoda(chatIdArg?: string | null) {
       const authHeaders = await getAuthHeaders();
       const effectiveChatId = chatIdArg ?? chatIdRef.current ?? null;
 
-      const res = await fetch("/api/plans/foda/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ chatId: effectiveChatId }),
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
-      return { ok, payload: json };
+      return advisorApi.validateFoda(authHeaders, effectiveChatId);
     }
 
   async function callBrainstormAssistant(input: {
@@ -2446,36 +2211,12 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/brainstorm/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        studentMessage: input.studentMessage,
-        brainstormState: input.brainstormState,
-        caseContext: input.caseContext ?? {},
-        stage1Summary: input.stage1Summary ?? null,
-        fodaSummary: input.fodaSummary ?? null,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.callBrainstormAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
   }
 
   async function validateBrainstorm() {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/brainstorm/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: chatIdRef.current }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.validateBrainstorm(authHeaders, chatIdRef.current);
   }
 
   async function getIshikawaState(args?: { chatId?: string | null }) {
@@ -2489,16 +2230,7 @@ export default function ChatPage() {
       };
     }
 
-    const qs = `?chatId=${encodeURIComponent(effectiveChatId)}`;
-
-    const res = await fetch(`/api/plans/ishikawa/state${qs}`, {
-      headers: { ...authHeaders },
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.getIshikawaState(authHeaders, effectiveChatId);
   }
 
   async function saveIshikawaState(state: IshikawaState, chatId?: string | null) {
@@ -2554,19 +2286,7 @@ export default function ChatPage() {
 
   async function validateIshikawa() {
     const authHeaders = await getAuthHeaders();
-    const res = await fetch("/api/plans/ishikawa/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const payload = json?.data ?? json;
-
-    // ✅ ok SOLO si valid === true
-    const ok = res.ok && json?.ok !== false && payload?.valid === true;
-
-    return { ok, payload };
+    return advisorApi.validateIshikawa(authHeaders, chatId);
   }
 
   async function saveParetoState(state: ParetoState, chatId?: string | null) {
@@ -2588,17 +2308,7 @@ export default function ChatPage() {
   }
 
   const authHeaders = await getAuthHeaders();
-  const res = await fetch("/api/plans/pareto/state", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders },
-    body: JSON.stringify({ state: normalizedState, chatId: effectiveChatId }),
-  });
-
-  const json = await res.json().catch(() => null);
-  const ok = res.ok && json?.ok !== false;
-
-  if (!ok) console.warn("[PARETO] save state failed", { status: res.status, json });
-  return { ok };
+  return advisorApi.saveParetoState(authHeaders, normalizedState, effectiveChatId);
   }
 
   async function callParetoAssistant(input: {
@@ -2608,37 +2318,14 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/pareto/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: chatIdRef.current ?? null,
-        studentMessage: input.studentMessage,
-        paretoState: normalizeParetoStateClient(input.paretoState),
-        caseContext: input.caseContext ?? null,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.callParetoAssistant(authHeaders, input, chatIdRef.current ?? null, buildRecentHistoryForAssistant(10));
   }
 
     async function validatePareto(effectiveChatId?: string | null) {
       const authHeaders = await getAuthHeaders();
       const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-      const res = await fetch("/api/plans/pareto/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({ chatId: cid }),
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
-      return { ok, payload: json };
+      return advisorApi.validatePareto(authHeaders, cid);
     }
 
 
@@ -2648,18 +2335,7 @@ export default function ChatPage() {
     ) {
       const authHeaders = await getAuthHeaders();
 
-      const qs = new URLSearchParams({ stage: String(stage) });
-      if (args?.chatId) qs.set("chatId", args.chatId);
-      if (args?.latest) qs.set("latest", "true");
-
-      const res = await fetch(`/api/plans/stage-state?${qs.toString()}`, {
-        headers: { ...authHeaders },
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
-      const payload = json?.data ?? json;
-      return { ok, payload };
+      return advisorApi.getGenericStageState(authHeaders, stage, args);
     }
 
 
@@ -2681,25 +2357,7 @@ export default function ChatPage() {
         return { ok: false as const, payload: null };
       }
 
-      const res = await fetch("/api/plans/stage-state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify({
-          chatId: cid,
-          stage,
-          stateJson,
-        }),
-      });
-
-      const json = await res.json().catch(() => null);
-      const ok = res.ok && json?.ok !== false;
-      const payload = json?.data ?? json;
-
-      if (!ok) {
-        console.error(`[STAGE ${stage}] save state failed`, { status: res.status, json });
-      }
-
-      return { ok, payload };
+      return advisorApi.saveGenericStageState(authHeaders, stage, stateJson, cid);
     }
 
 
@@ -2709,18 +2367,7 @@ export default function ChatPage() {
 
     if (!cid) return { ok: false as const, payload: null };
 
-    const res = await fetch("/api/plans/stage-state", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: cid,
-        stage,
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.clearStageState(authHeaders, stage, cid);
   }
 
 
@@ -2744,37 +2391,14 @@ export default function ChatPage() {
     const authHeaders = await getAuthHeaders();
     const cid = input.effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/objectives/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: cid,
-        studentMessage: input.studentMessage,
-        objectivesState: input.objectivesState,
-        caseContext: input.caseContext ?? null,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.callObjectivesAssistant(authHeaders, input, cid, buildRecentHistoryForAssistant(10));
   }
 
   async function validateObjectives(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/objectives/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.validateObjectives(authHeaders, cid);
   }
 
   async function getImprovementState(effectiveChatId?: string | null) {
@@ -2796,37 +2420,14 @@ export default function ChatPage() {
     const authHeaders = await getAuthHeaders();
     const cid = input.effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/improvement/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: cid,
-        studentMessage: input.studentMessage,
-        improvementState: input.improvementState,
-        caseContext: input.caseContext ?? null,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.callImprovementAssistant(authHeaders, input, cid, buildRecentHistoryForAssistant(10));
   }
 
   async function validateImprovement(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/improvement/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.validateImprovement(authHeaders, cid);
   }
 
   async function getPlanningState(effectiveChatId?: string | null) {
@@ -2847,37 +2448,14 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/planning/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: args.effectiveChatId ?? chatIdRef.current,
-        studentMessage: args.studentMessage,
-        planningState: args.planningState as any,
-        caseContext: args.caseContext ?? null,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-    return { ok, payload };
+    return advisorApi.callPlanningAssistant(authHeaders, args, args.effectiveChatId ?? chatIdRef.current, buildRecentHistoryForAssistant(10));
   }
 
   async function validatePlanning(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/planning/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    return { ok, payload: json };
+    return advisorApi.validatePlanning(authHeaders, cid);
   }
 
   async function saveProgressState(state: ProgressState, effectiveChatId?: string | null) {
@@ -2891,36 +2469,14 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/progress/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: args.effectiveChatId ?? chatIdRef.current,
-        studentMessage: args.studentMessage,
-        progressState: args.progressState,
-        recentHistory: buildRecentHistoryForAssistant(10),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    const ok = res.ok && json?.ok !== false;
-    const payload = json?.data ?? json;
-
-    return { ok, payload };
+    return advisorApi.callProgressAssistant(authHeaders, args, args.effectiveChatId ?? chatIdRef.current, buildRecentHistoryForAssistant(10));
   }
 
   async function validateProgress(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/progress/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid }),
-    });
-
-    const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json };
+    return advisorApi.validateProgress(authHeaders, cid);
   }
 
   async function getProgressState(effectiveChatId?: string | null) {
@@ -2952,34 +2508,14 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    const res = await fetch("/api/plans/final_doc/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({
-        chatId: args.effectiveChatId ?? chatIdRef.current,
-        fileName: args.fileName,
-        storagePath: args.storagePath,
-        extractedText: args.extractedText,
-        recentHistory: buildRecentHistoryForAssistant(12),
-      }),
-    });
-
-    const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json?.data ?? json };
+    return advisorApi.callFinalDocAssistant(authHeaders, args, args.effectiveChatId ?? chatIdRef.current, buildRecentHistoryForAssistant(12));
   }
 
   async function validateFinalDoc(effectiveChatId?: string | null) {
     const authHeaders = await getAuthHeaders();
     const cid = effectiveChatId ?? chatIdRef.current ?? null;
 
-    const res = await fetch("/api/plans/final_doc/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ chatId: cid }),
-    });
-
-    const json = await res.json().catch(() => null);
-    return { ok: res.ok && json?.ok !== false, payload: json };
+    return advisorApi.validateFinalDoc(authHeaders, cid);
   }
 
 
