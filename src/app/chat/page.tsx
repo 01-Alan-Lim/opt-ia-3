@@ -22,6 +22,13 @@ import {
   useAdvisorLateStageEffects,
   useAdvisorStageState,
 } from "./_lib/useAdvisorStages";
+import {
+  asRecordOrNull,
+  readCriticalRootsFromValidation,
+  readNextStageFromValidation,
+  shouldPreserveAdvisorStateOnRefreshFailure,
+  type ValidationPayloadLike,
+} from "./_lib/advisorTransitions";
 import { GREETING, useChatHistory, useChatHistoryPersistence } from "./_lib/useChatHistory";
 import { Message } from "@/lib/types";
 import {
@@ -761,19 +768,6 @@ export default function ChatPage() {
     }
   }
 
-  function shouldPreserveAdvisorStateOnRefreshFailure(args: {
-    currentStage: AdvisorRuntimeStage;
-    status: number;
-    errorCode?: string | null;
-  }) {
-    if (args.currentStage == null || args.currentStage <= 0) return false;
-
-    if (args.status >= 500) return true;
-    if (args.errorCode === "AUTH_UPSTREAM_TIMEOUT") return true;
-
-    return false;
-  }
-
   // -----------------------------
   // API helpers (fetch backend)
   // -----------------------------
@@ -782,12 +776,6 @@ export default function ChatPage() {
     const authHeaders = await getAuthHeaders();
 
     return advisorApi.getActiveAdvisorStage(authHeaders);
-  }
-
-  function asRecordOrNull(value: unknown): Record<string, unknown> | null {
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
   }
 
   function applyResolvedAdvisorStage(
@@ -2352,51 +2340,6 @@ export default function ChatPage() {
     }
 
     return false;
-  }
-
-  type ValidationPayloadLike = {
-    next?: { toStage?: number | null; hint?: string | null } | null;
-    roots?: string[] | null;
-    final?: {
-      criticalRoots?: string[] | null;
-      selectedRoots?: string[] | null;
-    } | null;
-  };
-
-  function readNextStageFromValidation(
-    payload: ValidationPayloadLike | null | undefined
-  ): 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | null {
-    const raw = payload?.next?.toStage;
-    return raw === 3 ||
-      raw === 4 ||
-      raw === 5 ||
-      raw === 6 ||
-      raw === 7 ||
-      raw === 8 ||
-      raw === 9 ||
-      raw === 10
-      ? raw
-      : null;
-  }
-
-  function readCriticalRootsFromValidation(
-    payload: ValidationPayloadLike | null | undefined
-  ): string[] {
-    const raw = payload?.final?.criticalRoots;
-    if (!Array.isArray(raw)) return [];
-
-    const out: string[] = [];
-    const seen = new Set<string>();
-
-    for (const item of raw) {
-      const text = String(item ?? "").trim();
-      const key = text.toLowerCase();
-      if (!text || seen.has(key)) continue;
-      seen.add(key);
-      out.push(text);
-    }
-
-    return out;
   }
 
   async function applyBackendAdvisorAdvance(args: {
