@@ -39,6 +39,8 @@ const TESTS = [
   "chatStorage",
   "advisorTransitions",
   "advisorTurns",
+  "stageArtifacts",
+  "teacherDashboard",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

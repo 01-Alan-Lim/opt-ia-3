@@ -20,7 +20,11 @@ export type ApiErrorCode =
   | "FORBIDDEN_IN_PRODUCTION"
   // La ruta existe pero no atiende esa etapa (p. ej. el estado de E4 se guarda por
   // /api/plans/ishikawa/state, que es quien protege sus campos de autoridad).
-  | "STAGE_NOT_ALLOWED";
+  | "STAGE_NOT_ALLOWED"
+  // Panel docente (GET /api/teacher/dashboard).
+  | "INVALID_QUERY"
+  | "COHORT_NOT_FOUND"
+  | "INTERNAL_ERROR";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });
