@@ -5,12 +5,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 import { HoursInlinePanel } from "@/components/chat/HoursInlinePanel";
-import Image from "next/image";
 
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MessageList } from "@/components/chat/MessageList";
 import { MessageInput } from "@/components/chat/MessageInput";
+import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScreen";
+import { ChatHeader } from "@/components/chat/ChatHeader";
+import { ModeSelector } from "@/components/chat/ModeSelector";
 import { Message } from "@/lib/types";
 import {
   BrainstormState,
@@ -1237,11 +1239,7 @@ export default function ChatPage() {
   // Loading state
   // -----------------------------
   if (!ready) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
-        <p className="text-sm text-slate-300">Cargando autenticación...</p>
-      </main>
-    );
+    return <ChatGateLoading message="Cargando autenticación..." />;
   }
 
   if (!authenticated) {
@@ -1249,31 +1247,11 @@ export default function ChatPage() {
   }
 
   if (!gateChecked) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
-        <p className="text-sm text-slate-300">Verificando acceso...</p>
-      </main>
-    );
+    return <ChatGateLoading message="Verificando acceso..." />;
   }
 
   if (accessDenied) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-[color:var(--background)] text-[color:var(--foreground)]">
-        <div className="max-w-md w-full mx-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-          <h1 className="text-lg font-semibold mb-2">Acceso restringido</h1>
-          <p className="text-sm text-slate-300 mb-4">
-            {gateMessage ??
-              "Debes iniciar sesión con un correo institucional autorizado para usar OPT-IA."}
-          </p>
-          <button
-            className="w-full rounded bg-slate-800 px-3 py-2 hover:bg-slate-700 text-sm"
-            onClick={() => router.replace("/")}
-          >
-            Volver al inicio
-          </button>
-        </div>
-      </main>
-    );
+    return <ChatAccessDenied message={gateMessage} onBack={() => router.replace("/")} />;
   }
 
   function pushAssistantOnce(text: string) {
@@ -5315,105 +5293,30 @@ export default function ChatPage() {
       onCloseSidebar={() => setSidebarOpen(false)}
     >
       {/* Barra superior interna del chat */}
-      <div className="flex items-center justify-between mb-3 text-[11px] text-[color:var(--muted)]">
-        {/* Bloque: 3 rayas + logo + título */}
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="mr-1 rounded-full p-2 text-base transition-colors
-            text-[color:var(--foreground)] hover:bg-[color:var(--surface)]"
-          >
-            ☰
-          </button>
-
-          <Image src="/logo-opt.png" alt="Logo OPT-IA" width={28} height={28} className="rounded-full" />
-
-          <div className="flex flex-col">
-            <span className="text-xs font-semibold text-[color:var(--foreground)]">OPT-IA</span>
-            <span className="text-[11px] text-[color:var(--muted)]">Asistente para estudiantes</span>
-          </div>
-        </div>
-
-        {/* Usuario + logout + theme */}
-        <div className="flex items-center gap-2 mr-4">
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="rounded-full p-2 hover:bg-[color:var(--surface)] transition-colors"
-            title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
-            aria-label="Cambiar tema"
-          >
-            {theme === "dark" ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                />
-                <path
-                  d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5Z"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            )}
-          </button>
-
-          <span className="hidden sm:inline text-[14px] text-[color:var(--muted)]">{displayName}</span>
-        </div>
-
-      </div>
+      <ChatHeader
+        theme={theme}
+        displayName={displayName}
+        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        onToggleTheme={toggleTheme}
+      />
 
       {/* Selector de modo */}
-      <div className="mb-0 flex flex-wrap gap-2 text-[11px]">
-        <span className="mt-1 mr-2 text-[color:var(--muted)]">Modo:</span>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (mode === "general") return;
-            setShowHoursInline(false);
-            modeRef.current = "general";
-            setMode("general");
-          }}
-          className={`px-3 py-1 rounded-full border text-xs transition ${
-            mode === "general"
-              ? "bg-[color:var(--primary)] border-[color:var(--primary)] text-[color:var(--primary-foreground)]"
-              : "bg-transparent border-[color:var(--border)] text-[color:var(--muted)] hover:bg-[color:var(--surface)]"
-          }`}
-        >
-          Asistente general
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            if (mode === "plan_mejora") return;
-            setShowHoursInline(false);
-            modeRef.current = "plan_mejora";
-            setMode("plan_mejora");
-            void ensureAdvisorChatId();
-          }}
-          className={`px-3 py-1 rounded-full border text-xs transition ${
-            mode === "plan_mejora"
-              ? "bg-[color:var(--primary)] border-[color:var(--primary)] text-[color:var(--primary-foreground)]"
-              : "bg-transparent border-[color:var(--border)] text-[color:var(--muted)] hover:bg-[color:var(--surface)]"
-          }`}
-        >
-          Asesor de Plan de Mejora
-        </button>
-      </div>
+      <ModeSelector
+        mode={mode}
+        onSelectGeneral={() => {
+          if (mode === "general") return;
+          setShowHoursInline(false);
+          modeRef.current = "general";
+          setMode("general");
+        }}
+        onSelectPlanMejora={() => {
+          if (mode === "plan_mejora") return;
+          setShowHoursInline(false);
+          modeRef.current = "plan_mejora";
+          setMode("plan_mejora");
+          void ensureAdvisorChatId();
+        }}
+      />
 
       {gateMessage && (
         <div className="mb-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-200">
