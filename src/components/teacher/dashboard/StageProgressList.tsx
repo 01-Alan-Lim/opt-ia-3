@@ -23,9 +23,10 @@ export function StageProgressList({
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/20 p-4">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
-        <h3 className="text-sm font-semibold text-slate-100">Avance por etapa</h3>
+        <h3 className="text-sm font-semibold text-slate-100">Avance E0–E10</h3>
         <p className="text-[11px] text-slate-500">
-          Estudiantes con la etapa cerrada. Cada etapa se cuenta por separado.
+          Estado actual: estudiantes con cada etapa cerrada. Cada etapa se cuenta por separado (no
+          es un embudo).
         </p>
       </div>
 

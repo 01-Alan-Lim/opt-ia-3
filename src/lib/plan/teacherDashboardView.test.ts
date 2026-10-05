@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import type { DashboardStudent } from "../teacher/dashboard/aggregate";
 import {
   filterDashboardStudents,
+  filterStudents,
   formatHours,
   formatPercent,
   readCohortOptions,
   readDashboardResponse,
+  pendingStudentsForStage,
   registrationLabel,
   stageKey,
   stageName,
   stagePercent,
+  studentDisplayName,
 } from "../teacher/dashboard/view";
 
 // Caracterización de las funciones puras de la vista del panel docente
@@ -114,18 +117,78 @@ function student(overrides: Partial<DashboardStudent>): DashboardStudent {
 }
 
 {
-  // Respuesta del panel: solo se acepta con la forma mínima que pinta la UI.
+  // Respuesta del panel: solo se acepta con la forma mínima que pinta la UI, analytics incluido.
+  const analytics = {
+    range: { from: null, to: null, timezone: "America/La_Paz" },
+    advanceEvents: [],
+    advanceWindows: { status: "missing_advance_dates", windows: [] },
+    validationsByPeriod: [],
+    cumulativeStageProgress: { points: [], undated: {} },
+    hoursByPeriod: [],
+    activityByPeriod: { timezone: "UTC", points: [] },
+    scoreDistributions: [],
+  };
   const data = {
     cohort: { id: "c2", name: "2026-I", isActive: true, createdAt: "x", accessStartsAt: null, accessEndsAt: null },
     summary: {},
     stageTotals: {},
     students: [],
+    analytics,
   };
   assert.equal(readDashboardResponse({ ok: true, data }), data);
   assert.equal(readDashboardResponse({ ok: false, code: "FORBIDDEN", message: "Solo docentes." }), null);
   assert.equal(readDashboardResponse({ ok: true, data: { ...data, students: null } }), null);
   assert.equal(readDashboardResponse({ ok: true, data: { ...data, cohort: null } }), null);
+  assert.equal(readDashboardResponse({ ok: true, data: { ...data, analytics: undefined } }), null);
+  assert.equal(
+    readDashboardResponse({ ok: true, data: { ...data, analytics: { ...analytics, activityByPeriod: [] } } }),
+    null
+  );
   assert.equal(readDashboardResponse("<html>"), null);
+}
+
+{
+  // Filtros de la matriz: situación de una etapa (solo con etapa elegida) y registros de horas
+  // (sin registros no es 0 h: un total de 0 con registro cuenta como "con registros").
+  const progress = (closed: number[]) =>
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((stage) => ({
+      stage: stage as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+      completed: closed.includes(stage),
+      validatedAt: null,
+      score: null,
+      scoreLabel: null,
+    }));
+  const list = [
+    student({ userId: "1", ru: "111", firstName: "Ana", lastName: "Mamani", progress: progress([0, 1, 2]), hours: { entries: 2, total: 12 } }),
+    student({ userId: "2", ru: "222", firstName: "Luis", lastName: "Choque", progress: progress([0, 2]), hours: { entries: 1, total: 0 } }),
+    student({ userId: "3", ru: "333", firstName: "Eva", lastName: "Quispe", progress: progress([]), registrationStatus: "pending" }),
+  ];
+  const ids = (out: DashboardStudent[]) => out.map((s) => s.userId);
+  const base = { query: "", status: "all" as const, stage: null, situation: "all" as const, hours: "all" as const };
+
+  assert.deepEqual(ids(filterStudents(list, base)), ["1", "2", "3"]);
+  assert.deepEqual(ids(filterStudents(list, { ...base, stage: 1, situation: "completed" })), ["1"]);
+  assert.deepEqual(ids(filterStudents(list, { ...base, stage: 1, situation: "pending" })), ["2", "3"]);
+  // Etapa elegida pero situación "Todos": no filtra.
+  assert.deepEqual(ids(filterStudents(list, { ...base, stage: 1 })), ["1", "2", "3"]);
+  // Situación sin etapa: no filtra.
+  assert.deepEqual(ids(filterStudents(list, { ...base, situation: "pending" })), ["1", "2", "3"]);
+  assert.deepEqual(ids(filterStudents(list, { ...base, hours: "with" })), ["1", "2"]);
+  assert.deepEqual(ids(filterStudents(list, { ...base, hours: "without" })), ["3"]);
+  // Combinados con búsqueda y estado.
+  assert.deepEqual(ids(filterStudents(list, { ...base, query: "quispe", stage: 2, situation: "pending" })), ["3"]);
+  assert.deepEqual(ids(filterStudents(list, { ...base, status: "approved", hours: "without" })), []);
+
+  // Pendientes de una etapa (vista Etapas), con búsqueda por RU.
+  assert.deepEqual(ids(pendingStudentsForStage(list, 0, "")), ["3"]);
+  assert.deepEqual(ids(pendingStudentsForStage(list, 1, "")), ["2", "3"]);
+  assert.deepEqual(ids(pendingStudentsForStage(list, 1, "222")), ["2"]);
+  assert.deepEqual(ids(pendingStudentsForStage(list, 2, "")), ["3"]);
+
+  // Nombre visible: nombre y apellido, si no email, si no el id.
+  assert.equal(studentDisplayName(list[0]), "Ana Mamani");
+  assert.equal(studentDisplayName(student({ userId: "9", email: "x@umsa.bo" })), "x@umsa.bo");
+  assert.equal(studentDisplayName(student({ userId: "9" })), "9");
 }
 
 console.log("teacherDashboardView tests passed");

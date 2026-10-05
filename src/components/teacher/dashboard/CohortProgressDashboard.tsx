@@ -1,16 +1,15 @@
 "use client";
 
-// Vista "Resumen" del Dashboard docente: una cohorte a la vez (por defecto la más reciente),
-// tarjetas de resumen, avance por etapa y matriz por estudiante. Solo pinta lo que devuelve
-// GET /api/teacher/dashboard; no calcula métricas propias.
+// Dashboard docente: una cohorte a la vez (por defecto la más reciente), con selector de
+// cohorte y las vistas analíticas (DashboardViews: Resumen, Evolución, Etapas, Estudiantes).
+// Solo pinta lo que devuelve GET /api/teacher/dashboard; no calcula métricas académicas.
 
 import type { ReactNode } from "react";
 
 import type { TeacherDashboard as TeacherDashboardData } from "@/lib/teacher/dashboard/aggregate";
-import { formatHours, type CohortOption } from "@/lib/teacher/dashboard/view";
+import type { CohortOption } from "@/lib/teacher/dashboard/view";
 
-import { StageProgressList } from "./StageProgressList";
-import { StudentsProgressTable } from "./StudentsProgressTable";
+import { DashboardViews } from "./DashboardViews";
 import { useCohortDashboard } from "./useCohortDashboard";
 
 function formatDate(iso: string | null): string | null {
@@ -25,16 +24,6 @@ function cohortSubtitle(cohort: TeacherDashboardData["cohort"]): string {
   const ends = formatDate(cohort.accessEndsAt);
   if (starts || ends) parts.push(`Acceso: ${starts ?? "—"} → ${ends ?? "—"}`);
   return parts.join(" · ");
-}
-
-function SummaryCard({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-      <div className="text-xs text-slate-400">{label}</div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-100">{value}</div>
-      {hint ? <div className="mt-1 text-[11px] text-slate-500">{hint}</div> : null}
-    </div>
-  );
 }
 
 function Notice({ tone = "neutral", children }: { tone?: "neutral" | "error"; children: ReactNode }) {
@@ -115,31 +104,7 @@ export function CohortProgressDashboard() {
         </Notice>
       )}
 
-      {data && (
-        <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <SummaryCard label="Estudiantes" value={String(data.summary.totalStudents)} />
-            <SummaryCard label="Aprobados" value={String(data.summary.approved)} />
-            <SummaryCard label="Pendientes" value={String(data.summary.pending)} />
-            <SummaryCard
-              label="Horas registradas"
-              value={formatHours(data.summary.totalHours)}
-              hint={
-                data.summary.totalHours === null
-                  ? "Nadie registró horas todavía"
-                  : `${data.summary.studentsWithHours} de ${data.summary.totalStudents} estudiantes con registros`
-              }
-            />
-          </div>
-
-          <StageProgressList
-            stageTotals={data.stageTotals}
-            totalStudents={data.summary.totalStudents}
-          />
-
-          <StudentsProgressTable students={data.students} />
-        </>
-      )}
+      {data && <DashboardViews data={data} />}
     </section>
   );
 }

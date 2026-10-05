@@ -28,6 +28,24 @@ export function readCohortOptions(response: unknown): CohortOption[] {
   });
 }
 
+function hasAnalyticsShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const { range, advanceWindows, cumulativeStageProgress, activityByPeriod } = value;
+  return (
+    isRecord(range) &&
+    Array.isArray(value.advanceEvents) &&
+    isRecord(advanceWindows) &&
+    Array.isArray(advanceWindows.windows) &&
+    Array.isArray(value.validationsByPeriod) &&
+    isRecord(cumulativeStageProgress) &&
+    Array.isArray(cumulativeStageProgress.points) &&
+    Array.isArray(value.hoursByPeriod) &&
+    isRecord(activityByPeriod) &&
+    Array.isArray(activityByPeriod.points) &&
+    Array.isArray(value.scoreDistributions)
+  );
+}
+
 // GET /api/teacher/dashboard -> { ok: true, data: TeacherDashboard }. Comprueba la forma
 // mínima que pinta la UI; si no la cumple, la vista muestra un error en vez de datos a medias.
 export function readDashboardResponse(response: unknown): TeacherDashboard | null {
@@ -42,6 +60,7 @@ export function readDashboardResponse(response: unknown): TeacherDashboard | nul
   if (!isRecord(data.summary) || !isRecord(data.stageTotals) || !Array.isArray(data.students)) {
     return null;
   }
+  if (!hasAnalyticsShape(data.analytics)) return null;
 
   return data as TeacherDashboard;
 }
@@ -96,6 +115,11 @@ function normalizeSearch(value: string): string {
     .trim();
 }
 
+export function studentDisplayName(student: DashboardStudent): string {
+  const name = [student.firstName, student.lastName].filter(Boolean).join(" ");
+  return name || student.email || student.userId;
+}
+
 // Búsqueda por RU, nombre, apellido o email (sin distinguir mayúsculas ni tildes) y filtro
 // por estado de registro. Conserva el orden recibido.
 export function filterDashboardStudents(
@@ -115,4 +139,44 @@ export function filterDashboardStudents(
 
     return haystack.some((value) => value.includes(query));
   });
+}
+
+export type StageSituation = "all" | "completed" | "pending";
+
+export type HoursFilter = "all" | "with" | "without";
+
+export type StudentFilters = {
+  query: string;
+  status: RegistrationFilter;
+  // Etapa a la que se aplica la situación; null = todas (la situación no filtra).
+  stage: PlanStageNumber | null;
+  situation: StageSituation;
+  // Con o sin registros de horas: sin registros no es 0 h.
+  hours: HoursFilter;
+};
+
+// Búsqueda y estado (filterDashboardStudents) + situación de una etapa + registros de horas.
+export function filterStudents(students: DashboardStudent[], filters: StudentFilters): DashboardStudent[] {
+  return filterDashboardStudents(students, { query: filters.query, status: filters.status }).filter(
+    (student) => {
+      if (filters.stage !== null && filters.situation !== "all") {
+        const completed = student.progress.some(
+          (item) => item.stage === filters.stage && item.completed
+        );
+        if (filters.situation === "completed" ? !completed : completed) return false;
+      }
+      if (filters.hours === "with" && student.hours.total === null) return false;
+      if (filters.hours === "without" && student.hours.total !== null) return false;
+      return true;
+    }
+  );
+}
+
+// Estudiantes que no cerraron la etapa (vista Etapas), con búsqueda por RU, nombre o email.
+export function pendingStudentsForStage(
+  students: DashboardStudent[],
+  stage: PlanStageNumber,
+  query: string
+): DashboardStudent[] {
+  return filterStudents(students, { query, status: "all", stage, situation: "pending", hours: "all" });
 }

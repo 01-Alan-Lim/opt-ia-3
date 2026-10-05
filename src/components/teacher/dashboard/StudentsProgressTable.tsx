@@ -1,22 +1,29 @@
 "use client";
 
-// Matriz E0-E10 por estudiante (GET /api/teacher/dashboard, students[].progress). Cada celda
-// muestra solo si ESA etapa está cerrada: no se infiere una etapa por otra posterior. La nota,
-// si existe, va en el tooltip; sin evaluación no se muestra nota.
+// Vista Estudiantes: matriz E0-E10 por estudiante (GET /api/teacher/dashboard,
+// students[].progress), estado actual. Cada celda muestra solo si ESA etapa está cerrada: no se
+// infiere una etapa por otra posterior. La nota, si existe, va en el tooltip; sin evaluación no
+// se muestra nota. Filtros: búsqueda, estado de registro, situación de una etapa y registros de
+// horas (sin registros no es 0 h).
 
 import { useMemo, useState } from "react";
 
+import type { PlanStageNumber } from "@/lib/plan/stageArtifacts";
 import {
   DASHBOARD_STAGES,
   type DashboardStudent,
   type StageProgress,
 } from "@/lib/teacher/dashboard/aggregate";
 import {
-  filterDashboardStudents,
+  filterStudents,
   formatHours,
   registrationLabel,
   stageLabel,
+  stageName,
+  studentDisplayName,
+  type HoursFilter,
   type RegistrationFilter,
+  type StageSituation,
 } from "@/lib/teacher/dashboard/view";
 
 const STATUS_OPTIONS: Array<{ value: RegistrationFilter; label: string }> = [
@@ -26,8 +33,20 @@ const STATUS_OPTIONS: Array<{ value: RegistrationFilter; label: string }> = [
   { value: "rejected", label: "Rechazados" },
 ];
 
-function isRegistrationFilter(value: string): value is RegistrationFilter {
-  return STATUS_OPTIONS.some((option) => option.value === value);
+const SITUATION_OPTIONS: Array<{ value: StageSituation; label: string }> = [
+  { value: "all", label: "Todos" },
+  { value: "completed", label: "Completó" },
+  { value: "pending", label: "Pendiente" },
+];
+
+const HOURS_OPTIONS: Array<{ value: HoursFilter; label: string }> = [
+  { value: "all", label: "Todos" },
+  { value: "with", label: "Con registros" },
+  { value: "without", label: "Sin registros" },
+];
+
+function pick<T extends string>(options: Array<{ value: T }>, value: string): T | null {
+  return options.find((option) => option.value === value)?.value ?? null;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -35,6 +54,19 @@ const STATUS_BADGE: Record<string, string> = {
   pending: "border-amber-400/20 bg-amber-500/10 text-amber-200",
   rejected: "border-red-400/20 bg-red-500/10 text-red-200",
 };
+
+export function RegistrationBadge({ status }: { status: string | null }) {
+  return (
+    <span
+      className={[
+        "whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px]",
+        (status && STATUS_BADGE[status]) || "border-slate-600/20 bg-slate-700/30 text-slate-200",
+      ].join(" ")}
+    >
+      {registrationLabel(status)}
+    </span>
+  );
+}
 
 function formatDate(iso: string): string {
   const date = new Date(iso);
@@ -72,52 +104,99 @@ function StageCell({ progress }: { progress: StageProgress }) {
   );
 }
 
-function studentName(student: DashboardStudent): string {
-  const name = [student.firstName, student.lastName].filter(Boolean).join(" ");
-  return name || student.email || student.userId;
-}
+const SELECT_CLASS =
+  "w-full rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 disabled:opacity-40";
 
 export function StudentsProgressTable({ students }: { students: DashboardStudent[] }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<RegistrationFilter>("all");
+  const [stage, setStage] = useState<PlanStageNumber | null>(null);
+  const [situation, setSituation] = useState<StageSituation>("all");
+  const [hours, setHours] = useState<HoursFilter>("all");
 
   const visible = useMemo(
-    () => filterDashboardStudents(students, { query, status }),
-    [students, query, status]
+    () => filterStudents(students, { query, status, stage, situation, hours }),
+    [students, query, status, stage, situation, hours]
   );
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/20">
-      <div className="flex flex-col gap-3 border-b border-slate-800 p-4 md:flex-row md:items-end md:justify-between">
+      <div className="space-y-4 border-b border-slate-800 p-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-100">Avance por estudiante</h3>
-          <p className="mt-1 text-[11px] text-slate-500">
-            Mostrando {visible.length} de {students.length}. ✓ = etapa cerrada; pasa el cursor
-            para ver la fecha y la nota, si la hay.
+          <h3 className="text-sm font-semibold text-slate-100">Estudiantes</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Seguimiento individual de la cohorte (estado actual). Mostrando {visible.length} de{" "}
+            {students.length}. ✓ = etapa cerrada; pasa el cursor para ver la fecha y la nota, si la hay.
           </p>
         </div>
 
-        <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-[1fr_170px] md:w-[460px]">
-          <label className="block">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))]">
+          <label className="block sm:col-span-2 lg:col-span-1">
             <span className="mb-1 block text-xs text-slate-400">Buscar (RU / nombre / email)</span>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="w-full rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100"
+              className={SELECT_CLASS}
               placeholder="Ej: 20201234 o Juan Pérez"
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-xs text-slate-400">Estado</span>
+            <span className="mb-1 block text-xs text-slate-400">Estado de registro</span>
             <select
               value={status}
-              onChange={(e) => {
-                const next = e.target.value;
-                if (isRegistrationFilter(next)) setStatus(next);
-              }}
-              className="w-full rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-100"
+              onChange={(e) => setStatus(pick(STATUS_OPTIONS, e.target.value) ?? "all")}
+              className={SELECT_CLASS}
             >
               {STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-400">Etapa</span>
+            <select
+              value={stage === null ? "all" : String(stage)}
+              onChange={(e) => {
+                const next = DASHBOARD_STAGES.find((item) => String(item) === e.target.value) ?? null;
+                setStage(next);
+                if (next === null) setSituation("all");
+              }}
+              className={SELECT_CLASS}
+            >
+              <option value="all">Todas</option>
+              {DASHBOARD_STAGES.map((item) => (
+                <option key={item} value={item}>
+                  E{item} · {stageName(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-400">Situación de la etapa</span>
+            <select
+              value={situation}
+              disabled={stage === null}
+              onChange={(e) => setSituation(pick(SITUATION_OPTIONS, e.target.value) ?? "all")}
+              className={SELECT_CLASS}
+              title={stage === null ? "Elige una etapa primero" : undefined}
+            >
+              {SITUATION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-400">Horas</span>
+            <select
+              value={hours}
+              onChange={(e) => setHours(pick(HOURS_OPTIONS, e.target.value) ?? "all")}
+              className={SELECT_CLASS}
+            >
+              {HOURS_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -133,14 +212,17 @@ export function StudentsProgressTable({ students }: { students: DashboardStudent
             <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400">
               <th className="sticky left-0 z-10 bg-slate-950 px-4 py-2.5 font-medium">Estudiante</th>
               <th className="px-3 py-2.5 font-medium">Estado</th>
-              {DASHBOARD_STAGES.map((stage) => (
+              {DASHBOARD_STAGES.map((item) => (
                 <th
-                  key={stage}
-                  className="px-1.5 py-2.5 text-center font-medium"
-                  title={stageLabel(stage)}
+                  key={item}
+                  className={[
+                    "px-1.5 py-2.5 text-center font-medium",
+                    item === stage ? "bg-sky-500/10 text-slate-100" : "",
+                  ].join(" ")}
+                  title={stageLabel(item)}
                   scope="col"
                 >
-                  E{stage}
+                  E{item}
                 </th>
               ))}
               <th className="px-4 py-2.5 text-right font-medium">Horas</th>
@@ -151,24 +233,22 @@ export function StudentsProgressTable({ students }: { students: DashboardStudent
             {visible.map((student) => (
               <tr key={student.userId} className="hover:bg-slate-900/40">
                 <td className="sticky left-0 z-10 max-w-[220px] bg-slate-950 px-4 py-2.5">
-                  <div className="truncate font-medium text-slate-100">{studentName(student)}</div>
+                  <div className="truncate font-medium text-slate-100">{studentDisplayName(student)}</div>
                   <div className="truncate text-[11px] text-slate-500">
                     {student.ru ? `RU ${student.ru}` : "Sin RU"}
                   </div>
                 </td>
                 <td className="px-3 py-2.5">
-                  <span
-                    className={[
-                      "whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px]",
-                      (student.registrationStatus && STATUS_BADGE[student.registrationStatus]) ||
-                        "border-slate-600/20 bg-slate-700/30 text-slate-200",
-                    ].join(" ")}
-                  >
-                    {registrationLabel(student.registrationStatus)}
-                  </span>
+                  <RegistrationBadge status={student.registrationStatus} />
                 </td>
                 {student.progress.map((progress) => (
-                  <td key={progress.stage} className="px-1.5 py-2.5 text-center">
+                  <td
+                    key={progress.stage}
+                    className={[
+                      "px-1.5 py-2.5 text-center",
+                      progress.stage === stage ? "bg-sky-500/[0.06]" : "",
+                    ].join(" ")}
+                  >
                     <StageCell progress={progress} />
                   </td>
                 ))}
