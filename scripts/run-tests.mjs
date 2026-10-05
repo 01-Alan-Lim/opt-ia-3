@@ -36,6 +36,7 @@ const TESTS = [
   "stage0Context",
   "advisorStates",
   "advisorMessages",
+  "chatStorage",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

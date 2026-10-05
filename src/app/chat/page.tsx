@@ -16,6 +16,7 @@ import { ModeSelector } from "@/components/chat/ModeSelector";
 import * as advisorApi from "./_lib/advisorApi";
 import { useAccessGate } from "./_lib/useAccessGate";
 import { useChatSession } from "./_lib/useChatSession";
+import { GREETING, useChatHistory, useChatHistoryPersistence } from "./_lib/useChatHistory";
 import { Message } from "@/lib/types";
 import {
   BrainstormState,
@@ -109,12 +110,10 @@ import {
   formatAssistantMessageForReadability,
   softenAssistantLeadInChat,
 } from "@/lib/chat/assistantFormat";
+import { chatIdStorageKey, messagesStorageKey } from "@/lib/chat/chatStorage";
 
 
 type ChatMode = "general" | "plan_mejora";
-
-const GREETING =
-  "Hola, soy OPT-IA. Me conecto a Supabase y Google AI para ayudarte con productividad en MyPEs.";
 
 export default function ChatPage() {
   const router = useRouter();
@@ -251,8 +250,8 @@ export default function ChatPage() {
   const clientId = useMemo(() => userId || sessionEmail || "pending", [userId, sessionEmail]);
 
   // ✅ Keys de storage por usuario + modo
-  const storageKeyChat = `optia-chat-id-${clientId}-${mode}`;
-  const storageKeyMsgs = `optia-messages-${clientId}-${mode}`;
+  const storageKeyChat = chatIdStorageKey(clientId, mode);
+  const storageKeyMsgs = messagesStorageKey(clientId, mode);
 
   // -----------------------------
   // Etapa 0 Wizard (plan_mejora)
@@ -364,92 +363,21 @@ export default function ChatPage() {
   const { gateChecked, gateMessage, accessDenied, canInteract } = useAccessGate({ ready, authenticated, router });
 
   // -----------------------------
-  // 2a. Cargar desde sessionStorage
+  // 2a. Cargar desde sessionStorage y 2b. historial del backend (useChatHistory)
   // -----------------------------
-  useEffect(() => {
-    if (!ready || !authenticated) return;
-
-    try {
-      const storedChatId = window.sessionStorage.getItem(storageKeyChat);
-      const storedMsgs = window.sessionStorage.getItem(storageKeyMsgs);
-
-      setChatId(storedChatId || null);
-
-      if (storedMsgs) {
-        const parsed = JSON.parse(storedMsgs);
-
-        // ✅ Si estaba guardado "[]", lo tratamos como vacío real (mostrar saludo)
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setMessages(parsed);
-        } else {
-          if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
-          else setMessages([]);
-        }
-      } else {
-        if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
-        else setMessages([]);
-      }
-    } catch (e) {
-      console.warn("No se pudo leer storage:", e);
-      if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
-      else setMessages([]); // ✅ Asesor en blanco
-    }
-
-
-
-  }, [ready, authenticated, storageKeyChat, storageKeyMsgs, mode]);
-
-  // -----------------------------
-  // 2b. Cargar historial del backend (si hay chatId)
-  // -----------------------------
-  useEffect(() => {
-    if (!ready) return;
-
-    if (!authenticated) {
-      setChatId(null);
-      setMessages(modeRef.current === "general"
-        ? [createMessage("assistant", GREETING)]
-        : []
-      );
-      return;
-    }
-
-    if (!chatId) return;
-
-    async function loadMessages() {
-      try {
-        const authHeaders = await getAuthHeaders();
-        const res = await fetch(`/api/messages?chatId=${chatId}`, {
-          headers: { ...authHeaders },
-        });
-
-        if (res.status === 401) {
-          await supabase.auth.signOut();
-          router.replace("/");
-          return;
-        }
-
-        const data = await res.json();
-
-        if (res.ok && data?.ok !== false) {
-          const msgs = data?.data?.messages ?? data?.messages;
-          if (Array.isArray(msgs) && msgs.length > 0) {
-            setMessages(
-              (Array.isArray(msgs) ? msgs : []).map((m: any) => ({
-                ...m,
-                content: typeof m?.content === "string" ? m.content : String(m?.content ?? ""),
-              }))
-            );
-          }
-        }
-
-      } catch (err) {
-        console.error("Error al cargar mensajes:", err);
-      }
-    }
-
-    loadMessages();
-  }, [ready, authenticated, chatId]);
+  useChatHistory({
+    ready,
+    authenticated,
+    mode,
+    modeRef,
+    chatId,
+    setChatId,
+    setMessages,
+    storageKeyChat,
+    storageKeyMsgs,
+    getAuthHeaders,
+    router,
+  });
 
   // -----------------------------
   // 2d. (Asesor) Estado desde DB (plan_case_contexts)
@@ -980,20 +908,9 @@ export default function ChatPage() {
   }, [ready, authenticated, mode, ishikawaState]);
 
   // -----------------------------
-  // 2c. Guardar en sessionStorage
+  // 2c. Guardar en sessionStorage (useChatHistoryPersistence)
   // -----------------------------
-  useEffect(() => {
-    if (!authenticated) return;
-
-    try {
-      if (chatId) window.sessionStorage.setItem(storageKeyChat, chatId);
-      else window.sessionStorage.removeItem(storageKeyChat);
-        if (messages.length) window.sessionStorage.setItem(storageKeyMsgs, JSON.stringify(messages));
-        else window.sessionStorage.removeItem(storageKeyMsgs);
-      } catch (e) {
-        console.warn("No se pudo guardar en storage:", e);
-      }
-    }, [authenticated, chatId, messages, storageKeyChat, storageKeyMsgs]);
+  useChatHistoryPersistence({ authenticated, chatId, messages, storageKeyChat, storageKeyMsgs });
 
 
   // -----------------------------
@@ -4388,8 +4305,8 @@ export default function ChatPage() {
 
   function clearStorageFor(m: ChatMode) {
     try {
-      window.sessionStorage.removeItem(`optia-chat-id-${clientId}-${m}`);
-      window.sessionStorage.removeItem(`optia-messages-${clientId}-${m}`);
+      window.sessionStorage.removeItem(chatIdStorageKey(clientId, m));
+      window.sessionStorage.removeItem(messagesStorageKey(clientId, m));
     } catch {
       // ignore
     }
