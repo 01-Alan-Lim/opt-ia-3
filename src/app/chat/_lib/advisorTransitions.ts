@@ -9,7 +9,8 @@
 // - createAdvisorTransitions(deps): crea en cada render las funciones de transición E2-E10, la
 //   restauración en un chat nuevo y la sincronización de la etapa activa. deps solo trae
 //   referencias que ya existían en ChatPage (estado, setters, refs, wrappers de API, mensajes).
-// E0->E1 y E1->E2 siguen en handleSend (page.tsx).
+// E0->E1 y E1->E2 no están aquí: E0 se confirma en page.tsx (handleStage0DraftFlowV2) y el
+// arranque de E1 y el paso a E2 están en el turno de E1 (turns/productivityTurn.ts).
 
 import { createMessage } from "@/lib/chat/assistantFormat";
 import { promptProd } from "@/lib/plan/advisorMessages";

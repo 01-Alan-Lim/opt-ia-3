@@ -5,7 +5,8 @@
 // wrappers de page.tsx (que ya resuelven headers y chat activo) y aplica el resultado al estado.
 // Los effects van en tres hooks porque page.tsx los llama en las mismas posiciones que tenían,
 // intercalados con Ishikawa y con la persistencia del historial; así el orden no cambia.
-// Ishikawa (tipo propio de page.tsx, no unificado con ishikawaTree.ts) sigue en page.tsx.
+// El estado de Ishikawa sigue en page.tsx; su tipo (modelo del chat, no unificado con
+// ishikawaTree.ts) está en advisorTransitions.ts.
 
 import { useEffect, useRef, useState } from "react";
 

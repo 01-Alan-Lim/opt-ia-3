@@ -4,7 +4,7 @@
 // tipos, normalizadores de estados guardados (incluida la compatibilidad con estados antiguos de
 // FODA y Pareto) y reglas puras de "listo". Sin React, I/O ni persistencia. Se movió tal cual.
 // Los tipos de Ishikawa del chat no están aquí: difieren de los canónicos de ishikawaTree.ts y
-// siguen en page.tsx hasta que se unifiquen.
+// están en src/app/chat/_lib/advisorTransitions.ts hasta que se unifiquen.
 
 import { normalizeText } from "./advisorClientIntent";
 import { normalizeEffectPercent, normalizeJustification } from "./paretoCut";
