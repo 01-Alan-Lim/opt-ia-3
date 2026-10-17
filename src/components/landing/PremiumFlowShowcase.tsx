@@ -18,6 +18,7 @@ type Column = {
 
 type ToneClasses = {
   bar:    string;
+  halo:   string;
   numText:string;
   numBg:  string;
   pill:   string;
@@ -27,24 +28,27 @@ type ToneClasses = {
 const TONE: Record<FlowTone, ToneClasses> = {
   sky: {
     bar:     "from-sky-500 to-cyan-400",
+    halo:    "bg-cyan-400/10",
     numText: "text-sky-300",
     numBg:   "bg-sky-500/10 border-sky-500/30",
-    pill:    "border-sky-500/15 bg-sky-500/[0.05] hover:bg-sky-500/10",
-    ring:    "hover:shadow-[0_8px_22px_-10px_rgba(56,189,248,0.6)]",
+    pill:    "border-sky-400/20 bg-sky-500/[0.06] hover:bg-sky-500/10",
+    ring:    "hover:shadow-[0_8px_18px_-12px_rgba(56,189,248,0.45)]",
   },
   indigo: {
     bar:     "from-indigo-500 to-violet-400",
+    halo:    "bg-indigo-400/10",
     numText: "text-indigo-300",
     numBg:   "bg-indigo-500/10 border-indigo-500/30",
-    pill:    "border-indigo-500/15 bg-indigo-500/[0.05] hover:bg-indigo-500/10",
-    ring:    "hover:shadow-[0_8px_22px_-10px_rgba(129,140,248,0.6)]",
+    pill:    "border-indigo-400/20 bg-indigo-500/[0.06] hover:bg-indigo-500/10",
+    ring:    "hover:shadow-[0_8px_18px_-12px_rgba(129,140,248,0.45)]",
   },
   violet: {
     bar:     "from-violet-500 to-purple-400",
+    halo:    "bg-violet-400/10",
     numText: "text-violet-300",
     numBg:   "bg-violet-500/10 border-violet-500/30",
-    pill:    "border-violet-500/15 bg-violet-500/[0.05] hover:bg-violet-500/10",
-    ring:    "hover:shadow-[0_8px_22px_-10px_rgba(167,139,250,0.6)]",
+    pill:    "border-violet-400/20 bg-violet-500/[0.06] hover:bg-violet-500/10",
+    ring:    "hover:shadow-[0_8px_18px_-12px_rgba(167,139,250,0.45)]",
   },
 };
 
@@ -113,14 +117,13 @@ export function PremiumFlowShowcase() {
             variants={shouldReduce ? undefined : colVariant}
             className="group/col relative flex-1 overflow-hidden rounded-[24px] border border-white/10 bg-white/[0.03] p-5 transition-colors hover:bg-white/[0.05]"
           >
-            {/* glow por tono al hover de la columna */}
+            {/* halo ambiental por tono */}
             <div
               aria-hidden
               className={cn(
-                "pointer-events-none absolute -inset-3 rounded-[28px] opacity-0 blur-2xl transition-opacity duration-300 group-hover/col:opacity-100 bg-gradient-to-br",
-                c.bar,
+                "pointer-events-none absolute -top-20 left-1/2 h-44 w-[80%] -translate-x-1/2 rounded-full opacity-60 blur-3xl transition-opacity duration-300 group-hover/col:opacity-100",
+                c.halo,
               )}
-              style={{ maskImage: "linear-gradient(black, transparent)" }}
             />
 
             <div className="relative">
@@ -135,13 +138,13 @@ export function PremiumFlowShowcase() {
                     c.numBg,
                   )}
                 >
-                  <span className={cn("text-[10px] font-bold tabular-nums leading-none", c.numText)}>
+                  <span className={cn("text-[11px] font-bold tabular-nums leading-none", c.numText)}>
                     {col.num}
                   </span>
                 </div>
                 <span className="text-sm font-bold text-slate-100">{col.title}</span>
               </div>
-              <p className="mb-4 pl-9 text-xs leading-relaxed text-slate-500">{col.subtitle}</p>
+              <p className="mb-4 pl-9 text-xs leading-relaxed text-slate-400">{col.subtitle}</p>
 
               {/* etapas */}
               <div className="grid grid-cols-1 gap-2">
@@ -158,15 +161,15 @@ export function PremiumFlowShowcase() {
                   >
                     <span
                       className={cn(
-                        "mt-0.5 w-4 flex-shrink-0 text-[10px] font-bold tabular-nums leading-none opacity-70",
+                        "mt-0.5 w-4 flex-shrink-0 text-xs font-bold tabular-nums leading-4",
                         c.numText,
                       )}
                     >
                       {stage.n}
                     </span>
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold leading-tight text-slate-200">{stage.t}</div>
-                      <div className="mt-0.5 text-[10px] leading-tight text-slate-500">{stage.d}</div>
+                      <div className="text-xs font-semibold leading-snug text-slate-100">{stage.t}</div>
+                      <div className="mt-0.5 text-xs leading-snug text-slate-400">{stage.d}</div>
                     </div>
                   </motion.div>
                 ))}
