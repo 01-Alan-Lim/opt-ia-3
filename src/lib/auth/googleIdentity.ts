@@ -74,6 +74,25 @@ export type GoogleButtonOptions = {
   locale?: string;
 };
 
+// GIS admite anchos de 200 a 400 px. Si el contenedor ocupa la fila (móvil) se usa su ancho; si
+// todavía no tiene ancho propio, uno parecido al del botón anterior.
+export const GOOGLE_BUTTON_DEFAULT_WIDTH = 260;
+
+export function googleButtonWidth(measuredWidth: number): number {
+  const width = Math.floor(Number.isFinite(measuredWidth) ? measuredWidth : 0);
+  if (width < 200) return GOOGLE_BUTTON_DEFAULT_WIDTH;
+  return Math.min(width, 400);
+}
+
+// Del className que recibe LoginButton, al bloque del botón de Google solo pasan las clases de
+// ancho y alineación (con sus variantes responsive), para que el layout del landing no cambie.
+export function googleBlockLayoutClasses(className: string | undefined): string {
+  return (className ?? "")
+    .split(/\s+/)
+    .filter((c) => /^(?:[a-z0-9]+:)*(?:w-|min-w-|max-w-|self-)/.test(c))
+    .join(" ");
+}
+
 export type GoogleIdApi<Container> = {
   initialize(config: GoogleIdConfiguration): void;
   renderButton(parent: Container, options: GoogleButtonOptions): void;
