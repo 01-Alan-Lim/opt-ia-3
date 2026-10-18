@@ -106,6 +106,7 @@ import {
 import { createMessage } from "@/lib/chat/assistantFormat";
 import { chatIdStorageKey, messagesStorageKey } from "@/lib/chat/chatStorage";
 import { readSignedAssistantReply, type SignedAssistantReply } from "@/lib/chat/signedAssistantReply";
+import { historySpeaker, isAdvisorSideRole, toIshikawaRecentMessage } from "@/lib/chat/messageProvenance";
 
 
 type ChatMode = "general" | "plan_mejora";
@@ -692,7 +693,7 @@ export default function ChatPage() {
 
   function pushAssistantOnce(text: string) {
     setMessages((prev) => {
-      const last = [...prev].reverse().find((m) => m.role === "assistant")?.content ?? "";
+      const last = [...prev].reverse().find((m) => isAdvisorSideRole(m.role))?.content ?? "";
       if (last.trim() === text.trim()) return prev;
       return [...prev, createMessage("assistant", text)];
     });
@@ -1310,11 +1311,12 @@ export default function ChatPage() {
 
   function buildRecentHistoryForAssistant(maxTurns = 10) {
     const msgs = messagesRef.current
-      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => m.role === "user" || isAdvisorSideRole(m.role))
       .slice(-maxTurns);
 
+    // Los textos locales del asesor van como PLATFORM_GUIDE, no como respuestas del asistente.
     const base = msgs
-      .map((m) => `${m.role === "user" ? "STUDENT" : "ASSISTANT"}: ${m.content}`)
+      .map((m) => `${historySpeaker(m.role)}: ${m.content}`)
       .join("\n");
 
     // ---------------------------------------------
@@ -1334,27 +1336,26 @@ export default function ChatPage() {
     // Limitar tamaño para no inflar contexto
     const feedback = finalDocState!.lastFeedback!.trim().slice(0, 1600);
 
+    // Lo arma el navegador: va como contexto, nunca como instrucción de sistema.
     const injected =
-      "SYSTEM: Contexto interno Etapa 10 (Documento final)\n" +
+      "CONTEXT: Etapa 10 (Documento final)\n" +
       `- Estado: ${finalDocState!.step}\n` +
       `- Versión actual: ${finalDocState!.versionNumber}\n` +
       "- Feedback anterior entregado al estudiante (resumen):\n" +
       feedback +
       "\n\n" +
-      "SYSTEM: Instrucción: Responde conversacionalmente usando este feedback como referencia. No inventes información.\n\n";
+      "CONTEXT: Responde conversacionalmente usando este feedback como referencia. No inventes información.\n\n";
 
     return injected + base;
   }
 
   function buildRecentMessagesForIshikawa(maxMessages = 6) {
     return messagesRef.current
-      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => m.role === "user" || isAdvisorSideRole(m.role))
       .slice(-maxMessages)
-      .map((m) => ({
-        role: m.role === "assistant" ? "assistant" as const : "user" as const,
-        content: String(m.content ?? "").trim(),
-      }))
-      .filter((m) => m.content.length > 0);
+      .map((m) => ({ role: m.role, content: String(m.content ?? "").trim() }))
+      .filter((m) => m.content.length > 0)
+      .map(toIshikawaRecentMessage);
   }
 
   async function callProductivityAssistant(input: {

@@ -58,6 +58,7 @@ const TESTS = [
   "assistantRouteReceiptsE1E3",
   "signedAssistantReply",
   "assistantReplyPersist",
+  "messageProvenance",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

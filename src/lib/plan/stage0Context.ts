@@ -5,6 +5,7 @@
 // del contexto, paso siguiente y textos fijos. Sin estado, I/O ni LLM: el flujo, las llamadas a
 // /api/plans/context y la interpretación con Gemini siguen en page.tsx. Se movió tal cual.
 
+import { isAdvisorSideRole } from "@/lib/chat/messageProvenance";
 import type { Message } from "@/lib/types";
 
 import {
@@ -743,7 +744,8 @@ export function getNextStage0StepFromContext(ctxJson: any): 1 | 2 | 3 | 0 {
 }
 
 export function lastAssistantIsStage0Prompt(msgs: Message[]) {
-  const last = [...msgs].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  // Las preguntas de E0 son textos locales (advisor): cuenta el último mensaje del asesor.
+  const last = [...msgs].reverse().find((m) => isAdvisorSideRole(m.role))?.content ?? "";
   return (
     last.includes("1/3") ||
     last.includes("2/3") ||
