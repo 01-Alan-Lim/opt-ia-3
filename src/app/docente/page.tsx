@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { AuthorizedEmailsPanel } from "@/components/teacher/AuthorizedEmailsPanel";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
 import { TeacherChat } from "@/components/teacher/TeacherChat";
 import { TeacherDashboard } from "@/components/teacher/TeacherDashboard";
@@ -782,6 +783,8 @@ export default function DocenteHome() {
                       )}
                     </div>
                   </div>
+
+                  <AuthorizedEmailsPanel />
                 </>
               )}
 

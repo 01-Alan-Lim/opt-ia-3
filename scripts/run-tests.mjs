@@ -69,6 +69,7 @@ const TESTS = [
   "googleIdentity",
   "loginButton",
   "studentEmailAuthorization",
+  "teacherAccessUi",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
