@@ -7,6 +7,8 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
 import { assertChatOwner } from "@/lib/auth/chatOwner";
 import {
   getPreferredStudentFirstName,
@@ -1813,7 +1815,11 @@ function resolveIshikawaTurnAction(args: {
   return "fallback_llm";
 }
 
-export async function POST(req: Request) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: Request) {
   try {
     const authed = await requireUser(req);
 

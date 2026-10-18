@@ -51,6 +51,8 @@ const TESTS = [
   "assistantReceipt",
   "withAssistantReceipt",
   "assistantRouteOwnership",
+  "assistantRouteReceipts",
+  "assistantRouteReceiptsNoKey",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

@@ -5,6 +5,8 @@ import { z } from "zod";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
 import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -336,7 +338,11 @@ ${firstText}
   };
 }
 
-export async function POST(req: NextRequest) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
