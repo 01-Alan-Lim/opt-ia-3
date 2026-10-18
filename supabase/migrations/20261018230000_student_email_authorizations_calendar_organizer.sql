@@ -16,7 +16,8 @@
 --      CALENDAR_TOKEN_ENCRYPTION_KEY); la base nunca ve el token en claro.
 --   3. public.user_google_calendar_event_map (existente, 0 filas): pasa a registrar las
 --      invitaciones del organizador, una por estudiante y evento de cohorte (unicidad
---      user_id + cohort_event_id que ya tenía). Columnas nuevas: status, content_hash,
+--      user_id + cohort_event_id que ya tenía). Columnas nuevas: status, organizer_email (la
+--      cuenta que envió la invitación: solo ella puede actualizarla o cancelarla), content_hash,
 --      last_synced_at y last_error.
 --   4. Permisos: las tablas nuevas, sin RLS policies y sin grants para anon/authenticated
 --      (solo service_role, desde rutas de servidor). En user_google_calendar_event_map y
@@ -111,6 +112,7 @@ revoke all on table public.calendar_organizer from anon, authenticated;
 
 alter table public.user_google_calendar_event_map
   add column if not exists status text not null default 'invited',
+  add column if not exists organizer_email text,
   add column if not exists content_hash text,
   add column if not exists last_synced_at timestamptz,
   add column if not exists last_error text;
@@ -122,6 +124,10 @@ alter table public.user_google_calendar_event_map
 alter table public.user_google_calendar_event_map drop constraint if exists user_google_calendar_event_map_last_error_length;
 alter table public.user_google_calendar_event_map
   add constraint user_google_calendar_event_map_last_error_length check (last_error is null or char_length(last_error) <= 300);
+
+alter table public.user_google_calendar_event_map drop constraint if exists user_google_calendar_event_map_organizer_email_format;
+alter table public.user_google_calendar_event_map
+  add constraint user_google_calendar_event_map_organizer_email_format check (organizer_email is null or organizer_email = lower(btrim(organizer_email)));
 
 create index if not exists user_google_calendar_event_map_cohort_event_idx
   on public.user_google_calendar_event_map (cohort_event_id);

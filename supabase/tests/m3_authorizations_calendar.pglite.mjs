@@ -154,7 +154,7 @@ check("profiles intacto", JSON.stringify(await q(`select * from public.profiles 
 // verify.sql
 const verifyRows = (await db.exec(verify)).flatMap((r) => r.rows);
 const schemaChecks = verifyRows.filter((r) => "item" in r);
-check("verify.sql: 17 comprobaciones", schemaChecks.length === 17, String(schemaChecks.length));
+check("verify.sql: 18 comprobaciones", schemaChecks.length === 18, String(schemaChecks.length));
 check("verify.sql: todas ok", schemaChecks.every((r) => r.ok === true), JSON.stringify(schemaChecks.filter((r) => r.ok !== true)));
 const transition = verifyRows.find((r) => "active_authorizations" in r);
 check("verify.sql: activas = estudiantes heredados", Number(transition.active_authorizations) === Number(transition.legacy_students), JSON.stringify(transition));
@@ -194,6 +194,8 @@ check("estado inválido -> 23514", (await code(`update public.calendar_organizer
 await q(`insert into public.user_google_calendar_event_map (user_id, cohort_event_id, google_event_id, calendar_id) values ($1, $2, 'optiaabc123', 'primary')`, [ids.umsa, EVENT]);
 check("status por defecto: invited", (await q(`select status from public.user_google_calendar_event_map`))[0].status === "invited");
 check("status inválido -> 23514", (await code(`update public.user_google_calendar_event_map set status = 'enviado'`)) === "23514");
+check("organizer_email normalizado", (await code(`update public.user_google_calendar_event_map set organizer_email = 'Org@Gmail.com'`)) === "23514");
+check("organizer_email válido", (await code(`update public.user_google_calendar_event_map set organizer_email = 'org@gmail.com'`)) === "ok");
 check("una invitación por estudiante y evento -> 23505",
   (await code(`insert into public.user_google_calendar_event_map (user_id, cohort_event_id, google_event_id) values ('${ids.umsa}', '${EVENT}', 'otro')`)) === "23505");
 
@@ -208,7 +210,7 @@ check("rollback se aplica", (await code(rollback)) === "ok");
 check("rollback: tablas nuevas retiradas",
   (await q(`select count(*)::int as n from information_schema.tables where table_schema = 'public' and table_name in ('student_email_authorizations', 'calendar_organizer')`))[0].n === 0);
 check("rollback: columnas retiradas del mapeo",
-  (await q(`select count(*)::int as n from information_schema.columns where table_schema = 'public' and table_name = 'user_google_calendar_event_map' and column_name in ('status', 'content_hash', 'last_synced_at', 'last_error')`))[0].n === 0);
+  (await q(`select count(*)::int as n from information_schema.columns where table_schema = 'public' and table_name = 'user_google_calendar_event_map' and column_name in ('status', 'organizer_email', 'content_hash', 'last_synced_at', 'last_error')`))[0].n === 0);
 check("rollback: authenticated vuelve a poder escribir el mapeo",
   (await q(`select has_table_privilege('authenticated', 'public.user_google_calendar_event_map', 'INSERT') as v`))[0].v === true);
 check("rollback: profiles intacto", JSON.stringify(await q(`select * from public.profiles order by user_id`)) === profilesBefore);

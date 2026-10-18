@@ -12,7 +12,7 @@
 import { z } from "zod";
 
 import { ok, failResponse } from "@/lib/api/response";
-import { getAuthErrorCode, requireUser, type AuthedUser } from "@/lib/auth/supabase";
+import { requireTeacher } from "@/lib/auth/requireTeacher";
 import {
   clearStudentEmailAuthorizationCache,
   isInstitutionalEmail,
@@ -55,19 +55,6 @@ function allowedDomain(): string | null {
   const v = (process.env.ALLOWED_EMAIL_DOMAIN ?? "").trim().toLowerCase();
   if (!v) return null;
   return v.startsWith("@") ? v.slice(1) : v;
-}
-
-async function requireTeacher(req: Request): Promise<{ ok: true; user: AuthedUser } | { ok: false; res: Response }> {
-  try {
-    const user = await requireUser(req);
-    if (user.role !== "teacher") return { ok: false, res: failResponse("FORBIDDEN", "Solo docentes.", 403) };
-    return { ok: true, user };
-  } catch (err: unknown) {
-    const code = getAuthErrorCode(err);
-    if (code === "UNAUTHORIZED") return { ok: false, res: failResponse("UNAUTHORIZED", "Sesión inválida o ausente.", 401) };
-    if (code === "FORBIDDEN_DOMAIN") return { ok: false, res: failResponse("FORBIDDEN", "Acceso restringido.", 403) };
-    return { ok: false, res: failResponse("INTERNAL", "No se pudo validar la sesión.", 500) };
-  }
 }
 
 function tableUnavailable(): Response {

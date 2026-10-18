@@ -1,43 +1,38 @@
 "use client";
 
+// Retorno de Google al conectar la cuenta organizadora de Calendar desde el panel docente. El
+// código se envía al servidor, que comprueba el CSRF, lo canjea y guarda el acceso cifrado: el
+// navegador nunca recibe tokens de Google.
+
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-function safeReturnTo(rt: string | null | undefined, fallback: string) {
-  if (!rt) return fallback;
-  if (!rt.startsWith("/")) return fallback;
-  if (rt.startsWith("//")) return fallback;
-  return rt;
-}
+const PANEL = "/docente";
 
 export default function CalendarCallbackClient() {
   const router = useRouter();
   const params = useSearchParams();
 
-  const [status, setStatus] = useState<"idle" | "sync" | "ok" | "error">("idle");
-  const [message, setMessage] = useState("Conectando Google Calendar...");
+  const [status, setStatus] = useState<"working" | "ok" | "error">("working");
+  const [message, setMessage] = useState("Conectando la cuenta organizadora...");
 
   useEffect(() => {
     let mounted = true;
 
     async function run() {
       try {
-        setStatus("sync");
-
         const code = params.get("code");
         const state = params.get("state");
-        const oauthError = params.get("error");
 
-        if (oauthError) {
+        if (params.get("error")) {
           setStatus("error");
-          setMessage(`Autorización cancelada: ${oauthError}`);
+          setMessage("Se canceló la autorización en Google. No se conectó ninguna cuenta.");
           return;
         }
-
-        if (!code) {
+        if (!code || !state) {
           setStatus("error");
-          setMessage("Falta el parámetro code.");
+          setMessage("Google no devolvió la autorización. Vuelve a intentarlo desde el panel docente.");
           return;
         }
 
@@ -45,58 +40,32 @@ export default function CalendarCallbackClient() {
         const accessToken = data.session?.access_token;
         if (!accessToken) {
           setStatus("error");
-          setMessage("No encuentro tu sesión. Inicia sesión y vuelve a intentar.");
+          setMessage("No encuentro tu sesión. Inicia sesión y vuelve a intentarlo.");
           return;
         }
 
-        // 1) Intercambiar code por tokens y guardar refresh_token
-        const r = await fetch("/api/integrations/google-calendar/callback", {
+        const r = await fetch("/api/teacher/calendar-organizer/callback", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ code, state }),
         });
-
-        const j = await r.json().catch(() => null);
+        const j = (await r.json().catch(() => null)) as { ok?: boolean; message?: string } | null;
+        if (!mounted) return;
         if (!r.ok || !j?.ok) {
           setStatus("error");
-          setMessage(j?.message || "No se pudo completar OAuth.");
+          setMessage(j?.message || "No se pudo conectar la cuenta organizadora.");
           return;
         }
-
-        // 2) Sincronizar eventos
-        setMessage("Sincronizando eventos...");
-        const sync = await fetch("/api/integrations/google-calendar/sync", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ dryRun: false }),
-        });
-
-        const sj = await sync.json().catch(() => null);
-        if (!sync.ok || !sj?.ok) {
-          setStatus("error");
-          setMessage(sj?.message || "No se pudo sincronizar eventos.");
-          return;
-        }
-
-        const returnTo = safeReturnTo(j?.data?.returnTo, "/chat");
 
         setStatus("ok");
-        setMessage("¡Google Calendar conectado! Redirigiendo...");
-
+        setMessage("Cuenta organizadora conectada. Volviendo al panel docente...");
         setTimeout(() => {
-          if (!mounted) return;
-          router.replace(returnTo);
+          if (mounted) router.replace(`${PANEL}?calendario=conectado`);
         }, 700);
-      } catch (e) {
-        console.error(e);
+      } catch {
+        if (!mounted) return;
         setStatus("error");
-        setMessage("Ocurrió un error inesperado.");
+        setMessage("Ocurrió un error inesperado al conectar el calendario.");
       }
     }
 
@@ -109,14 +78,13 @@ export default function CalendarCallbackClient() {
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-xl flex-col items-center justify-center gap-4 px-6 text-center">
       <h1 className="text-2xl font-semibold">Google Calendar</h1>
-      <p className="text-sm opacity-80">{message}</p>
+      <p className="text-sm opacity-80" role={status === "error" ? "alert" : "status"}>
+        {message}
+      </p>
 
       {status === "error" && (
-        <button
-          className="mt-4 rounded-md border px-4 py-2 text-sm"
-          onClick={() => router.replace("/chat")}
-        >
-          Volver
+        <button className="mt-4 rounded-md border px-4 py-2 text-sm" onClick={() => router.replace(PANEL)}>
+          Volver al panel docente
         </button>
       )}
     </div>

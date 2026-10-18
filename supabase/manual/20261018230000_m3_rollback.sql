@@ -13,12 +13,14 @@ drop table if exists public.calendar_organizer;
 drop table if exists public.student_email_authorizations;
 
 drop index if exists public.user_google_calendar_event_map_cohort_event_idx;
+alter table public.user_google_calendar_event_map drop constraint if exists user_google_calendar_event_map_organizer_email_format;
 alter table public.user_google_calendar_event_map drop constraint if exists user_google_calendar_event_map_last_error_length;
 alter table public.user_google_calendar_event_map drop constraint if exists user_google_calendar_event_map_status_check;
 alter table public.user_google_calendar_event_map
   drop column if exists last_error,
   drop column if exists last_synced_at,
   drop column if exists content_hash,
+  drop column if exists organizer_email,
   drop column if exists status;
 
 grant insert, update, delete, truncate on table

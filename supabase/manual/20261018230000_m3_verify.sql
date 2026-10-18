@@ -21,7 +21,7 @@ union all
 select 'event_map_col_' || column_name, true, data_type
 from information_schema.columns
 where table_schema = 'public' and table_name = 'user_google_calendar_event_map'
-  and column_name in ('status', 'content_hash', 'last_synced_at', 'last_error')
+  and column_name in ('status', 'organizer_email', 'content_hash', 'last_synced_at', 'last_error')
 union all
 select 'authenticated_no_write_' || t.relname || '_' || p.priv,
        not has_table_privilege('authenticated', t.oid, p.priv),
@@ -29,7 +29,7 @@ select 'authenticated_no_write_' || t.relname || '_' || p.priv,
 from pg_class t
 cross join unnest(array['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) as p(priv)
 where t.oid in ('public.user_google_calendar_event_map'::regclass, 'public.user_google_calendar_tokens'::regclass);
--- Esperado: 2 + 2 + 1 + 4 + 8 = 17 filas, todas ok = true.
+-- Esperado: 2 + 2 + 1 + 5 + 8 = 18 filas, todas ok = true.
 
 -- 2) Transición: autorizaciones heredadas frente a estudiantes no institucionales existentes.
 select
