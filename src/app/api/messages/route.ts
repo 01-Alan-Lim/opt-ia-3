@@ -2,18 +2,14 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
+import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
+import { decideMessageWrite, PersistMessageBodySchema } from "@/lib/chat/messageWritePolicy";
 import { Message } from "@/lib/types";
 
 const QuerySchema = z.object({
   chatId: z.string().min(1),
-});
-
-const PostBodySchema = z.object({
-  chatId: z.string().uuid(),
-  role: z.enum(["user", "assistant", "system"]),
-  content: z.string().min(1).max(6000),
 });
 
 async function assertChatOwnership(userId: string, chatId: string) {
@@ -97,21 +93,37 @@ export async function POST(req: NextRequest) {
     const user = await requireUser(req);
 
     const raw = await req.json().catch(() => null);
-    const parsed = PostBodySchema.safeParse(raw);
+    const parsed = PersistMessageBodySchema.safeParse(raw);
     if (!parsed.success) {
       return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido", 400);
     }
 
-    const { chatId, role, content } = parsed.data;
+    const { data: chatRow, error: chatErr } = await supabaseServer
+      .from("chats")
+      .select("id, client_id")
+      .eq("id", parsed.data.chatId)
+      .maybeSingle();
 
-    const ownership = await assertChatOwnership(user.userId, chatId);
-    if (!ownership.ok) {
-      return failResponse(ownership.code as any, ownership.message, ownership.status);
+    if (chatErr) {
+      return failResponse("INTERNAL", "No se pudo validar el chat", 500, chatErr);
+    }
+
+    const gate = await assertChatAccess(req, user);
+
+    const decision = decideMessageWrite({
+      userId: user.userId,
+      body: parsed.data,
+      chatOwnerId: (chatRow?.client_id as string | undefined) ?? null,
+      gate,
+    });
+
+    if (!decision.ok) {
+      return failResponse(decision.code, decision.message, decision.status);
     }
 
     const { data, error } = await supabaseServer
       .from("messages")
-      .insert({ chat_id: chatId, role, content })
+      .insert(decision.row)
       .select("id, role, content, created_at")
       .single();
 
