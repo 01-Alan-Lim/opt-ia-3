@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getGeminiModel } from "@/lib/geminiClient";
@@ -362,6 +363,16 @@ export async function POST(req: NextRequest) {
     }
 
     const { chatId, studentMessage, planningState, caseContext, recentHistory } = parsed.data;
+
+    // El chat se verifica en el servidor antes de leer artefactos o llamar al modelo; no se
+    // confía en el chatId del cuerpo.
+    const owner = await assertChatOwner(user.userId, chatId);
+    if (!owner.ok) {
+      return NextResponse.json(
+        { ok: false, code: owner.code, message: owner.message },
+        { status: owner.status }
+      );
+    }
 
     const planningStateParse = PlanningStateSchema.safeParse(planningState);
     if (!planningStateParse.success) {

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
@@ -483,6 +484,16 @@ export async function POST(req: NextRequest) {
       caseContext = null,
       recentHistory = "",
     } = parsed.data;
+
+    // El chat se verifica en el servidor antes de leer artefactos o llamar al modelo; no se
+    // confía en el chatId del cuerpo.
+    const owner = await assertChatOwner(user.userId, chatId);
+    if (!owner.ok) {
+      return NextResponse.json(
+        { ok: false, code: owner.code, message: owner.message },
+        { status: owner.status }
+      );
+    }
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
