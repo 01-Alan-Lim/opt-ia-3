@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 
-import { LoginButton } from "@/components/LoginButton";
+import { LoginAlternative, LoginButton } from "@/components/LoginButton";
 import { AuthNotice } from "@/components/auth/AuthNotice";
 import { AuroraBackground } from "@/components/landing/AuroraBackground";
 import { MagneticDotWord } from "@/components/landing/MagneticDotWord";
@@ -192,19 +192,21 @@ export function LandingPage() {
               con IA académica y trazabilidad para revisión docente.
             </motion.p>
 
-            {/* CTAs estáticos con feedback visual */}
-            <motion.div
-              variants={fadeUp}
-              className="mt-7 flex flex-col items-stretch gap-4 sm:flex-row sm:items-center"
-            >
-              <LoginButton className="w-full rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)] sm:w-auto" />
+            {/* CTAs: botón de Google y flujo en una fila (columna en móvil), mismo alto (32 px,
+                el del botón medium de Google) y el acceso alternativo debajo del grupo. */}
+            <motion.div variants={fadeUp} className="mt-7 w-full max-w-sm sm:max-w-none">
+              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-4">
+                <LoginButton className="w-full sm:w-60" />
 
-              <a
-                href="#flujo"
-                className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 text-sm font-semibold text-slate-200 transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-sky-300/35 hover:bg-white/[0.08] hover:shadow-[0_0_16px_-9px_rgba(56,189,248,0.45)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 sm:w-auto"
-              >
-                Ver flujo metodológico
-              </a>
+                <a
+                  href="#flujo"
+                  className="inline-flex h-8 w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 text-sm font-semibold text-slate-200 transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-sky-300/35 hover:bg-white/[0.08] hover:shadow-[0_0_16px_-9px_rgba(56,189,248,0.45)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 sm:w-auto"
+                >
+                  Ver flujo metodológico
+                </a>
+              </div>
+
+              <LoginAlternative className="mt-3 text-center sm:text-left" />
             </motion.div>
 
             {/* Mini-badges */}
@@ -409,8 +411,9 @@ export function LandingPage() {
                 metodológico y revisión docente integrada.
               </p>
             </div>
-            <div className="flex-shrink-0">
-              <LoginButton className="rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)]" />
+            <div className="flex w-full max-w-sm flex-shrink-0 flex-col items-stretch gap-3 md:w-60">
+              <LoginButton className="w-full" />
+              <LoginAlternative className="text-center" />
             </div>
           </div>
         </LandingScrollSection>

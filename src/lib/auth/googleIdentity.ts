@@ -63,6 +63,7 @@ export type GoogleIdConfiguration = {
   itp_support: boolean;
 };
 
+// size "medium" (o "small") evita el botón personalizado con nombre, foto y correo del usuario.
 export type GoogleButtonOptions = {
   type: "standard";
   theme: "outline" | "filled_blue" | "filled_black";
@@ -82,15 +83,6 @@ export function googleButtonWidth(measuredWidth: number): number {
   const width = Math.floor(Number.isFinite(measuredWidth) ? measuredWidth : 0);
   if (width < 200) return GOOGLE_BUTTON_DEFAULT_WIDTH;
   return Math.min(width, 400);
-}
-
-// Del className que recibe LoginButton, al bloque del botón de Google solo pasan las clases de
-// ancho y alineación (con sus variantes responsive), para que el layout del landing no cambie.
-export function googleBlockLayoutClasses(className: string | undefined): string {
-  return (className ?? "")
-    .split(/\s+/)
-    .filter((c) => /^(?:[a-z0-9]+:)*(?:w-|min-w-|max-w-|self-)/.test(c))
-    .join(" ");
 }
 
 export type GoogleIdApi<Container> = {

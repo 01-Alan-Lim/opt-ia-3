@@ -1,12 +1,13 @@
 # Inicio de sesión con Google Identity Services (GIS)
 
-El botón principal del landing es el botón oficial de Google. Google entrega un ID token en el
+El botón principal del landing es el botón oficial de Google, en tamaño `medium` y tema `outline`
+(con `medium` Google no muestra el nombre, la foto ni el correo del usuario dentro del botón). Google entrega un ID token en el
 navegador y Supabase Auth lo valida con `signInWithIdToken`. Supabase sigue siendo la única
 sesión: roles, RLS, onboarding, cohortes y `/api/auth/after-login` no cambian. Como no hay
 redirección a `<ref>.supabase.co`, Google ya no muestra ese dominio.
 
 El OAuth anterior (`signInWithOAuth`) sigue disponible como respaldo:
-- como enlace "¿Problemas? Ingresa con el método alternativo" bajo el botón de Google;
+- como enlace "¿Problemas con el botón? Usa el acceso alternativo", debajo del grupo de botones;
 - como botón principal, igual que antes, si falta `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, si el script
   de Google no carga en 8 s o si falla.
 
