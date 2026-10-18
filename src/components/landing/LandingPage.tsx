@@ -197,7 +197,7 @@ export function LandingPage() {
               variants={fadeUp}
               className="mt-7 flex flex-col items-stretch gap-4 sm:flex-row sm:items-center"
             >
-              <LoginButton className="w-full rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:!bg-sky-400 hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)] sm:w-auto" />
+              <LoginButton className="w-full rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)] sm:w-auto" />
 
               <a
                 href="#flujo"
@@ -410,7 +410,7 @@ export function LandingPage() {
               </p>
             </div>
             <div className="flex-shrink-0">
-              <LoginButton className="rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:!bg-sky-400 hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)]" />
+              <LoginButton className="rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)]" />
             </div>
           </div>
         </LandingScrollSection>

@@ -108,7 +108,9 @@ export function LoginButton({ className }: { className?: string }) {
       className={clsx(
         // ✅ estilo consistente con tus tarjetas
         "inline-flex items-center justify-center h-12 px-5 rounded-2xl",
-        "bg-sky-500 hover:bg-sky-600 disabled:opacity-60",
+        // Texto blanco sobre sky-700 (5.85:1) y sky-800 en hover (7.52:1): AA para texto normal.
+        "bg-sky-700 hover:bg-sky-800 disabled:opacity-60",
+        "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300",
         "text-white text-sm font-semibold",
         "shadow-lg shadow-sky-500/10",
         "transition",
