@@ -17,7 +17,23 @@ export type ApiErrorCode =
   | "ACCESS_EXPIRED"
   | "PAYLOAD_TOO_LARGE"
   | "AUTH_UPSTREAM_TIMEOUT"
-  | "FORBIDDEN_IN_PRODUCTION";
+  | "FORBIDDEN_IN_PRODUCTION"
+  // La ruta existe pero no atiende esa etapa (p. ej. el estado de E4 se guarda por
+  // /api/plans/ishikawa/state, que es quien protege sus campos de autoridad).
+  | "STAGE_NOT_ALLOWED"
+  // Panel docente (GET /api/teacher/dashboard).
+  | "INVALID_QUERY"
+  | "COHORT_NOT_FOUND"
+  | "INTERNAL_ERROR"
+  // POST /api/messages (R1): respuesta assistant sin recibo, con recibo que no verifica, sin
+  // clave de verificación en el servidor, o base sin la migración M2.
+  | "ASSISTANT_RECEIPT_REQUIRED"
+  | "ASSISTANT_RECEIPT_INVALID"
+  | "RECEIPT_KEY_UNAVAILABLE"
+  | "SCHEMA_NOT_READY"
+  // Ruta retirada que se conserva para responder de forma explícita
+  // (POST /api/chats/[chatId]/clear).
+  | "GONE";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

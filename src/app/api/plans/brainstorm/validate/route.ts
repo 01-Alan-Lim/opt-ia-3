@@ -8,7 +8,7 @@ import { getGeminiModel } from "@/lib/geminiClient";
 import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
-import { sanitizeBrainstormState } from "@/lib/plan/brainstormFlow";
+import { MIN_BRAINSTORM_IDEAS, sanitizeBrainstormState } from "@/lib/plan/brainstormFlow";
 
 export const runtime = "nodejs";
 
@@ -167,7 +167,9 @@ export async function POST(req: NextRequest) {
     const strategyRationale = String(st.strategy?.rationale ?? "").trim();
     const problemText = String(st.problem?.text ?? "").trim();
     const ideas = Array.isArray(st.ideas) ? st.ideas : [];
-    const minIdeas = Number(st.minIdeas ?? 10);
+    // El mínimo es del servidor (MIN_BRAINSTORM_IDEAS), no del estado: st.minIdeas venía
+    // del cliente y permitía cerrar la etapa con menos causas de las exigidas.
+    const minIdeas = MIN_BRAINSTORM_IDEAS;
 
     if (!strategyType) {
       return NextResponse.json(

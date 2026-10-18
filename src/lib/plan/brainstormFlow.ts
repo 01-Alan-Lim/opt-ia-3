@@ -1,5 +1,10 @@
 // src/lib/plan/brainstormFlow.ts
 
+// Mínimo de causas para cerrar la Etapa 3. Es una regla del método, no un dato del
+// estudiante: vive aquí y NUNCA se lee del estado. Antes salía de state.minIdeas, que
+// viaja por el cliente, así que el mínimo se podía bajar desde el navegador.
+export const MIN_BRAINSTORM_IDEAS = 10;
+
 export type BrainstormStrategyType = "FO" | "DO" | "FA" | "DA";
 
 export type BrainstormStep =
@@ -78,19 +83,15 @@ function dedupeIdeas(rawIdeas: unknown): BrainstormIdea[] {
 }
 
 export function resolveBrainstormStep(
-  state: Pick<BrainstormState, "strategy" | "problem" | "ideas" | "minIdeas">
+  state: Pick<BrainstormState, "strategy" | "problem" | "ideas">
 ): BrainstormStep {
   const strategyType = state.strategy?.type ?? null;
   const problemText = asString(state.problem?.text);
   const ideasCount = Array.isArray(state.ideas) ? state.ideas.length : 0;
-  const minIdeas =
-    typeof state.minIdeas === "number" && Number.isFinite(state.minIdeas)
-      ? Math.max(3, Math.round(state.minIdeas))
-      : 10;
 
   if (!strategyType) return "choose_strategy";
   if (!problemText) return "define_problem";
-  if (ideasCount >= minIdeas) return "review";
+  if (ideasCount >= MIN_BRAINSTORM_IDEAS) return "review";
   return "generate_causes";
 }
 
@@ -107,13 +108,7 @@ export function sanitizeBrainstormState(input: unknown): BrainstormState {
       ? asString(source.problem)
       : asString(problem.text);
 
-  const minIdeasRaw =
-    typeof source.minIdeas === "number" && Number.isFinite(source.minIdeas)
-      ? Math.round(source.minIdeas)
-      : 10;
-
-  const minIdeas = Math.max(3, Math.min(20, minIdeasRaw));
-
+  // minIdeas NO se lee de `source`: es autoridad del servidor (MIN_BRAINSTORM_IDEAS).
   const base: BrainstormState = {
     step: "choose_strategy",
     strategy: strategyType
@@ -128,7 +123,7 @@ export function sanitizeBrainstormState(input: unknown): BrainstormState {
       }
     : null,
     ideas: dedupeIdeas(source.ideas),
-    minIdeas,
+    minIdeas: MIN_BRAINSTORM_IDEAS,
   };
 
   return {
@@ -154,9 +149,7 @@ export function mergeBrainstormState(
     ideas: Object.prototype.hasOwnProperty.call(incoming, "ideas")
       ? incoming.ideas
       : base.ideas,
-    minIdeas: Object.prototype.hasOwnProperty.call(incoming, "minIdeas")
-      ? incoming.minIdeas
-      : base.minIdeas,
+    // minIdeas no se fusiona: sanitizeBrainstormState lo fija a MIN_BRAINSTORM_IDEAS.
     step: Object.prototype.hasOwnProperty.call(incoming, "step")
       ? incoming.step
       : base.step,

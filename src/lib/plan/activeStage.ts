@@ -2,6 +2,7 @@
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
+import { RESUME_GATE_BY_STAGE } from "@/lib/plan/stageArtifacts";
 
 type JsonMap = Record<string, unknown>;
 
@@ -96,20 +97,6 @@ function getFodaStatePriority(stateJson: JsonMap | null) {
 
   return totalItems * 100 + completedQuadrants * 10 + currentQuadrantCount;
 }
-
-const RESUME_GATE_BY_STAGE: Partial<
-  Record<ActivePlanStage, { requiredStage: number; artifactType: string }>
-> = {
-  2: { requiredStage: 1, artifactType: "productivity_report" },
-  3: { requiredStage: 2, artifactType: "foda_analysis" },
-  4: { requiredStage: 3, artifactType: "brainstorm_ideas" },
-  5: { requiredStage: 4, artifactType: "ishikawa_final" },
-  6: { requiredStage: 5, artifactType: "pareto_final" },
-  7: { requiredStage: 6, artifactType: "objectives_final" },
-  8: { requiredStage: 7, artifactType: "improvement_final" },
-  9: { requiredStage: 8, artifactType: "planning_final" },
-  10: { requiredStage: 9, artifactType: "progress_final" },
-};
 
 async function canResumeStage(args: {
   userId: string;

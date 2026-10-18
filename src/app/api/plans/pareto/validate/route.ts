@@ -9,7 +9,14 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
 import { extractJsonSafe } from "@/lib/llm/extractJson";
+import {
+  describeParetoCutProblem,
+  evaluateParetoCut,
+  formatPercent,
+  normalizeJustification,
+} from "@/lib/plan/paretoCut";
 
 export const runtime = "nodejs";
 
@@ -27,10 +34,6 @@ function fail(status: number, code: string, message: string, detail?: unknown) {
     console.error(`[plans] ${code}: ${message}`, detail);
   }
   return NextResponse.json({ ok: false, code, message, detail: null }, { status });
-}
-
-function ceil20Percent(n: number) {
-  return Math.max(1, Math.ceil(n * 0.2));
 }
 
 function normalizeText(input: string) {
@@ -189,14 +192,12 @@ export async function POST(req: NextRequest) {
       rootsSet.has(normalizeText(r))
     );
 
-    const minSelected = typeof s?.minSelected === "number" ? s.minSelected : 10;
-    const maxSelected = typeof s?.maxSelected === "number" ? s.maxSelected : 15;
-
-    if (selectedRoots.length < minSelected || selectedRoots.length > maxSelected) {
+    // Pareto no tiene mínimo ni tope propio (CLAUDE.md): recibe todas las raíces de Ishikawa.
+    if (selectedRoots.length === 0) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: `Selecciona entre ${minSelected} y ${maxSelected} causas raíz para el Pareto. Actualmente: ${selectedRoots.length}.`,
+        message: "No hay causas raíz seleccionadas para el Pareto.",
       });
     }
 
@@ -238,17 +239,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // criticalRoots (top 20% devuelto por el estudiante tras Excel)
+    // Grupo crítico devuelto por el estudiante tras su Excel.
     const criticalRoots = normalizeStringArray(s?.criticalRoots);
-
-    const minCritical = ceil20Percent(selectedRoots.length);
-    if (criticalRoots.length < minCritical) {
-      return NextResponse.json({
-        ok: true,
-        valid: false,
-        message: `Aún falta la lista final de causas críticas (top 20%). Para ${selectedRoots.length} causas, envía al menos ${minCritical} causas críticas (según tu Excel).`,
-      });
-    }
 
     const selectedSet = new Set(selectedRoots.map((r) => normalizeText(r)));
     const invalidCritical = criticalRoots.filter((r) => !selectedSet.has(normalizeText(r)));
@@ -261,6 +253,19 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Principio de Pareto (CLAUDE.md): una minoría de causas concentra la mayor parte del problema.
+    const cutCounts = { criticalCount: criticalRoots.length, selectedCount: selectedRoots.length };
+    const cut = evaluateParetoCut({ ...cutCounts, effectPercent: s?.criticalEffectPercent });
+    if (!cut.ok) {
+      return NextResponse.json({
+        ok: true,
+        valid: false,
+        message: describeParetoCutProblem(cut, cutCounts),
+      });
+    }
+
+    const criticalJustification = normalizeJustification(s?.criticalJustification);
+
     // 4) Guardar final artifact (Etapa 5)
     const finalPayload = {
       selectedRoots,
@@ -270,7 +275,13 @@ export async function POST(req: NextRequest) {
         weight: Number(c?.weight),
       })),
       criticalRoots,
-      note: "El cálculo 80/20 se realizó en Excel (herramienta de la materia).",
+      cut: {
+        ...cutCounts,
+        causesPercent: cut.causesPercent,
+        effectPercent: cut.effectPercent,
+        justification: criticalJustification,
+      },
+      note: `Corte de Pareto calculado por el estudiante en Excel: el ${formatPercent(cut.causesPercent)}% de las causas concentra el ${formatPercent(cut.effectPercent)}% del problema.`,
       validatedAt: new Date().toISOString(),
       fromStage4: { rootsCount: rootsOfficial.length, ishikawaUpdatedAt },
     };
@@ -282,7 +293,6 @@ export async function POST(req: NextRequest) {
     };
 
     const model = getGeminiModel();
-    // reutilizamos minCritical ya calculado arriba en las validaciones
 
     const prompt = `
     Evalúa académicamente la Etapa 5 (Pareto). Debes ser estricto: si los criterios son vagos,
@@ -294,7 +304,8 @@ export async function POST(req: NextRequest) {
       - Pesos 1-10 razonables (no todos iguales sin necesidad).
       - Los criterios ayudan a priorizar causas raíz en este contexto.
     2) Priorización final (60%):
-      - Las causas críticas (top 20%) son coherentes con la lista seleccionada y no parecen arbitrarias.
+      - El grupo crítico es coherente con la lista seleccionada y no parece arbitrario.
+      - Corte declarado: el ${formatPercent(cut.causesPercent)}% de las causas concentra el ${formatPercent(cut.effectPercent)}% del problema. Evalúa si ese corte es defendible y si la justificación del estudiante (si existe) es coherente con las causas elegidas.
       - Evita causas críticas vagas/duplicadas.
       - Debe sentirse defendible que esas son “las más importantes”.
 
@@ -312,21 +323,11 @@ export async function POST(req: NextRequest) {
       "mejoras": ["string", "string", "string"]
     }
 
-    RAÍCES OFICIALES (Ishikawa validado):
-    ${JSON.stringify(rootsOfficial, null, 2)}
+    CAUSAS RAÍZ SELECCIONADAS PARA PARETO (${selectedRoots.length} de ${rootsOfficial.length} raíces del Ishikawa validado):
+    ${selectedRoots.map((root, index) => `${index + 1}. ${root}`).join("\n    ")}
 
     ENTREGA DEL ESTUDIANTE (Pareto):
-    ${JSON.stringify(
-      {
-        selectedRoots,
-        criteria,
-        criticalRoots,
-        minCritical,
-        note: "El cálculo 80/20 se realizó en Excel (herramienta de la materia).",
-      },
-      null,
-      2
-    )}
+    ${JSON.stringify({ criteria, criticalRoots, cut: finalPayload.cut })}
     `;
 
     let evaluation: any = null;
@@ -390,29 +391,18 @@ export async function POST(req: NextRequest) {
       if (existingEvalErr) {
         evalWarning = { warning: "Etapa 5 validada, pero no se pudo verificar evaluación existente." };
       } else if (!existingEval) {
-        const payloadEval = {
-          status: "validated",
-          selectedRootsCount: selectedRoots.length,
-          criticalRootsCount: criticalRoots.length,
-          minCritical,
-        };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: user.userId,
-          chat_id: chatId ?? stateChatId ?? null,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          status: "validated",
-          payload_json: payloadEval,
-
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId: user.userId,
+            chatId: chatId ?? stateChatId ?? null,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 5 validada, pero no se pudo insertar la evaluación IA." };

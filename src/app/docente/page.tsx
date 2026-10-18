@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
 import { TeacherChat } from "@/components/teacher/TeacherChat";
@@ -26,6 +27,9 @@ type Cohort = {
 
 type DocenteTab = "config" | "approvals" | "dashboard" | "chat";
 type RegistrationFilter = "pending" | "approved" | "rejected";
+// Resultado del gate de UI con /api/me. "denied" redirige a /chat, cuyo gate ya resuelve
+// onboarding, aprobación pendiente o dominio no autorizado.
+type TeacherAccess = "checking" | "teacher" | "no_session" | "denied" | "error";
 
 function isRegistrationFilter(value: string): value is RegistrationFilter {
   return value === "pending" || value === "approved" || value === "rejected";
@@ -246,7 +250,9 @@ function NotImplemented({ title, hint }: { title: string; hint?: string }) {
 }
 
 export default function DocenteHome() {
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
+  const [access, setAccess] = useState<TeacherAccess>("checking");
   const [tab, setTab] = useState<DocenteTab>("config");
 
   const TAB_META: Record<DocenteTab, { title: string; subtitle: string }> = {
@@ -297,6 +303,48 @@ export default function DocenteHome() {
       sub.subscription.unsubscribe();
     };
   }, []);
+
+  // Gate de UI: el rol lo resuelve el servidor en /api/me (allowlist docente). Esto solo decide
+  // qué se pinta; cada /api/teacher/* vuelve a exigir el rol docente por su cuenta.
+  useEffect(() => {
+    if (!token) return;
+
+    let active = true;
+    setAccess("checking");
+
+    (async () => {
+      try {
+        const res = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
+        const json = await res.json().catch(() => null);
+        if (!active) return;
+
+        if (res.status === 401) {
+          setAccess("no_session");
+          return;
+        }
+
+        const payload = json?.data ?? json;
+        if (res.ok && json?.ok !== false && payload?.user?.role === "teacher") {
+          setAccess("teacher");
+          return;
+        }
+
+        if (res.ok || res.status === 403) {
+          setAccess("denied");
+          router.replace("/chat");
+          return;
+        }
+
+        setAccess("error");
+      } catch {
+        if (active) setAccess("error");
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [token, router]);
 
   // Load cohorts (activas) — solo cuando estamos en Aprobaciones
   useEffect(() => {
@@ -428,13 +476,25 @@ export default function DocenteHome() {
     <main className="min-h-screen bg-slate-950 text-slate-100 py-10 px-6 md:pl-[92px]">
       <div className="w-full max-w-none">
 
-        {!token && (
+        {(!token || access === "no_session") && (
           <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-200">
             No hay sesión. Inicia sesión como docente.
           </div>
         )}
 
-        {token && (
+        {token && (access === "checking" || access === "denied") && (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-200">
+            {access === "denied" ? "Redirigiendo..." : "Verificando acceso docente..."}
+          </div>
+        )}
+
+        {token && access === "error" && (
+          <div className="rounded-lg border border-red-800 bg-red-950/30 p-4 text-sm text-red-200">
+            No se pudo verificar el acceso docente. Recarga la página.
+          </div>
+        )}
+
+        {token && access === "teacher" && (
           <div className="flex flex-col gap-5">
             {/* Navegación */}
             <aside

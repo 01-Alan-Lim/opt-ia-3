@@ -4,6 +4,9 @@ import { z } from "zod";
 
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { extractJsonSafe } from "@/lib/llm/extractJson";
@@ -42,6 +45,9 @@ const FodaStateSchema = z.object({
 type FodaState = z.infer<typeof FodaStateSchema>;
 
 const BodySchema = z.object({
+  // Chat activo del asesor. Opcional: la lógica de la etapa no depende del chat, pero sin él
+  // la respuesta no puede ir firmada. Si llega, se verifica que sea del usuario.
+  chatId: z.string().uuid().nullable().optional(),
   studentMessage: z.string().trim().min(1).max(4000),
   fodaState: FodaStateSchema,
   caseContext: z.unknown().optional(),
@@ -1078,7 +1084,11 @@ Devuelve ÚNICAMENTE un JSON válido con esta estructura exacta:
 `;
 }
 
-export async function POST(req: NextRequest) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión, sin chatId o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
@@ -1100,11 +1110,21 @@ export async function POST(req: NextRequest) {
     }
 
     const {
+      chatId = null,
       studentMessage,
       fodaState,
       caseContext = {},
       recentHistory = "",
     } = parsedBody.data;
+
+    // Si llega chatId, el chat se verifica en el servidor antes de responder, leer el perfil o
+    // llamar al modelo; no se confía en el chatId del cuerpo.
+    if (chatId) {
+      const owner = await assertChatOwner(user.userId, chatId);
+      if (!owner.ok) {
+        return fail(owner.status, owner.code, owner.message);
+      }
+    }
 
     const deterministicAdvance = resolveDeterministicQuadrantAdvance(
       fodaState,

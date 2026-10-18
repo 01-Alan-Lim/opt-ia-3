@@ -8,6 +8,9 @@ import { z } from "zod";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { ok, fail, failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import {
@@ -65,6 +68,9 @@ const AssistantResponseSchema = z
   .strict();
 
 const BodySchema = z.object({
+  // chat activo del asesor. Opcional: la lógica de la etapa no depende del chat, pero sin él
+  // la respuesta no puede ir firmada. Si llega, se verifica que sea del usuario.
+  chatId: z.string().uuid().nullable().optional(),
   // mensaje del estudiante (se permite "__START__" para iniciar el flujo)
   studentMessage: z.string().min(1).max(2000),
   // estado actual del wizard
@@ -190,7 +196,11 @@ REGLAS DE patch y addCosts
 `.trim();
 }
 
-export async function POST(req: Request) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión, sin chatId o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: Request) {
   try {
     const user = await requireUser(req);
 
@@ -206,7 +216,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const { studentMessage, prodStep, prodDraft, caseContext, recentHistory } = parsed.data;
+    const { chatId = null, studentMessage, prodStep, prodDraft, caseContext, recentHistory } = parsed.data;
+
+    // Si llega chatId, el chat se verifica en el servidor antes de leer el perfil o llamar al
+    // modelo; no se confía en el chatId del cuerpo.
+    if (chatId) {
+      const owner = await assertChatOwner(user.userId, chatId);
+      if (!owner.ok) {
+        return NextResponse.json(fail(owner.code, owner.message), { status: owner.status });
+      }
+    }
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")

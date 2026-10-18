@@ -4,6 +4,8 @@ import { z } from "zod";
 
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
@@ -21,7 +23,19 @@ import {
   mergeParetoStringListMonotonic,
   parseCriticalRootsFromParetoMessage,
   parseParetoCriterionEntries,
+  parseParetoEffectFromMessage,
+  type ParetoEffectParse,
 } from "@/lib/plan/paretoParsing";
+import {
+  describeParetoCut,
+  describeParetoCutProblem,
+  evaluateParetoCut,
+  formatPercent,
+  mergeCriticalSelection,
+  normalizeEffectPercent,
+  normalizeJustification,
+  PARETO_EFFECT_QUESTION,
+} from "@/lib/plan/paretoCut";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
@@ -67,8 +81,8 @@ const ParetoStateSchema = z.object({
   selectedRoots: z.array(z.string()),
   criteria: z.array(CriterionSchema),
   criticalRoots: z.array(z.string()),
-  minSelected: z.number(),
-  maxSelected: z.number(),
+  criticalEffectPercent: z.number().nullable(),
+  criticalJustification: z.string().nullable(),
   step: z.enum(PARETO_STEP_VALUES),
 });
 
@@ -109,8 +123,53 @@ function normalizeText(input: string) {
     .trim();
 }
 
-function ceil20Percent(n: number) {
-  return Math.max(1, Math.ceil(n * 0.2));
+function getRootsForCritical(state: ParetoState): string[] {
+  return state.selectedRoots.length > 0 ? state.selectedRoots : state.roots;
+}
+
+// Principio de Pareto (CLAUDE.md), no un 20% fijo.
+function evaluateStateCut(state: ParetoState) {
+  return evaluateParetoCut({
+    selectedCount: getRootsForCritical(state).length,
+    criticalCount: state.criticalRoots.length,
+    effectPercent: state.criticalEffectPercent,
+  });
+}
+
+function cutCounts(state: ParetoState) {
+  return {
+    criticalCount: state.criticalRoots.length,
+    selectedCount: getRootsForCritical(state).length,
+  };
+}
+
+// Lista compacta para prompts: numerada, una línea por causa, sin recortar.
+function formatRootsForPrompt(roots: string[]): string {
+  if (roots.length === 0) return "(sin causas raíz)";
+  return roots.map((root, index) => `${index + 1}. ${root}`).join("\n");
+}
+
+// Estado para prompts: la lista de causas va una sola vez (selectedRoots ⊆ roots).
+function formatParetoStateForPrompt(state: ParetoState): string {
+  const { roots, selectedRoots, ...rest } = state;
+  const selectedSet = new Set(selectedRoots.map((item) => normalizeText(item)));
+  const notSelected = roots.filter((item) => !selectedSet.has(normalizeText(item)));
+
+  const lines = [
+    `CAUSAS RAÍZ SELECCIONADAS (${selectedRoots.length}):`,
+    formatRootsForPrompt(selectedRoots),
+  ];
+
+  if (notSelected.length > 0) {
+    lines.push(
+      "",
+      `CAUSAS RAÍZ NO SELECCIONADAS (${notSelected.length}):`,
+      formatRootsForPrompt(notSelected)
+    );
+  }
+
+  lines.push("", "RESTO DEL ESTADO:", JSON.stringify(rest));
+  return lines.join("\n");
 }
 
 type ParetoIntent =
@@ -331,14 +390,13 @@ function hasWeights(state: ParetoState) {
 
 function resolveParetoStepFromState(state: ParetoState): ParetoStep {
   const selectedCount = Array.isArray(state.selectedRoots) ? state.selectedRoots.length : 0;
-  const minSelected =
-    Number.isFinite(state.minSelected) && state.minSelected > 0 ? state.minSelected : 10;
-  const maxSelected =
-    Number.isFinite(state.maxSelected) && state.maxSelected >= minSelected
-      ? state.maxSelected
-      : 15;
+  // Pareto no tiene mínimo ni tope propio (CLAUDE.md): basta con tener causas cargadas.
+  if (selectedCount === 0) {
+    return "select_roots";
+  }
 
-  if (selectedCount < minSelected || selectedCount > maxSelected) {
+  // Paso de revisión: se queda aquí hasta que el estudiante confirme su lista (o proponga criterios).
+  if (state.step === "select_roots" && state.criteria.length === 0) {
     return "select_roots";
   }
 
@@ -352,7 +410,7 @@ function resolveParetoStepFromState(state: ParetoState): ParetoStep {
 
   const criticalCount = Array.isArray(state.criticalRoots) ? state.criticalRoots.length : 0;
   if (criticalCount > 0) {
-    return state.step === "done" ? "done" : "collect_critical";
+    return state.step === "done" && evaluateStateCut(state).ok ? "done" : "collect_critical";
   }
 
   if (state.step === "collect_critical" || state.step === "done") {
@@ -469,13 +527,6 @@ function normalizeStep(input: unknown): ParetoStep {
   return legacyMap[raw] ?? "select_roots";
 }
 
-function normalizePositiveInt(input: unknown, fallback: number): number {
-  const n = Number(input);
-  if (!Number.isFinite(n)) return fallback;
-  const rounded = Math.round(n);
-  return rounded > 0 ? rounded : fallback;
-}
-
 function normalizeParetoState(input: unknown): ParetoState {
   const source =
     typeof input === "object" && input !== null
@@ -483,18 +534,15 @@ function normalizeParetoState(input: unknown): ParetoState {
       : {};
 
   const roots = dedupeStrings(asStringArray(source.roots));
-  const minSelected = normalizePositiveInt(source.minSelected, 10);
-  const maxSelectedRaw = normalizePositiveInt(source.maxSelected, 15);
-  const maxSelected = Math.max(minSelected, maxSelectedRaw);
-
+  // Pareto no tiene mínimo ni tope propio (CLAUDE.md): recibe todas las raíces de Ishikawa.
+  // minSelected/maxSelected de estados antiguos se ignoran.
   const selectedRootsRaw = asStringArray(source.selectedRoots);
-  const selectedRootsBase =
-    selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected);
+  const selectedRootsBase = selectedRootsRaw.length > 0 ? selectedRootsRaw : roots;
 
   const rootsSet = new Set(roots.map((item) => normalizeText(item)));
   const selectedRoots = dedupeStrings(
     selectedRootsBase.filter((item) => rootsSet.size === 0 || rootsSet.has(normalizeText(item)))
-  ).slice(0, maxSelected);
+  );
 
   const selectedSet = new Set(selectedRoots.map((item) => normalizeText(item)));
   const criticalRoots = dedupeStrings(asStringArray(source.criticalRoots)).filter((item) =>
@@ -506,8 +554,8 @@ function normalizeParetoState(input: unknown): ParetoState {
     selectedRoots,
     criteria: normalizeCriteria(source.criteria),
     criticalRoots,
-    minSelected,
-    maxSelected,
+    criticalEffectPercent: normalizeEffectPercent(source.criticalEffectPercent),
+    criticalJustification: normalizeJustification(source.criticalJustification),
     step: normalizeStep(source.step),
   };
 }
@@ -573,7 +621,7 @@ function sanitizeParetoStateWithOfficialRoots(
 
   const selectedRoots = dedupeStrings(
     state.selectedRoots.filter((item) => officialSet.has(normalizeText(item)))
-  ).slice(0, state.maxSelected);
+  );
 
   const selectedSet = new Set(selectedRoots.map((item) => normalizeText(item)));
 
@@ -756,6 +804,115 @@ function matchAgainstSelectedRoots(
   return { matched, invalid };
 }
 
+type CriticalTurn = {
+  matched: string[];
+  unrecognized: string[];
+  isDelivery: boolean;
+  effect: ParetoEffectParse;
+};
+
+function readCriticalTurn(studentMessage: string, rootsForMatching: string[]): CriticalTurn {
+  const effect = parseParetoEffectFromMessage(studentMessage);
+  const parsedCritical = parseCriticalRootsFromMessage(studentMessage);
+
+  if (!looksLikeCriticalRootsDelivery(studentMessage, parsedCritical)) {
+    return { matched: [], unrecognized: [], isDelivery: false, effect };
+  }
+
+  const { matched, invalid } = matchAgainstSelectedRoots(parsedCritical, rootsForMatching);
+  return { matched, unrecognized: invalid, isDelivery: true, effect };
+}
+
+function applyCriticalTurn(state: ParetoState, turn: CriticalTurn): ParetoState {
+  let next = state;
+
+  if (turn.matched.length > 0) {
+    // Una entrega nueva del grupo crítico reemplaza la anterior (no se une).
+    next = {
+      ...next,
+      ...mergeCriticalSelection(next, {
+        criticalRoots: turn.matched,
+        criticalEffectPercent: null,
+        criticalJustification: null,
+      }),
+    };
+  }
+
+  if (turn.effect.percent !== null && next.criticalRoots.length > 0) {
+    next = {
+      ...next,
+      criticalEffectPercent: turn.effect.percent,
+      criticalJustification: turn.effect.justification ?? next.criticalJustification,
+    };
+  }
+
+  return next;
+}
+
+function respondToCriticalTurn(state: ParetoState, turn: CriticalTurn) {
+  if (turn.isDelivery && turn.matched.length === 0) {
+    return assistantResponse(
+      "No reconocí esas causas dentro de tu lista de causas raíz. Cópialas con la misma redacción de tu lista (una por línea o en viñetas) y las registro como tu grupo crítico.",
+      { ...state, step: "collect_critical" },
+      "ask_clarify"
+    );
+  }
+
+  if (state.criticalRoots.length === 0) {
+    return assistantResponse(
+      "Antes del porcentaje necesito tu grupo crítico: las causas que, según tu Excel, concentran la mayor parte del problema. Envíamelas una por línea o en viñetas.",
+      { ...state, step: "collect_critical" },
+      "collect_critical"
+    );
+  }
+
+  const cut = evaluateStateCut(state);
+  const counts = cutCounts(state);
+  const unrecognizedNote =
+    turn.unrecognized.length > 0
+      ? `No reconocí estas dentro de tu lista de causas raíz: ${turn.unrecognized.join("; ")}. Si forman parte de tu grupo crítico, reenvíame la lista completa con la misma redacción.\n\n`
+      : "";
+
+  if (cut.ok) {
+    // Si faltó reconocer alguna causa no se cierra: la lista nueva reemplaza a la anterior.
+    if (unrecognizedNote) {
+      return assistantResponse(
+        unrecognizedNote +
+          `Con lo que reconocí: ${describeParetoCut(cut, counts)} Si esa es tu lista completa, responde OK y la dejamos lista.`,
+        { ...state, step: "collect_critical" },
+        "collect_critical"
+      );
+    }
+
+    return assistantResponse(
+      `Perfecto: ${describeParetoCut(cut, counts)} Ahí se ve el principio de Pareto: pocas causas explican la mayor parte del problema.\n\n` +
+        "Con esto la etapa queda lista para validarse.",
+      { ...state, step: "done" },
+      "done"
+    );
+  }
+
+  if (cut.reason === "no_effect") {
+    const intro =
+      state.criticalRoots.length === 1
+        ? "Anoté esta causa como tu grupo crítico:"
+        : `Anoté estas ${state.criticalRoots.length} causas como tu grupo crítico:`;
+    const list = state.criticalRoots.map((item) => `- ${item}`).join("\n");
+
+    return assistantResponse(
+      unrecognizedNote + `${intro}\n\n${list}\n\n${PARETO_EFFECT_QUESTION}`,
+      { ...state, step: "collect_critical" },
+      "collect_critical"
+    );
+  }
+
+  return assistantResponse(
+    unrecognizedNote + describeParetoCutProblem(cut, counts),
+    { ...state, step: "collect_critical" },
+    "ask_clarify"
+  );
+}
+
 function actionFromParetoStep(step: ParetoStep): ParetoAssistantAction {
   switch (step) {
     case "select_roots":
@@ -862,18 +1019,14 @@ function mergeAssistantParetoState(
     persisted.selectedRoots,
     incoming.selectedRoots
   );
-  const criticalRoots = mergeParetoStringListMonotonic(
-    persisted.criticalRoots,
-    incoming.criticalRoots
-  );
+  // Una entrega nueva del grupo crítico reemplaza la anterior (no se une).
+  const criticalSelection = mergeCriticalSelection(persisted, incoming);
 
   const merged = normalizeParetoState({
     roots,
     selectedRoots,
     criteria,
-    criticalRoots,
-    minSelected: persisted.minSelected ?? incoming.minSelected,
-    maxSelected: persisted.maxSelected ?? incoming.maxSelected,
+    ...criticalSelection,
     step:
       persisted.step && persisted.step !== "select_roots"
         ? persisted.step
@@ -909,6 +1062,17 @@ function buildCurrentRootsListMessage(state: ParetoState) {
     "Claro. Estas son las causas raíz que tengo disponibles actualmente desde tu avance:\n\n" +
     `${formatted}\n\n` +
     "Si ya definiste tu selección para Pareto, puedo ayudarte a revisar cuáles estás usando."
+  );
+}
+
+// Paso de revisión (select_roots): el estudiante lee sus causas antes de definir criterios.
+function buildRootsReviewMessage(state: ParetoState) {
+  const list = state.selectedRoots.map((item, index) => `${index + 1}) ${item}`).join("\n");
+
+  return (
+    `Antes de definir criterios, revisa tus ${state.selectedRoots.length} causas raíz del Ishikawa; con todas ellas harás tu matriz de Pareto en Excel:\n\n` +
+    `${list}\n\n` +
+    "Cuando las hayas revisado, responde **OK** y definimos los 3 criterios de priorización."
   );
 }
 
@@ -1051,7 +1215,7 @@ function buildParetoSupportMessage(input: {
 
   if (intentResult.intent === "help_request") {
     if (currentStep === "select_roots") {
-      return "El siguiente micro-paso es quedarte con la lista de causas raiz que vas a priorizar en Pareto. Usa las causas del Ishikawa, elimina duplicadas y envia la lista final que quieres comparar.";
+      return "El siguiente micro-paso es revisar tus causas raiz del Ishikawa: con todas ellas haras tu matriz de Pareto en Excel. Cuando las hayas revisado, responde OK y definimos los 3 criterios de priorizacion.";
     }
 
     if (currentStep === "define_criteria") {
@@ -1101,9 +1265,7 @@ function buildParetoChecklistMessage(
 ) {
   const criteriaOk = hasThreeCriteria(state);
   const weightsOk = hasWeights(state);
-  const rootsForCritical = state.selectedRoots.length > 0 ? state.selectedRoots : state.roots;
-  const minCritical = ceil20Percent(rootsForCritical.length);
-  const criticalOk = state.criticalRoots.length >= minCritical;
+  const cut = evaluateStateCut(state);
 
   const savedPrefix = options.savedCriticalRoots
     ? "Ya guarde las causas criticas que pude reconocer. "
@@ -1129,12 +1291,16 @@ function buildParetoChecklistMessage(
     );
   }
 
-  if (!criticalOk) {
+  if (!cut.ok && cut.reason === "no_critical") {
     return (
       savedPrefix +
       "Ya tenemos criterios y pesos. Para cerrar Pareto solo falta que me compartas las causas criticas que resultaron de tu matriz o Excel, es decir, el grupo pequeno de causas que concentra el mayor impacto. Puedes enviarlas asi:\n\n" +
       "1. Falta de mantenimiento preventivo\n2. Ausencia de estandarizacion\n3. Capacitacion insuficiente"
     );
+  }
+
+  if (!cut.ok) {
+    return savedPrefix + describeParetoCutProblem(cut, cutCounts(state));
   }
 
   return (
@@ -1146,15 +1312,8 @@ function buildParetoChecklistMessage(
 function getParetoCloseMissingItems(state: ParetoState) {
   const missing: string[] = [];
   const selectedCount = state.selectedRoots.length;
-  const minSelected =
-    Number.isFinite(state.minSelected) && state.minSelected > 0 ? state.minSelected : 10;
-  const maxSelected =
-    Number.isFinite(state.maxSelected) && state.maxSelected >= minSelected
-      ? state.maxSelected
-      : 15;
-
-  if (selectedCount < minSelected || selectedCount > maxSelected) {
-    missing.push(`causas raiz seleccionadas entre ${minSelected} y ${maxSelected}`);
+  if (selectedCount === 0) {
+    missing.push("causas raiz seleccionadas");
   }
 
   if (!hasThreeCriteria(state)) {
@@ -1175,10 +1334,9 @@ function getParetoCloseMissingItems(state: ParetoState) {
     );
   }
 
-  const rootsForCritical = state.selectedRoots.length > 0 ? state.selectedRoots : state.roots;
-  const minCritical = ceil20Percent(rootsForCritical.length);
-  if (state.criticalRoots.length < minCritical) {
-    missing.push("causas criticas");
+  const cut = evaluateStateCut(state);
+  if (!cut.ok) {
+    missing.push(cut.reason === "no_critical" ? "causas criticas" : "corte de Pareto");
   }
 
   return missing;
@@ -1206,6 +1364,11 @@ function buildParetoCannotCloseMessage(state: ParetoState) {
 
   if (missing.includes("causas criticas")) {
     return "Ya tengo tus criterios y pesos. Para cerrar Pareto solo falta que me compartas las causas criticas que resultaron de tu matriz, es decir, el pequeno grupo de causas que concentra el mayor impacto.";
+  }
+
+  const cut = evaluateStateCut(state);
+  if (!cut.ok) {
+    return describeParetoCutProblem(cut, cutCounts(state));
   }
 
   return `Todavia no puedo cerrar Pareto porque falta ${missing.join(", ")}. Enviame ese dato y lo revisamos.`;
@@ -1364,8 +1527,7 @@ CONTEXTO:
 - Si sí propone, devuelve solo el criterio limpio.
 - Máximo 3 criterios.
 
-CAUSAS RAÍZ SELECCIONADAS:
-${JSON.stringify(input.selectedRoots, null, 2)}
+CANTIDAD DE CAUSAS RAÍZ SELECCIONADAS: ${input.selectedRoots.length}
 
 CRITERIOS ACTUALES:
 ${JSON.stringify(input.currentCriteria, null, 2)}
@@ -1628,7 +1790,7 @@ CONTEXTO DEL CASO:
 ${JSON.stringify(input.caseContext ?? {}, null, 2)}
 
 ESTADO PARETO:
-${JSON.stringify(input.paretoState, null, 2)}
+${formatParetoStateForPrompt(input.paretoState)}
 
 HISTORIAL RECIENTE:
 ${input.recentHistory}
@@ -1695,7 +1857,7 @@ CONTEXTO DEL CASO:
 ${JSON.stringify(input.caseContext ?? {}, null, 2)}
 
 ESTADO PARETO:
-${JSON.stringify(input.paretoState, null, 2)}
+${formatParetoStateForPrompt(input.paretoState)}
 
 HISTORIAL RECIENTE:
 ${input.recentHistory}
@@ -1722,7 +1884,12 @@ DEVUELVE SOLO JSON:
 }
 
 
-export async function POST(req: NextRequest) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt. Esta ruta
+// admite chatId null; en ese caso funciona como siempre y la respuesta no lleva recibo.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: NextRequest) {
   try {
     const user = await requireUser(req);
     const { data: profile, error: profileError } = await supabaseServer
@@ -1856,6 +2023,7 @@ export async function POST(req: NextRequest) {
 
     let savedCriticalRootsThisTurn = false;
     let completedCriteriaOrWeightsThisTurn = false;
+    let criticalTurn: CriticalTurn | null = null;
 
     if (conversationIntent.shouldMutateStage && !isParetoCloseConfirmation(studentMessage)) {
       const parsedCriteriaFromTurn = await parseCriteriaFromMessage({
@@ -1887,27 +2055,9 @@ export async function POST(req: NextRequest) {
         };
       }
 
-      const parsedCriticalFromTurn = parseCriticalRootsFromMessage(studentMessage);
-      const hasCriticalDelivery = looksLikeCriticalRootsDelivery(
-        studentMessage,
-        parsedCriticalFromTurn
-      );
-
-      if (hasCriticalDelivery) {
-        const { matched } = matchAgainstSelectedRoots(parsedCriticalFromTurn, rootsForMatching);
-        const criticalRootsToStore = matched.length > 0 ? matched : parsedCriticalFromTurn;
-
-        if (criticalRootsToStore.length > 0) {
-          savedCriticalRootsThisTurn = true;
-          paretoState = {
-            ...paretoState,
-            criticalRoots: mergeParetoStringListMonotonic(
-              paretoState.criticalRoots,
-              criticalRootsToStore
-            ),
-          };
-        }
-      }
+      criticalTurn = readCriticalTurn(studentMessage, rootsForMatching);
+      savedCriticalRootsThisTurn = criticalTurn.matched.length > 0;
+      paretoState = applyCriticalTurn(paretoState, criticalTurn);
 
       paretoState = {
         ...paretoState,
@@ -1916,13 +2066,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (conversationIntent.intent === "confirmation" || isParetoCloseConfirmation(studentMessage)) {
-      const currentMinSelected = Number.isFinite(paretoState.minSelected)
-        ? paretoState.minSelected
-        : 10;
-      const currentMaxSelected = Number.isFinite(paretoState.maxSelected)
-        ? Math.max(currentMinSelected, paretoState.maxSelected)
-        : 15;
-
       if (isParetoReadyToClose(paretoState)) {
         return assistantResponse(
           "Perfecto. Con tus criterios, pesos y causas criticas ya podemos cerrar Pareto. Ahora pasamos a estructurar los objetivos de mejora sobre esas causas prioritarias.",
@@ -1932,10 +2075,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (paretoState.step === "select_roots") {
-        if (
-          selectedRoots.length >= currentMinSelected &&
-          selectedRoots.length <= currentMaxSelected
-        ) {
+        if (selectedRoots.length > 0) {
           return assistantResponse(
             "Perfecto. La lista de causas queda como base para Pareto. Ahora definamos 3 criterios utiles para priorizarlas.",
             { ...paretoState, step: "define_criteria" },
@@ -1966,24 +2106,15 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      if (paretoState.step === "collect_critical" || paretoState.step === "done") {
-        const currentMatched = matchAgainstSelectedRoots(
-          paretoState.criticalRoots,
-          rootsForMatching
-        ).matched;
-        const minCritical = ceil20Percent(rootsForMatching.length);
-
-        if (currentMatched.length >= minCritical) {
-          return assistantResponse(
-            "Perfecto. Confirmo esas causas como tu grupo critico del Pareto. Con esto la etapa queda lista para validarse.",
-            {
-              ...paretoState,
-              criticalRoots: currentMatched,
-              step: "done",
-            },
-            "done"
-          );
-        }
+      if (
+        (paretoState.step === "collect_critical" || paretoState.step === "done") &&
+        evaluateStateCut(paretoState).ok
+      ) {
+        return assistantResponse(
+          "Perfecto. Confirmo esas causas como tu grupo critico del Pareto. Con esto la etapa queda lista para validarse.",
+          { ...paretoState, step: "done" },
+          "done"
+        );
       }
 
       return assistantResponse(
@@ -2017,6 +2148,15 @@ export async function POST(req: NextRequest) {
         }),
         { ...paretoState },
         actionFromParetoStep(paretoState.step)
+      );
+    }
+
+    // Paso de revisión: no se avanza a criterios hasta que el estudiante confirme su lista.
+    if (paretoState.step === "select_roots" && paretoState.selectedRoots.length > 0) {
+      return assistantResponse(
+        buildRootsReviewMessage(paretoState),
+        { ...paretoState },
+        "select_roots"
       );
     }
 
@@ -2066,14 +2206,6 @@ export async function POST(req: NextRequest) {
       ...paretoStateWithParsedWeights,
       step: resolveParetoStepFromState(paretoStateWithParsedWeights),
     };
-
-    const minSelected = Number.isFinite(effectiveParetoState.minSelected)
-      ? effectiveParetoState.minSelected
-      : 10;
-
-    const maxSelected = Number.isFinite(effectiveParetoState.maxSelected)
-      ? Math.max(minSelected, effectiveParetoState.maxSelected)
-      : 15;
 
     if (!hasThreeCriteria(effectiveParetoState)) {
       if (!savedCriticalRootsThisTurn && isLikelyParetoCauseOrProblemList(studentMessage)) {
@@ -2170,11 +2302,10 @@ export async function POST(req: NextRequest) {
 
     if (isOkConfirm(studentMessage)) {
       if (effectiveParetoState.step === "select_roots") {
-        if (selectedRoots.length < minSelected || selectedRoots.length > maxSelected) {
+        if (selectedRoots.length === 0) {
           return assistantResponse(
-            `Aún no estamos en el rango. Selecciona entre **${minSelected} y ${maxSelected}** causas raíz.\n` +
-              `Actualmente tienes **${selectedRoots.length}**.\n\n` +
-              "👉 Responde con la lista final (puede ser en viñetas o separada por comas).",
+            "Aún no tengo cargadas las causas raíz de tu Ishikawa validado.\n\n" +
+              "👉 Recarga el chat para sincronizar tu avance y las revisamos.",
             { ...effectiveParetoState },
             "ask_clarify"
           );
@@ -2216,8 +2347,8 @@ export async function POST(req: NextRequest) {
 
       if (effectiveParetoState.step === "excel_work") {
         return assistantResponse(
-          "Genial. Ahora envíame tu lista de **causas críticas (Top 20%)** según tu Excel.\n" +
-            "Puedes escribirlas en viñetas o separadas por comas.",
+          "Genial. Ahora envíame las causas de tu **grupo crítico** según tu Excel (una por línea o en viñetas).\n" +
+            "Si ya tienes el porcentaje del problema que concentran, puedes incluirlo en el mismo mensaje.",
           { ...effectiveParetoState, step: "collect_critical" },
           "collect_critical"
         );
@@ -2250,100 +2381,53 @@ export async function POST(req: NextRequest) {
           );
       }
 
-      const parsedCritical = parseCriticalRootsFromMessage(studentMessage);
-      const shouldValidateCriticalRoots = looksLikeCriticalRootsDelivery(
-        studentMessage,
-        parsedCritical
-      );
+      // Grupo crítico y/o porcentaje del problema que concentra (entregados en este turno).
+      if (criticalTurn && (criticalTurn.isDelivery || criticalTurn.effect.percent !== null)) {
+        return respondToCriticalTurn(effectiveParetoState, criticalTurn);
+      }
 
-      if (shouldValidateCriticalRoots) {
-        const { matched, invalid } = matchAgainstSelectedRoots(
-          parsedCritical,
-          rootsForMatching
-        );
-
-        const minCritical = ceil20Percent(rootsForMatching.length);
-        const maxCritical = Math.max(minCritical, Math.ceil(rootsForMatching.length * 0.3));
-
-        if (matched.length < minCritical) {
-          return assistantResponse(
-            `Todavía no alcanzo a recuperar todo tu top 20%. Para tu lista actual necesito al menos ${minCritical} causa(s) crítica(s).\n\nPégame nuevamente solo las causas críticas que te salieron en el Excel, una por línea o en viñetas.`,
-            {
-              ...effectiveParetoState,
-              criticalRoots: matched,
-              step: "collect_critical",
-            },
-            "ask_clarify"
-          );
-        }
-
-        if (matched.length > maxCritical) {
-          return assistantResponse(
-            "Tu selección quedó más amplia de lo esperado para un Pareto. Revísala una vez más y quédate solo con el grupo crítico que realmente concentra el 20% aproximadamente.",
-            {
-              ...effectiveParetoState,
-              criticalRoots: matched,
-              step: "collect_critical",
-            },
-            "ask_clarify"
-          );
-        }
-
-        if (invalid.length > 0) {
-          const recoveredText = matched.map((item) => `- ${item}`).join("\n");
-
-          return assistantResponse(
-            "Entendí y recuperé como causas críticas estas:\n\n" +
-              `${recoveredText}\n\n` +
-              "Si son correctas, ya quedó lista esta parte del Pareto. Si quieres, puedes reenviármelas ajustando solo la redacción de las que faltaron reconocer.",
-            {
-              ...effectiveParetoState,
-              criticalRoots: matched,
-              step: "done",
-            },
-            "done"
-          );
-        }
-
+      // Número suelto < 20 sin "%": no se adivina si es un porcentaje.
+      if (
+        criticalTurn &&
+        criticalTurn.effect.ambiguousNumber !== null &&
+        effectiveParetoState.criticalRoots.length > 0
+      ) {
+        const value = formatPercent(criticalTurn.effect.ambiguousNumber);
         return assistantResponse(
-          "Perfecto. Ya quedaron registradas tus causas críticas del Pareto y son consistentes con tu selección previa.\n\nCon esto ya puedo dejar lista la etapa para su validación y, si todo está correcto, continuaremos con la definición de objetivos de mejora.",
-          {
-            ...effectiveParetoState,
-            criticalRoots: matched,
-            step: "done",
-          },
-          "done"
+          `¿Te refieres a que concentran el ${value}% del problema, o a otra cosa? Escríbelo con el símbolo, por ejemplo: "concentran el 72%".`,
+          { ...effectiveParetoState, step: "collect_critical" },
+          "ask_clarify"
+        );
+      }
+
+      if (
+        effectiveParetoState.criticalRoots.length > 0 &&
+        effectiveParetoState.criticalEffectPercent === null &&
+        /\d\s*(?:%|por\s*ciento)/i.test(studentMessage)
+      ) {
+        return assistantResponse(
+          "No logré leer el porcentaje. Escríbelo como un número entre 1 y 100, por ejemplo: \"concentran el 72%\".",
+          { ...effectiveParetoState, step: "collect_critical" },
+          "ask_clarify"
         );
       }
 
       const intent = await classifyStudentIntent(studentMessage);
 
       if (intent === "CONFIRM") {
-        const currentMatched = matchAgainstSelectedRoots(
-          effectiveParetoState.criticalRoots,
-          rootsForMatching
-        ).matched;
+        const cut = evaluateStateCut(effectiveParetoState);
 
-        const minCritical = ceil20Percent(rootsForMatching.length);
-
-        if (currentMatched.length >= minCritical) {
+        if (cut.ok) {
           return assistantResponse(
             "Perfecto. Entonces dejo confirmadas esas causas como tu grupo crítico del Pareto. Con esto la etapa queda lista para validarse y pasar a la definición de objetivos.",
-            {
-              ...effectiveParetoState,
-              criticalRoots: currentMatched,
-              step: "done",
-            },
+            { ...effectiveParetoState, step: "done" },
             "done"
           );
         }
 
         return assistantResponse(
-          "Todavía no tengo registrada una lista crítica suficiente para cerrar el Pareto. Pégame nuevamente solo tus causas críticas (top 20%) y las revisamos.",
-          {
-            ...effectiveParetoState,
-            step: "collect_critical",
-          },
+          describeParetoCutProblem(cut, cutCounts(effectiveParetoState)),
+          { ...effectiveParetoState, step: "collect_critical" },
           "ask_clarify"
         );
       }
@@ -2424,12 +2508,13 @@ REGLAS IMPORTANTES:
 - Si el mensaje es ambiguo, pide una aclaración puntual.
 - Máximo 2 párrafos.
 - Evita listas largas salvo que sean necesarias.
+- En nextState devuelve solo criteria y step: las causas raíz, el grupo crítico y su porcentaje no se modifican aquí.
 
 CONTEXTO DEL CASO:
 ${JSON.stringify(caseContext, null, 2)}
 
 ESTADO ACTUAL:
-${JSON.stringify(effectiveParetoState, null, 2)}
+${formatParetoStateForPrompt(effectiveParetoState)}
 
 HISTORIAL RECIENTE:
 ${recentHistory}
@@ -2441,7 +2526,7 @@ DEVUELVE SOLO JSON:
 {
   "assistantMessage": "string",
   "updates": {
-    "nextState": <ParetoState>,
+    "nextState": { "criteria": [...], "step": "..." },
     "action": "init" | "select_roots" | "define_criteria" | "set_weights" | "instruct_excel" | "collect_critical" | "ask_clarify" | "redirect"
   }
 }
@@ -2459,7 +2544,16 @@ DEVUELVE SOLO JSON:
       );
     }
 
-    const nextStateNormalized = normalizeParetoState(json.updates.nextState);
+    // Causas y grupo crítico no viajan en nextState: solo los fija el servidor (analizador
+    // determinista), nunca el LLM.
+    const nextStateNormalized = normalizeParetoState({
+      ...(typeof json.updates.nextState === "object" ? json.updates.nextState : {}),
+      roots: effectiveParetoState.roots,
+      selectedRoots: effectiveParetoState.selectedRoots,
+      criticalRoots: effectiveParetoState.criticalRoots,
+      criticalEffectPercent: effectiveParetoState.criticalEffectPercent,
+      criticalJustification: effectiveParetoState.criticalJustification,
+    });
     const nextStateParsed = ParetoStateSchema.safeParse(nextStateNormalized);
 
     if (!nextStateParsed.success) {

@@ -5,6 +5,9 @@ import { z } from "zod";
 import { failResponse } from "@/lib/api/response";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { extractJsonSafe } from "@/lib/llm/extractJson";
@@ -430,7 +433,11 @@ ${firstText}
   };
 }
 
-export async function POST(req: NextRequest) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
@@ -456,6 +463,16 @@ export async function POST(req: NextRequest) {
     }
 
     const { chatId, studentMessage, improvementState, caseContext, recentHistory } = parsed.data;
+
+    // El chat se verifica en el servidor antes de leer artefactos o llamar al modelo; no se
+    // confía en el chatId del cuerpo.
+    const owner = await assertChatOwner(user.userId, chatId);
+    if (!owner.ok) {
+      return NextResponse.json(
+        { ok: false, code: owner.code, message: owner.message },
+        { status: owner.status }
+      );
+    }
 
     const stateParse = ImprovementStateSchema.safeParse(improvementState);
     if (!stateParse.success) {
@@ -526,7 +543,7 @@ export async function POST(req: NextRequest) {
           ok: false,
           code: "BAD_REQUEST",
           message:
-            "Para iniciar Etapa 7 necesitas Pareto final validado con causas críticas (top 20%).",
+            "Para iniciar Etapa 7 necesitas Pareto final validado con su grupo crítico de causas.",
         },
         { status: 400 }
       );
@@ -716,7 +733,7 @@ REGLAS:
 - No des por cerrada la etapa solo porque ya exista un borrador coherente.
 - Si ya hay un plan suficientemente armado, primero resume lo construido, explica por qué esa mejora sí conviene y pide confirmación antes de cerrar Etapa 7.
 
-CAUSAS CRÍTICAS (Pareto Etapa 5, top 20%):
+CAUSAS CRÍTICAS (grupo crítico del Pareto, Etapa 5):
 ${JSON.stringify(criticalRoots, null, 2)}
 
 OBJETIVOS VALIDADOS (Etapa 6):

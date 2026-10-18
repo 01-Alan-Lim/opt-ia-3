@@ -21,11 +21,17 @@ const ContextUpsertSchema = z.object({
 
   // ✅ IMPORTANTE: permitir null para evitar el error "expected string, received null"
   contextText: z.string().max(5000).nullable().optional(),
-
-  // ✅ nuevo: para que el backend guarde el diálogo del wizard en la tabla messages
-  userMessage: z.string().min(1).optional(),
-  assistantMessage: z.string().min(1).optional(),
 });
+
+// Este endpoint guardaba también userMessage y assistantMessage del navegador en messages, con
+// service role y role "assistant" sin verificar (R1-B). Ningún cliente los envía (ni main ni el
+// release): los mensajes del chat se guardan solo por /api/messages, que exige recibo para
+// assistant. Si llegan, se rechaza la petición entera en vez de ignorarlos en silencio.
+const RETIRED_MESSAGE_FIELDS = ["userMessage", "assistantMessage"] as const;
+
+function sendsRetiredMessageFields(raw: unknown): boolean {
+  return Boolean(raw && typeof raw === "object" && RETIRED_MESSAGE_FIELDS.some((field) => field in raw));
+}
 
 async function getRow(userId: string) {
   return supabaseServer
@@ -132,6 +138,13 @@ export async function POST(req: Request) {
       return NextResponse.json(fail("BAD_REQUEST", "Body JSON inválido."), { status: 400 });
     }
 
+    if (sendsRetiredMessageFields(raw)) {
+      return NextResponse.json(
+        fail("BAD_REQUEST", "Este endpoint no guarda mensajes del chat: usa /api/messages."),
+        { status: 400 }
+      );
+    }
+
     const parsed = ContextUpsertSchema.safeParse(raw);
     if (!parsed.success) {
       return NextResponse.json(
@@ -153,9 +166,6 @@ export async function POST(req: Request) {
     const incomingJson = parsed.data.contextJson ?? {};
     const contextText = parsed.data.contextText ?? null;
 
-    const userMessage = parsed.data.userMessage;
-    const assistantMessage = parsed.data.assistantMessage;
-
     // 1) Leemos contexto actual (para merge)
     const { data: current, error: curErr } = await getRow(authed.userId);
     if (curErr) {
@@ -169,9 +179,7 @@ export async function POST(req: Request) {
     const isChatOnly =
       forceNew &&
       Object.keys(incomingJson).length === 0 &&
-      contextText === null &&
-      !userMessage &&
-      !assistantMessage;
+      contextText === null;
 
     // 3) Definir chatId efectivo (si forceNew => siempre crear nuevo)
     let effectiveChatId: string | null = null;
@@ -298,25 +306,8 @@ export async function POST(req: Request) {
       });
     }
 
-    // 8) Guardar conversación del wizard (si vino)
-    if (userMessage) {
-      await supabaseServer.from("messages").insert({
-        chat_id: effectiveChatId,
-        role: "user",
-        content: userMessage,
-      });
-    }
-
-    if (assistantMessage) {
-      await supabaseServer.from("messages").insert({
-        chat_id: effectiveChatId,
-        role: "assistant",
-        content: assistantMessage,
-      });
-    }
-
-    // 9) Importante: NO insertar prompts automáticos aquí.
-    // El FE manda assistantMessage cuando corresponde, para evitar duplicados y estados inconsistentes.
+    // 8) Este endpoint no escribe en messages: la conversación de E0 la guarda el navegador por
+    // /api/messages (sus textos locales como advisor).
 
     return ok({
       status: data.status,

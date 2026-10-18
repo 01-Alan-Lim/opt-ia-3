@@ -4,6 +4,9 @@ import { z } from "zod";
 
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
@@ -450,7 +453,11 @@ function resolveNextObjectivesState(input: {
   };
 }
 
-export async function POST(req: NextRequest) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: NextRequest) {
   try {
     const user = await requireUser(req);
 
@@ -483,6 +490,16 @@ export async function POST(req: NextRequest) {
       caseContext = null,
       recentHistory = "",
     } = parsed.data;
+
+    // El chat se verifica en el servidor antes de leer artefactos o llamar al modelo; no se
+    // confía en el chatId del cuerpo.
+    const owner = await assertChatOwner(user.userId, chatId);
+    if (!owner.ok) {
+      return NextResponse.json(
+        { ok: false, code: owner.code, message: owner.message },
+        { status: owner.status }
+      );
+    }
 
     const { data: profile, error: profileError } = await supabaseServer
       .from("profiles")
@@ -542,7 +559,7 @@ export async function POST(req: NextRequest) {
           ok: false,
           code: "BAD_REQUEST",
           message:
-            "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con causas críticas (top 20%). " +
+            "Para iniciar Objetivos (Etapa 6) necesitas Pareto validado con su grupo crítico de causas. " +
             "Si ya terminaste Pareto pero abriste otro chat, primero hay que re-sincronizar el avance real.",
         },
         { status: 400 }
@@ -586,7 +603,7 @@ OBJETIVO DE LA ETAPA:
 - Formular mínimo 3 objetivos específicos.
 - Asegurar trazabilidad con las causas críticas del Pareto.
 - Mantener redacción clara, defendible y evaluable.
-- No asumir que el objetivo general debe atacar todas las causas críticas del top 20%.
+- No asumir que el objetivo general debe atacar todas las causas del grupo crítico.
 - Ayuda a elegir la causa o combinación de causas más viable y ejecutable según el caso.
 - Elegir un alcance viable: el objetivo general puede atacar 1 o 2 causas críticas prioritarias, no necesariamente todas.
 

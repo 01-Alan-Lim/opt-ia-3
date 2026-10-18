@@ -1,6 +1,8 @@
 // src/lib/plan/stageState.ts
 import { z } from "zod";
 
+import { withStoredFinalDocAuthority } from "./stageAuthority";
+
 const OBJECTIVES_STEP_VALUES = ["general", "specific", "review"] as const;
 const IMPROVEMENT_STEP_VALUES = ["discover", "build", "refine", "review"] as const;
 const PLANNING_STEP_VALUES = ["time_window", "breakdown", "schedule", "review"] as const;
@@ -538,32 +540,33 @@ export function mergeStageState(
       });
 
     case 10:
-      return normalizeStageState(stage, {
-        step:
-          Object.prototype.hasOwnProperty.call(incoming, "step")
-            ? incoming.step
-            : base.step,
-        versionNumber:
-          Object.prototype.hasOwnProperty.call(incoming, "versionNumber")
-            ? incoming.versionNumber
-            : base.versionNumber,
-        lastFeedback:
-          Object.prototype.hasOwnProperty.call(incoming, "lastFeedback")
-            ? incoming.lastFeedback
-            : base.lastFeedback,
-        upload:
-          Object.prototype.hasOwnProperty.call(incoming, "upload")
-            ? incoming.upload
-            : base.upload,
-        extractedSections:
-          Object.prototype.hasOwnProperty.call(incoming, "extractedSections")
-            ? incoming.extractedSections
-            : base.extractedSections,
-        evaluation:
-          Object.prototype.hasOwnProperty.call(incoming, "evaluation")
-            ? incoming.evaluation
-            : base.evaluation,
-      });
+      // evaluation y versionNumber NO se fusionan desde `incoming`: son autoridad del
+      // servidor (los escribe final_doc/assistant) y deciden si el plan se cierra.
+      // withStoredFinalDocAuthority los toma siempre de lo almacenado.
+      return normalizeStageState(
+        stage,
+        withStoredFinalDocAuthority(
+          {
+            step:
+              Object.prototype.hasOwnProperty.call(incoming, "step")
+                ? incoming.step
+                : base.step,
+            lastFeedback:
+              Object.prototype.hasOwnProperty.call(incoming, "lastFeedback")
+                ? incoming.lastFeedback
+                : base.lastFeedback,
+            upload:
+              Object.prototype.hasOwnProperty.call(incoming, "upload")
+                ? incoming.upload
+                : base.upload,
+            extractedSections:
+              Object.prototype.hasOwnProperty.call(incoming, "extractedSections")
+                ? incoming.extractedSections
+                : base.extractedSections,
+          },
+          base
+        )
+      );
 
     default:
       return asRecord(incomingRaw);

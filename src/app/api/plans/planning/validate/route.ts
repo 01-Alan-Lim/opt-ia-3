@@ -10,6 +10,7 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
 import { loadLatestValidatedArtifact } from "@/lib/plan/stageValidation";
 
 export const runtime = "nodejs";
@@ -310,28 +311,18 @@ ${JSON.stringify(finalPayload, null, 2)}
         .maybeSingle();
 
       if (!existingEvalErr && !existingEval) {
-        const payloadEval = {
-          status: "validated",
-          weeksPlanned: weekly.length,
-          milestonesCount: milestones.length,
-        };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: user.userId,
-          chat_id: chatId,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          status: "validated",
-          payload_json: payloadEval,
-
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId: user.userId,
+            chatId,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 8 validada, pero no se pudo insertar la evaluación IA." };

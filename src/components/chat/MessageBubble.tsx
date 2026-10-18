@@ -1,6 +1,7 @@
 // src/components/chat/MessageBubble.tsx
 
 import { Message } from "@/lib/types";
+import { isAdvisorSideRole } from "@/lib/chat/messageProvenance";
 import clsx from "clsx";
 
 interface MessageBubbleProps {
@@ -9,7 +10,8 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
-  const isAssistant = message.role === "assistant";
+  // assistant y advisor (textos locales del asesor) se ven igual.
+  const isAssistant = isAdvisorSideRole(message.role);
 
   return (
     <div
@@ -25,7 +27,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             "bg-sky-500 text-white rounded-br-sm": isUser,
 
             "bg-[color:var(--surface)] text-[color:var(--foreground)] border border-[color:var(--border)]":
-              isAssistant || message.role === "system",
+              isAssistant,
           }
         )}
       >

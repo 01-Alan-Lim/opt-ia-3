@@ -8,6 +8,11 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
 import { assertJsonSizeOrFail } from "@/lib/api/payloadLimit";
 import { mergeStageState, normalizeStageState } from "@/lib/plan/stageState";
+import {
+  canDeleteStageStateGenerically,
+  canWriteStageStateGenerically,
+  describeGenericWriteRejection,
+} from "@/lib/plan/stageAuthority";
 
 export const runtime = "nodejs";
 
@@ -185,6 +190,15 @@ export async function POST(req: NextRequest) {
 
     const { chatId, stage, stateJson } = parsed.data;
 
+    // Esta ruta corre con service role: ninguna policy de RLS la detiene. Solo acepta las
+    // etapas que el cliente guarda por aquí (6 a 10). Las etapas 0 a 5 tienen ruta propia,
+    // y esa ruta es la que descarta sus campos de autoridad del servidor (E4: closure,
+    // rootCauses, pendingRootMatch…). Sin este filtro, escribir aquí con stage: 4 saltaba
+    // esa protección entera.
+    if (!canWriteStageStateGenerically(stage)) {
+      return failResponse("STAGE_NOT_ALLOWED", describeGenericWriteRejection(stage), 400);
+    }
+
     const access = await assertChatOwner(user.userId, chatId);
     if (!access.ok) {
       return failResponse(
@@ -295,6 +309,19 @@ export async function DELETE(req: NextRequest) {
 
     const { chatId, stage } = parsed.data;
 
+    // Solo el estado de trabajo de las etapas que el cliente limpia al avanzar (2 a 9).
+    // E0 y E1 no guardan estado de trabajo aquí. E10 queda fuera a propósito: guarda la
+    // evaluación que escribe el servidor, y borrarla permitiría volver a entregar la
+    // versión 1 hasta sacar una nota que cierre el plan.
+    // No se borra el artefacto validado junto con el estado: ver la nota de abajo.
+    if (!canDeleteStageStateGenerically(stage)) {
+      return failResponse(
+        "STAGE_NOT_ALLOWED",
+        `Esta ruta no borra el estado de la Etapa ${stage}.`,
+        400
+      );
+    }
+
     const access = await assertChatOwner(user.userId, chatId);
     if (!access.ok) {
       return failResponse(
@@ -304,6 +331,12 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
+    // Por qué NO se borra también el artefacto validado de la etapa: el borrado del estado
+    // es el paso normal al avanzar (chat/page.tsx: clearStageState(N) después de validar
+    // la etapa N), cuando el artefacto es justamente lo que hay que conservar. El artefacto
+    // es la fuente de verdad de las etapas siguientes (pareto/validate lee ishikawa_final,
+    // objectives/validate lee pareto_final…) y el upsert no guarda historial, así que
+    // borrarlo destruiría trabajo validado sin vuelta atrás.
     const { error, count } = await supabaseServer
       .from("plan_stage_states")
       .delete({ count: "exact" })

@@ -9,6 +9,7 @@ import { requireUser } from "@/lib/auth/supabase";
 import { ok, fail } from "@/lib/api/response";
 
 import { detectFormIntent } from "@/lib/chat/formIntents";
+import { serverHistorySpeaker } from "@/lib/chat/messageProvenance";
 
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 
@@ -638,7 +639,7 @@ export async function POST(request: Request) {
 
     const historyText =
       historyData
-        ?.map((m) => `${m.role === "user" ? "Usuario" : "Asistente"}: ${m.content}`)
+        ?.map((m) => `${serverHistorySpeaker(m.role)}: ${m.content}`)
         .join("\n") ?? "";
 
     // --------------------------------------

@@ -1,19 +1,103 @@
 //src/app/api/plans/ishikawa/assistant/route.ts
 
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ok, failResponse } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
+import { assertChatOwner } from "@/lib/auth/chatOwner";
 import {
   getPreferredStudentFirstName,
   sanitizeStudentPlaceholder,
 } from "@/lib/chat/studentIdentity";
 import {
   classifyWhyIntent,
-  sanitizeWhyCandidate,
+  isNonCausalMessage,
+  isProgressRequest,
+  looksLikeSwitchCategoryIntent,
+  normalizeIntentText,
+  normalizeWhyText,
 } from "@/lib/plan/ishikawaWhyInterpreter";
+import {
+  MAX_WHY_DEPTH,
+  MIN_WHY_DEPTH,
+  REJECTED_WHY_ATTEMPTS_LIMIT,
+} from "@/lib/plan/rootCauseLimits";
+import {
+  HINT_REFORMULATE,
+  interpretLlmActionabilityResponse,
+  type LlmActionabilityVerdict,
+} from "@/lib/plan/whyQuality";
+import {
+  buildIshikawaTurnUi,
+  findActiveNodes,
+  isClosureReviewed,
+  IshikawaStateInputSchema,
+  parsePendingRootMatch,
+  parseRootRegistry,
+  whyTexts,
+  type IshikawaState,
+  type PendingRootMatch,
+  type RootCauseEntry,
+} from "@/lib/plan/ishikawaTree";
+import {
+  compactIshikawaState,
+  hydrateServerFields,
+  mergeAssistantIshikawaState,
+  serverFieldsFingerprint,
+} from "@/lib/plan/ishikawaStateMerge";
+import { loadStoredIshikawaState, writeIshikawaStateRow } from "@/lib/plan/ishikawaStateStore";
+import {
+  isCloseBranchConfirm,
+  prepareLlmTurnState,
+  resolveCloseConfirmation,
+  resolveFastPathWhyTurn,
+  resolveLlmCursorRelease,
+  type BranchForJudge,
+  type BranchLabels,
+  type BranchNotReady,
+  type ContextualBranchIntent,
+  type DroppedLlmWhy,
+  type EscalationReason,
+  type FastPathWhyOutcome,
+} from "@/lib/plan/ishikawaBranchFlow";
+import { deriveRootCauses } from "@/lib/plan/ishikawaRoots";
+import {
+  answerPendingRootMatch,
+  describeRootOccurrence,
+  interpretRootMatchResponse,
+  resolveBranchRoot,
+  resolveDeferredRootQuestion,
+  type PendingRootAnswer,
+  type RootMatchCandidateInput,
+  type RootMatcher,
+  type RootPath,
+  type RootResolution,
+} from "@/lib/plan/ishikawaRootRegistry";
+import { routeIshikawaTurn } from "@/lib/plan/ishikawaTurnRouter";
+import {
+  activeBranchPrompt,
+  buildUnreviewedBranchesOffer,
+  describeUnreviewedBranch,
+  listUnreviewedBranches,
+  resumeBranch,
+  type BranchPromptKind,
+  type ResumeRequest,
+} from "@/lib/plan/ishikawaResume";
+import { describeStageCloseGaps, evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
+import {
+  buildIshikawaPromptContext,
+  formatCaseContextBlock,
+  hasBrainstorm,
+  hasFoda,
+  NO_PROPER_NAMES_RULE,
+  type IshikawaPromptContext,
+} from "@/lib/plan/ishikawaPromptContext";
+import { loadIshikawaContextSources } from "@/lib/plan/ishikawaContextStore";
 
 export const runtime = "nodejs";
 
@@ -32,35 +116,6 @@ function logIshikawaDebug(event: string, payload: Record<string, unknown>) {
   );
 }
 
-type IshikawaWhy = string | { id?: string; text?: string };
-
-type IshikawaCategory = {
-  id: string;
-  name: string;
-  mainCauses: Array<{
-    id: string;
-    text?: string;
-    name?: string;
-    subCauses: Array<{
-      id: string;
-      text?: string;
-      name?: string;
-      whys?: IshikawaWhy[];
-    }>;
-  }>;
-};
-
-export type IshikawaState = {
-  problem: { text: string } | string | null;
-  categories: IshikawaCategory[];
-  minCategories: number; // 4-5
-  minMainCausesPerCategory: number; // 2-3
-  minSubCausesPerMain: number; // 2-3
-  maxWhyDepth: number; // 3-5 (prefer 3)
-  cursor?: { categoryId?: string; mainCauseId?: string; subCauseId?: string } | null;
-  rootCauses?: string[]; // opcional: se puede rellenar al final
-};
-
 type RecentMessage = {
   role: "user" | "assistant";
   content: string;
@@ -75,13 +130,13 @@ const RecentMessageSchema = z.object({
 
 const BodySchema = z.object({
   studentMessage: z.string().trim().min(1).max(4000),
-  ishikawaState: z
-    .object({})
-    .passthrough()
-    .transform((value) => value as IshikawaState),
+  // El chat se valida en el servidor (assertChatOwner) antes de leer o escribir su estado.
+  chatId: z.string().uuid(),
+  ishikawaState: IshikawaStateInputSchema.transform((value) => value as IshikawaState),
   caseContext: z.object({}).catchall(z.unknown()).nullable().optional(),
   stage1Summary: z.object({}).catchall(z.unknown()).nullable().optional(),
-  brainstormState: z.object({}).catchall(z.unknown()).nullable().optional(),
+  // brainstormState ya no se recibe: la lluvia de ideas la lee el servidor (el cliente la borra
+  // al entrar a E4). Si el cliente la manda, Zod la descarta.
   recentMessages: z.array(RecentMessageSchema).max(12).optional().default([]),
 });
 
@@ -100,41 +155,6 @@ function getStringField(
   }
 
   return null;
-}
-
-function countRootCandidates(state: any) {
-  const cats = Array.isArray(state?.categories) ? state.categories : [];
-  const roots: string[] = [];
-
-  for (const c of cats) {
-    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-
-    for (const m of mains) {
-      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-
-      for (const s of subs) {
-        const whys = Array.isArray(s?.whys) ? s.whys : [];
-
-        const normalizedWhys = whys
-          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-          .map((t: any) => (t ?? "").toString().trim())
-          .filter(Boolean);
-
-        // Si hay 5-porqués, la raíz candidata es el último porqué
-        if (normalizedWhys.length > 0) {
-          const last = normalizedWhys[normalizedWhys.length - 1];
-          if (last) roots.push(last);
-          continue;
-        }
-
-        // Fallback: si no hay whys, cuenta la subcausa como candidata
-        const t = (s?.text ?? s?.name ?? "").toString().trim();
-        if (t) roots.push(t);
-      }
-    }
-  }
-
-  return roots;
 }
 
 function extractJsonSafe(raw: string) {
@@ -164,144 +184,6 @@ function extractJsonSafe(raw: string) {
 
   return null;
 }
-
-function normalizeWhyText(input: string) {
-  let t = (input ?? "").trim();
-
-  t = t.replace(/^(si|sí|pues|bueno|ok|mmm)\s*,?\s*/i, "");
-  t = t.replace(/^(creo que|pienso que|diría que)\s+/i, "");
-  t = t.replace(/^(porque|por que)\s+/i, "");
-
-  if (t.length) t = t[0].toUpperCase() + t.slice(1);
-
-  return t;
-}
-
-function isActionableWhyText(input: string) {
-  const t = (input ?? "").trim().toLowerCase();
-  if (!t) return false;
-
-  if (t.length < 8) return false;
-
-  if (
-    t.includes("ayudame") ||
-    t.includes("ayúdame") ||
-    t.includes("como encontramos") ||
-    t.includes("cómo encontramos") ||
-    t.includes("como hallar") ||
-    t.includes("cómo hallar") ||
-    t.includes("como encontrar") ||
-    t.includes("cómo encontrar") ||
-    t.includes("no se como") ||
-    t.includes("no sé cómo") ||
-    t.includes("cual seria") ||
-    t.includes("cuál sería")
-  ) {
-    return false;
-  }
-
-  if (
-    /^(seria|sería|podria|podría|quizas|quizás|tal vez|creo que|pienso que)\b/.test(t)
-  ) {
-    return false;
-  }
-
-  return true;
-}
-
-function sanitizeWhyList(whys: IshikawaWhy[] | undefined): string[] {
-  const rawList = Array.isArray(whys) ? whys : [];
-
-  const cleaned = rawList
-    .map((item) => (typeof item === "string" ? item : (item?.text ?? "")))
-    .map((item) => sanitizeWhyCandidate(String(item ?? "")))
-    .filter((item): item is string => Boolean(item))
-    .map((item) => normalizeWhyText(item))
-    .filter((item) => isActionableWhyText(item));
-
-  return Array.from(new Set(cleaned.map((item) => item.trim()))); // dedup exacto
-}
-
-function sanitizeIshikawaStateForWhyQuality(state: IshikawaState): IshikawaState {
-  const cloned = safeClone(state);
-
-  cloned.categories = (cloned.categories ?? []).map((cat) => ({
-    ...cat,
-    mainCauses: (cat.mainCauses ?? []).map((mc) => ({
-      ...mc,
-      subCauses: (mc.subCauses ?? []).map((sc) => ({
-        ...sc,
-        whys: sanitizeWhyList(sc.whys),
-      })),
-    })),
-  }));
-
-  return cloned;
-}
-
-function isVagueWhyAnswer(input: string) {
-  const t = (input ?? "").trim().toLowerCase();
-  if (!t) return true;
-
-  // Muy corto = probablemente poco útil
-  if (t.length < 10) return true;
-
-  // Respuestas típicas vagas
-  if (
-    /^(no se|no sé|ni idea|nose|quiz(a|á)|tal vez|creo|pienso|supongo|puede ser|por ahi|por ahí)/.test(t)
-  ) {
-    return true;
-  }
-
-  // Frases tipo "por mirar / a ojo" sin causa concreta
-  if (/(por mirar|a ojo|solo mirando|me parece|como que)/.test(t)) return true;
-
-  return false;
-}
-
-function isNonCausalMessage(input: string) {
-  const t = normalizeIntentText(input);
-  if (!t) return true;
-
-  if (looksLikeSwitchCategoryIntent(t)) return true;
-
-  if (
-    t.includes("continuemos") ||
-    t.includes("sigamos") ||
-    t.includes("ahora trabajemos") ||
-    t.includes("ahora quiero trabajar") ||
-    t.includes("trabajar la categoria") ||
-    t.includes("trabajar categoria") ||
-    t.includes("podemos trabajar") ||
-    t.includes("quiero trabajar") ||
-    t.includes("quiero ir a") ||
-    t.includes("pasemos a") ||
-    t.includes("siguiente categoria") ||
-    t.includes("otra categoria") ||
-    t.includes("cambiemos de categoria") ||
-    t.includes("cambiemos de rama") ||
-    t.includes("cambiar de rama") ||
-    t.includes("rama actual")
-  ) {
-    return true;
-  }
-
-  if (
-    t.startsWith("que temas") ||
-    t.startsWith("en que estamos") ||
-    t.startsWith("que estamos viendo") ||
-    t.includes("que causa estamos") ||
-    t.includes("muestrame el avance") ||
-    t.includes("en que rama") ||
-    t.includes("donde ibamos") ||
-    t.includes("retomemos")
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
 
 function buildClarifyWhyMessage(studentMessage: string) {
   const raw = (studentMessage ?? "").trim();
@@ -375,16 +257,6 @@ async function geminiText(args: { system: string; prompt: string; temperature?: 
   return result.response.text();
 }
 
-function normalizeIntentText(text: string) {
-  return String(text ?? "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function buildRecentMessagesDigest(recentMessages: RecentMessage[]) {
   return recentMessages
     .slice(-6)
@@ -451,14 +323,6 @@ function looksLikeCategoryNavigationMessage(
 
   return false;
 }
-
-type ContextualBranchIntent =
-  | "SWITCH_CATEGORY"
-  | "META_PROCESS"
-  | "ASK_GUIDANCE"
-  | "ANSWER_WHY"
-  | "CONTINUE_SAME_CATEGORY"
-  | "OTHER";
 
 async function classifyContextualBranchIntent(args: {
   studentMessage: string;
@@ -722,41 +586,6 @@ function detectExplicitCategoryId(state: IshikawaState, text: string): string | 
   return null;
 }
 
-function looksLikeSwitchCategoryIntent(text: string) {
-  const t = normalizeIntentText(text);
-  if (!t) return false;
-
-  return (
-    t.includes("otra categoria") ||
-    t.includes("siguiente categoria") ||
-    t.includes("cambiar de categoria") ||
-    t.includes("cambiar de rama") ||
-    t.includes("pasemos a") ||
-    t.includes("vamos a") ||
-    t.includes("vamos con") ||
-    t.includes("sigamos con") ||
-    t.includes("continuemos con") ||
-    t.includes("continuemos ahora en") ||
-    t.includes("sigamos ahora en") ||
-    t.includes("ahora con") ||
-    t.includes("trabajemos") ||
-    t.includes("trabajar la categoria") ||
-    t.includes("trabajar categoria") ||
-    t.includes("podemos trabajar") ||
-    t.includes("quiero trabajar") ||
-    t.includes("quiero ir a") ||
-    t.includes("mejor pasemos a") ||
-    t === "material" ||
-    t === "metodo" ||
-    t === "maquina" ||
-    t === "hombre" ||
-    t === "mano de obra" ||
-    t === "medicion" ||
-    t === "medida" ||
-    t === "entorno"
-  );
-}
-
 function looksLikeContinueSameCategoryIntent(text: string) {
   const t = (text ?? "").toLowerCase().trim();
 
@@ -853,194 +682,110 @@ function createMainCauseNode(text: string, prefix: string) {
   };
 }
 
-function extractRootCauses(state: any) {
-  const cats = Array.isArray(state?.categories) ? state.categories : [];
-  const roots: { category: string; main: string; sub: string; root: string }[] = [];
+// Palabras de navegación que justifican consultar al clasificador por IA con una subcausa
+// abierta. Si el mensaje ya es una respuesta reconocida, se exige una palabra de navegación
+// clara ("vamos" y "ahora" son comunes dentro de las respuestas).
+const CAPTURE_NAVIGATION_WORDS = /\b(?:categoria|rama|sigamos|continuemos|pasemos|trabajemos|cambiemos)\b/;
+const BRANCH_NAVIGATION_WORDS =
+  /\b(?:categoria|rama|sigamos|continuemos|pasemos|trabajemos|cambiemos|vamos|ahora)\b/;
 
-  const clean = (x: any) => (x ?? "").toString().trim();
-  const isPlaceholder = (s: string) => {
-    const t = s.toLowerCase().trim();
-    return !t || t === "causa" || t === "subcausa";
-  };
-
-  for (const c of cats) {
-    const cName = clean(c?.name) || "(Categoría)";
-    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-
-    for (const m of mains) {
-      const mNameRaw = clean(m?.name ?? m?.text);
-      const mName = isPlaceholder(mNameRaw) ? "(sin nombre de causa principal)" : mNameRaw;
-
-      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-      for (const s of subs) {
-        const sNameRaw = clean(s?.name ?? s?.text);
-        const sName = isPlaceholder(sNameRaw) ? "(sin nombre de subcausa)" : sNameRaw;
-
-        const whys = (Array.isArray(s?.whys) ? s.whys : [])
-          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-          .map((t: any) => clean(t))
-          .filter(Boolean);
-
-        const root = whys.length > 0 ? whys[whys.length - 1] : (isPlaceholder(sNameRaw) ? "" : sNameRaw);
-
-        if (root) {
-          roots.push({ category: cName, main: mName, sub: sName, root });
-        }
-      }
-    }
-  }
-
-  return roots;
+function problemTextOf(state: IshikawaState): string {
+  return typeof state.problem === "string" ? state.problem : state.problem?.text ?? "";
 }
 
-function buildIshikawaMap(state: any) {
-  const cats = Array.isArray(state?.categories) ? state.categories : [];
+// Rechazos seguidos de la subcausa activa (campo del servidor).
+function activeRejectedAttempts(state: IshikawaState): number {
+  return findActiveNodes(state)?.sc?.rejectedWhyAttempts ?? 0;
+}
 
-  const minCats = state?.minCategories ?? 4;
-  const minMain = state?.minMainCausesPerCategory ?? 2; // OJO: si quieres 2, cambia aquí a 2
-  const minSub = state?.minSubCausesPerMain ?? 1; // recomendado 1 si usan 5-porqués
+function labelOr(value: string | undefined, fallback: string): string {
+  const text = (value ?? "").trim();
+  const lower = text.toLowerCase();
+  return !text || lower === "causa" || lower === "subcausa" ? fallback : text;
+}
 
-  const isPlaceholder = (s: string) => {
-    const t = (s ?? "").toString().trim().toLowerCase();
-    return !t || t === "causa" || t === "subcausa";
-  };
-
-  const labelMain = (mc: any) => {
-    const raw = (mc?.name ?? mc?.text ?? "").toString().trim();
-    return isPlaceholder(raw) ? "(sin nombre de causa principal)" : raw;
-  };
-
-  const labelSub = (sc: any) => {
-    const raw = (sc?.name ?? sc?.text ?? "").toString().trim();
-    return isPlaceholder(raw) ? "(sin nombre de subcausa)" : raw;
-  };
-
-  const normalizeWhys = (sc: any) => {
-    const whys = Array.isArray(sc?.whys) ? sc.whys : [];
-    return whys
-      .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-      .map((t: any) => (t ?? "").toString().trim())
-      .filter(Boolean);
-  };
-
-  // Causa raíz candidata = último porqué (si existe), si no la subcausa
-  const roots: string[] = [];
-  for (const c of cats) {
-    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-    for (const m of mains) {
-      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
-      for (const s of subs) {
-        const whys = normalizeWhys(s);
-        if (whys.length > 0) {
-          roots.push(whys[whys.length - 1]);
-        } else {
-          const t = (s?.text ?? s?.name ?? "").toString().trim();
-          if (t && !isPlaceholder(t)) roots.push(t);
-        }
-      }
-    }
-  }
-
-
-  // Subcausa válida si tiene nombre útil o al menos 1 porqué útil
-  const isSubValid = (sc: any) => {
-    const n = (sc?.name ?? sc?.text ?? "").toString().trim();
-    if (n && !isPlaceholder(n)) return true;
-    const whys = normalizeWhys(sc);
-    return whys.length > 0;
-  };
-
-  // Causa principal completa si tiene minSub subcausas válidas
-  const isMainComplete = (mc: any) => {
-    const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
-    const validSubs = subs.filter(isSubValid);
-    return validSubs.length >= minSub;
-  };
-
-  // Categoría completa si tiene minMain causas principales completas
-  const mainCompleteCount = (cat: any) => {
-    const mains = Array.isArray(cat?.mainCauses) ? cat.mainCauses : [];
-    return mains.filter(isMainComplete).length;
-  };
-
-  const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
+// Avance del Ishikawa: mínimos para pasar a Pareto (mismas reglas que ishikawa/validate),
+// causas raíz del registro, pregunta pendiente, ramas sin terminar numeradas (con ese número se
+// retoman) y el árbol completo.
+function buildIshikawaMap(state: IshikawaState): string {
+  const readiness = evaluateIshikawaReadiness(state);
+  const { entries: rootEntries } = deriveRootCauses(state);
+  const unreviewed = listUnreviewedBranches(state);
+  const pending = parsePendingRootMatch(state.pendingRootMatch);
+  const MAX = 15; // evita que el chat se haga infinito
 
   const lines: string[] = [];
 
-  lines.push("📊 Progreso mínimo del Ishikawa");
-  lines.push(`Categorías completas: ${completeCats.length}/${minCats}`);
-  lines.push(`Causas raíz identificadas: ${roots.length}/10`);
+  lines.push("📊 Progreso del Ishikawa");
+  lines.push(`Categorías completas: ${readiness.completeCategories}/${readiness.requiredCategories}`);
+  lines.push(`Causas raíz identificadas: ${readiness.rootCount}/${readiness.requiredRoots}`);
   lines.push("");
 
-  // 🧾 LISTA DE CAUSAS RAÍZ (para que el estudiante vea cuáles son)
-  const uniqueRoots = Array.from(
-    new Set(
-      roots
-        .map((r) => (r ?? "").toString().trim())
-        .filter(Boolean)
-    )
-  );
-
-  lines.push("🧾 Causas raíz identificadas (último porqué de cada rama)");
-  if (uniqueRoots.length === 0) {
-    lines.push("- (aún no se detectaron causas raíz)");
+  // Cada causa raíz cuenta una vez; entre paréntesis, en cuántas ramas apareció (señal de peso
+  // para Pareto).
+  lines.push("🧾 Causas raíz identificadas (y en cuántas ramas aparece cada una)");
+  if (rootEntries.length === 0) {
+    lines.push("- (todavía ninguna: una rama cuenta cuando la cerramos)");
   } else {
-    const MAX = 15; // evita que el chat se haga infinito
-    for (const r of uniqueRoots.slice(0, MAX)) {
-      lines.push(`- ${r}`);
+    for (const entry of rootEntries.slice(0, MAX)) {
+      lines.push(`- ${entry.text} (${entry.occurrences} ${entry.occurrences === 1 ? "rama" : "ramas"})`);
     }
-    if (uniqueRoots.length > MAX) {
-      lines.push(`- ... (+${uniqueRoots.length - MAX} más)`);
-    }
+    if (rootEntries.length > MAX) lines.push(`- ... (+${rootEntries.length - MAX} más)`);
+  }
+  if (pending) {
+    lines.push("", `❓ ${buildRootQuestionReminder(state, pending, "inline")}`);
   }
   lines.push("");
 
+  // Ramas sin cierre revisado: no cuentan como raíz. El número es el que se usa para retomarlas.
+  if (unreviewed.length > 0) {
+    lines.push(`🔎 Ramas sin terminar (${unreviewed.length}); no cuentan hasta cerrarlas:`);
+    for (const branch of unreviewed.slice(0, MAX)) {
+      lines.push(`${branch.index}) ${describeUnreviewedBranch(branch)}`);
+    }
+    if (unreviewed.length > MAX) lines.push(`... (+${unreviewed.length - MAX} más)`);
+    lines.push(`Para retomar una, escribe **retomar ${unreviewed[0].index}** o el nombre de la subcausa.`);
+    lines.push("");
+  }
 
-  if (completeCats.length >= minCats && roots.length >= 10) {
+  const gaps = describeStageCloseGaps(readiness);
+  if (gaps.length === 0) {
     lines.push("✅ Ya cumples los mínimos para pasar a Pareto.");
   } else {
     lines.push("🧩 Para poder pasar a Pareto te falta:");
-    if (completeCats.length < minCats) {
-      lines.push(`- Completar al menos ${minCats} categorías (con ${minMain} causas principales completas cada una)`);
-    }
-    if (roots.length < 10) {
-      lines.push(`- Identificar ${10 - roots.length} causas raíz adicionales`);
-    }
+    for (const gap of gaps) lines.push(`- ${gap}`);
   }
 
   lines.push("");
   lines.push("📌 Estado por categoría");
-  for (const c of cats) {
-    const done = mainCompleteCount(c);
-    const ok = done >= minMain;
-    lines.push(`${ok ? "✅" : "❌"} ${c?.name ?? "Categoría"} — causas completas: ${done}/${minMain}`);
+  for (const category of readiness.categories) {
+    const complete = category.completeMainCauses >= readiness.requiredMainCausesPerCategory;
+    lines.push(
+      `${complete ? "✅" : "❌"} ${category.name} — causas completas: ` +
+        `${category.completeMainCauses}/${readiness.requiredMainCausesPerCategory}`
+    );
   }
 
   lines.push("");
-  lines.push("🗺️ Mapa Ishikawa");
+  lines.push("🗺️ Mapa Ishikawa (✅ = rama cerrada)");
   lines.push("");
 
-  // Indentación SOLO por espacios (no líneas). Usamos NBSP para que no se colapse.
-  const i2 = "\u00A0\u00A0";
-  const i4 = "\u00A0\u00A0\u00A0\u00A0";
-  const i6 = "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0";
-  const i8 = "\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0\u00A0";
+  // Indentación solo con espacios duros (NBSP) para que el chat no la colapse.
+  const nbsp = String.fromCharCode(160);
+  const i2 = nbsp.repeat(2);
+  const i4 = nbsp.repeat(4);
+  const i8 = nbsp.repeat(8);
 
-  for (const c of cats) {
-    lines.push(`▶ ${c?.name ?? "Categoría"}`);
+  for (const cat of state.categories ?? []) {
+    lines.push(`▶ ${cat.name || "Categoría"}`);
 
-    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
-    for (const mc of mains) {
-      lines.push(`${i2}◆ ${labelMain(mc)}`);
+    for (const mc of cat.mainCauses ?? []) {
+      lines.push(`${i2}◆ ${labelOr(mc.name ?? mc.text, "(sin nombre de causa principal)")}`);
 
-      const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
-      for (const sc of subs) {
-        lines.push(`${i4}- ${labelSub(sc)}`);
-
-        const whys = normalizeWhys(sc);
-        for (let k = 0; k < whys.length; k++) {
-          lines.push(`${i8}${k + 1}) ${whys[k]}`);
-        }
+      for (const sc of mc.subCauses ?? []) {
+        const closed = isClosureReviewed(sc.closure) ? " ✅" : "";
+        lines.push(`${i4}- ${labelOr(sc.name ?? sc.text, "(sin nombre de subcausa)")}${closed}`);
+        whyTexts(sc.whys).forEach((why, index) => lines.push(`${i8}${index + 1}) ${why}`));
       }
     }
 
@@ -1049,108 +794,6 @@ function buildIshikawaMap(state: any) {
 
   return lines.join("\n");
 }
-
-function normalizeText(x: unknown) {
-  return (typeof x === "string" ? x : "").trim();
-}
-
-function mergeIshikawaState(prev: IshikawaState, incoming: IshikawaState): IshikawaState {
-  // 1) Problema: no dejar que se borre
-  const prevProblem =
-    typeof prev.problem === "string" ? prev.problem : prev.problem?.text ?? "";
-  const incProblem =
-    typeof incoming.problem === "string" ? incoming.problem : incoming.problem?.text ?? "";
-
-  const problemText = normalizeText(incProblem) || normalizeText(prevProblem);
-
-  // 2) Categorías por ID: preservar prev y aplicar incoming por id
-  const prevCats = prev.categories ?? [];
-  const incCats = incoming.categories ?? [];
-
-  const prevById = new Map(prevCats.map(c => [c.id, c]));
-  const outCats: IshikawaCategory[] = [];
-
-  // primero, recorremos incoming (aplica cambios)
-  for (const ic of incCats) {
-    const pc = prevById.get(ic.id);
-
-    if (!pc) {
-      // categoría nueva
-      outCats.push(ic);
-      continue;
-    }
-
-    // merge mainCauses por id
-    const prevMainById = new Map((pc.mainCauses ?? []).map(m => [m.id, m]));
-    const mergedMain: IshikawaCategory["mainCauses"] = [];
-
-    for (const im of ic.mainCauses ?? []) {
-      const pm = prevMainById.get(im.id);
-      if (!pm) {
-        mergedMain.push(im);
-        continue;
-      }
-
-      // merge subCauses por id
-      const prevSubById = new Map((pm.subCauses ?? []).map(s => [s.id, s]));
-      const mergedSub: typeof pm.subCauses = [];
-
-      for (const is of im.subCauses ?? []) {
-        const ps = prevSubById.get(is.id);
-        if (!ps) {
-          mergedSub.push(is);
-          continue;
-        }
-
-        // whys: si incoming trae whys vacío, conservar prev
-        const incWhys = Array.isArray(is.whys) ? is.whys : [];
-        const prevWhys = Array.isArray(ps.whys) ? ps.whys : [];
-        const whys = incWhys.length ? incWhys : prevWhys;
-
-        mergedSub.push({
-          ...ps,
-          ...is,
-          whys,
-        });
-
-        prevSubById.delete(is.id);
-      }
-
-      // agregar subcauses que existían antes y no vinieron en incoming (no borrar)
-      for (const leftover of prevSubById.values()) mergedSub.push(leftover);
-
-      mergedMain.push({
-        ...pm,
-        ...im,
-        subCauses: mergedSub,
-      });
-
-      prevMainById.delete(im.id);
-    }
-
-    // agregar maincauses prev que no vinieron (no borrar)
-    for (const leftover of prevMainById.values()) mergedMain.push(leftover);
-
-    outCats.push({
-      ...pc,
-      ...ic,
-      mainCauses: mergedMain,
-    });
-
-    prevById.delete(ic.id);
-  }
-
-  // luego, agregamos categorías prev que no vinieron (no borrar)
-  for (const leftover of prevById.values()) outCats.push(leftover);
-
-  return {
-    ...prev,
-    ...incoming,
-    problem: problemText ? { text: problemText } : prev.problem,
-    categories: outCats,
-  };
-}
-
 
 function isShortFastPathCandidate(text: string) {
   const t = (text ?? "").trim();
@@ -1176,29 +819,6 @@ function isShortFastPathCandidate(text: string) {
   if (t.length > 100) return false;
 
   return true;
-}
-
-function isCloseBranchConfirm(text: string) {
-  const t = (text ?? "").toLowerCase();
-  return /(cerrar|cerremos|cerramos|cerrar ahi|cerrar ahí|de acuerdo cerrar|ok cerrar|si.*cerr)/.test(t);
-}
-
-function findActiveNodes(state: IshikawaState) {
-  const catId = state.cursor?.categoryId;
-  const mcId = state.cursor?.mainCauseId;
-  const scId = state.cursor?.subCauseId;
-
-  if (!catId || !mcId) return null;
-
-  const cat = state.categories.find((c) => c.id === catId);
-  if (!cat) return null;
-
-  const mc = cat.mainCauses.find((m) => m.id === mcId);
-  if (!mc) return null;
-
-  const sc = scId ? mc.subCauses.find((s) => s.id === scId) : null;
-
-  return { cat, mc, sc };
 }
 
 function safeClone<T>(obj: T): T {
@@ -1356,6 +976,13 @@ function buildVariedFollowUp(studentMessage: string) {
   return `${opener} ${analysis}\n${q}`;
 }
 
+function numberedWhys(whys: readonly string[]): string {
+  return whys.length > 0 ? whys.map((why, index) => `${index + 1}. ${why}`).join("\n") : "(ninguno todavía)";
+}
+
+// Siguiente paso dentro de una rama (el mensaje que más ve el estudiante). Recibe el problema y
+// los datos del caso (rubro, productos, áreas), la cadena guardada de la rama sin filtrar y
+// cuántos rechazos seguidos lleva el estudiante en ella.
 async function buildGuidedWhyStep(args: {
   studentMessage: string;
   categoryName: string;
@@ -1363,9 +990,15 @@ async function buildGuidedWhyStep(args: {
   subCauseName: string;
   whys: string[];
   maxWhyDepth: number;
+  rejectedAttempts: number;
+  context: IshikawaPromptContext;
+  hint?: string;
 }) {
   const depth = args.whys.length;
   const lastWhy = depth > 0 ? args.whys[depth - 1] : null;
+  const hintBlock = args.hint
+    ? `\nOrientación que debes transmitir al estudiante con tus palabras (sin copiarla literal):\n${args.hint}\n`
+    : "";
 
   const prompt = `
 Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
@@ -1373,25 +1006,31 @@ Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
 Estás trabajando una sola rama del árbol. Tu tarea es decidir cómo continuar la conversación
 de forma natural y útil, SIN responder como robot.
 
+Contexto del caso (úsalo para que tus preguntas y ejemplos sean de ESTE caso; no inventes datos que no estén aquí):
+${formatCaseContextBlock(args.context)}
+
 Rama actual:
 - Categoría: ${args.categoryName}
 - Causa principal: ${args.mainCauseName}
 - Subcausa: ${args.subCauseName}
-- Why depth actual: ${depth}
+- Porqués registrados: ${depth} (mínimo ${MIN_WHY_DEPTH} antes de cerrar, máximo ${args.maxWhyDepth})
 - Último porqué registrado: ${lastWhy ?? "(ninguno)"}
+- Respuestas rechazadas seguidas en esta rama: ${args.rejectedAttempts}
+
+Porqués de esta rama, del primero al último:
+${numberedWhys(args.whys)}
 
 Mensaje más reciente del estudiante:
 "${args.studentMessage}"
-
-Whys registrados hasta ahora:
-${JSON.stringify(args.whys, null, 2)}
-
+${hintBlock}
 Reglas:
 - Si el último porqué todavía no es una causa raíz accionable, pregunta un nuevo “¿por qué?” centrado en ESA rama.
 - Si el estudiante quedó a medio formular, ayúdalo a aterrizar la causa con 2 o 3 formulaciones plausibles y una sola pregunta final.
-- Si ya parece una causa raíz accionable/sistémica, puedes proponer cerrarla como raíz candidata.
+- Si ya lleva respuestas rechazadas en esta rama, sé más concreto: propón 2 formulaciones posibles apoyadas en el contexto del caso y pide que elija o corrija una.
+- No propongas cerrar la rama ni declares que ya es la causa raíz: ese cierre lo decide una revisión de calidad aparte.
 - No preguntes cosas genéricas que no tengan relación con la rama.
 - No uses frases rígidas tipo “esto puede estar contribuyendo...” si no aportan.
+- ${NO_PROPER_NAMES_RULE}
 - Responde breve, natural y docente.
 - Máximo 2 párrafos.
 - No uses JSON.
@@ -1401,6 +1040,469 @@ Devuelve solo el mensaje final.
 
   const text = await llmText(prompt);
   return String(text ?? "").trim();
+}
+
+// Ayuda con hipótesis dentro de la rama activa: 2-3 formulaciones plausibles para que el
+// estudiante elija. La usan la ayuda pedida dentro de la rama y la escalada tras varios
+// intentos fallidos seguidos. Recibe el contexto del caso, con el FODA y la lluvia de ideas
+// si existen.
+function buildBranchHypothesesPrompt(args: {
+  situation: "asked_help" | "repeated_rejections";
+  categoryName: string;
+  mainCauseName: string;
+  subCauseName: string;
+  whys: string[];
+  studentMessage: string;
+  rejectedAttempts: number;
+  context: IshikawaPromptContext;
+}) {
+  const situationLine =
+    args.situation === "asked_help"
+      ? "El estudiante está dentro de una rama activa y pidió ayuda para formular mejor la causa raíz."
+      : `El estudiante está dentro de una rama activa y lleva ${args.rejectedAttempts} intentos seguidos sin lograr una causa concreta y accionable para el siguiente porqué.`;
+
+  const earlierStages =
+    hasFoda(args.context) || hasBrainstorm(args.context)
+      ? "- si alguna debilidad del FODA o idea de la lluvia de ideas encaja con esta rama, apóyate en ella (no la copies si no encaja),\n"
+      : "";
+
+  const lastWhy = args.whys.length > 0 ? args.whys[args.whys.length - 1] : null;
+
+  return `
+Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
+
+${situationLine}
+NO debes sacarlo del flujo ni preguntarle si quiere cambiar de categoría.
+Debes ayudarlo a aterrizar la MISMA rama actual.
+
+Contexto del caso (no inventes datos que no estén aquí):
+${formatCaseContextBlock(args.context, { foda: true, brainstorm: true })}
+
+Rama:
+- Categoría: ${args.categoryName}
+- Causa principal: ${args.mainCauseName}
+- Subcausa: ${args.subCauseName}
+- Último porqué registrado: ${lastWhy ?? "(ninguno)"}
+
+Porqués de esta rama, del primero al último:
+${numberedWhys(args.whys)}
+
+Mensaje del estudiante:
+"${args.studentMessage}"
+
+Tu objetivo:
+- interpretar qué quiso decir,
+- ayudarle a aterrizar la causa,
+- proponer 2 o 3 formulaciones plausibles y accionables (algo que la empresa pueda cambiar: un proceso, un control, una capacitación o un responsable),
+${earlierStages}- mantener la conversación natural,
+- terminar con una sola pregunta concreta para que el estudiante elija o precise.
+
+${NO_PROPER_NAMES_RULE}
+Responde SOLO en texto, no JSON.
+`;
+}
+
+// Juicio de accionabilidad de la cadena de porqués: una llamada, temperatura baja.
+// Cualquier fallo o respuesta inválida devuelve null, que nunca cierra la rama.
+async function judgeWhyActionability(args: {
+  problem: string;
+  categoryName: string;
+  mainCauseName: string;
+  subCauseName: string;
+  whys: string[];
+}): Promise<LlmActionabilityVerdict | null> {
+  const system = `
+Eres un docente de Ingeniería Industrial que revisa un análisis Ishikawa + porqués.
+Decide si el ÚLTIMO porqué de la cadena ya es una causa raíz accionable.
+
+"Accionable" significa que la empresa puede modificarlo con una acción de mejora: un
+proceso, un control, una capacitación o un responsable. NO es accionable si es un síntoma,
+si repite lo anterior o si depende de algo fuera del control de la empresa.
+
+Responde EXCLUSIVAMENTE con JSON válido, sin markdown ni texto adicional:
+{"actionable": boolean, "reason": string}
+
+"reason": en segunda persona, dirigido al estudiante, máximo 2 frases, concreto y sin
+jerga. Si no es accionable, dile qué le falta para serlo.
+`;
+
+  const prompt = `
+Problema: ${args.problem || "(sin problema registrado)"}
+Categoría: ${args.categoryName}
+Causa principal: ${args.mainCauseName}
+Subcausa: ${args.subCauseName}
+Cadena de porqués (del primero al último):
+${args.whys.map((why, index) => `${index + 1}. ${why}`).join("\n")}
+`;
+
+  try {
+    const raw = await geminiText({ system, prompt, temperature: 0.1 });
+    return interpretLlmActionabilityResponse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// Comparación de una causa raíz nueva contra las candidatas del registro. Solo recibe los
+// textos de las raíces (sin problema ni contexto del caso).
+const ROOT_MATCH_SYSTEM = `
+Eres un docente de Ingeniería Industrial que revisa un diagrama de Ishikawa.
+Decide si la causa raíz NUEVA expresa la MISMA falla de la empresa que alguna de las
+candidatas, aunque esté redactada con otras palabras. Si solo comparten palabras pero
+describen fallas distintas, no es la misma.
+
+Responde EXCLUSIVAMENTE con JSON válido, sin markdown ni texto adicional:
+{"sameAs": "<id de la candidata>" | null, "reason": string}
+
+"reason": una frase en segunda persona, dirigida al estudiante, que explique por qué te
+parecen la misma causa. Si no hay coincidencia, déjala vacía.
+`;
+
+function buildRootMatchPrompt(newRoot: string, candidates: RootMatchCandidateInput[]) {
+  return (
+    `Causa raíz nueva: "${newRoot}"\n\n` +
+    `Candidatas:\n${candidates.map((candidate) => `- id: ${candidate.id} | "${candidate.text}"`).join("\n")}`
+  );
+}
+
+const BLOCKED_WHY_INTROS: Record<EscalationReason, string> = {
+  tautology: "Te entiendo, pero con eso seguimos en el mismo punto de la rama.",
+  external_only:
+    "Tiene sentido que eso influya, aunque así la causa queda fuera de lo que la empresa puede cambiar.",
+  too_generic: "Vas por buen camino, pero así queda demasiado general para trabajarla.",
+  not_actionable: "Todavía no es algo que la empresa pueda cambiar directamente.",
+};
+
+function buildBlockedWhyMessage(reason: EscalationReason, hint: string) {
+  return `${BLOCKED_WHY_INTROS[reason]}\n\n${hint}`;
+}
+
+// Aviso de raíz repetida (coincidencia exacta con otra rama): se informa, no se pregunta.
+function buildRepeatedRootNote(root: Extract<RootResolution, { kind: "repeated" }>) {
+  const where = root.previous[0] ? describeRootOccurrence(root.nextState, root.previous[0]) : "otra rama";
+  return (
+    `Esta causa ya te había aparecido en **${where}**; queda registrada como repetida: ` +
+    `ahora aparece en ${root.occurrences} ramas y cuenta una sola vez para el mínimo. ` +
+    `En tu Pareto, que se repita es una señal de peso.`
+  );
+}
+
+// Pregunta cuando la IA propone que la raíz nueva es la misma que otra ya registrada. Decide
+// el estudiante, ahora o más adelante; mientras tanto quedan como distintas.
+function buildRootQuestion(
+  state: IshikawaState,
+  newRoot: string,
+  candidate: RootCauseEntry,
+  reason: string
+) {
+  const where = candidate.occurrences[0]
+    ? describeRootOccurrence(state, candidate.occurrences[0])
+    : "otra rama";
+  return (
+    `Una pregunta sobre esta causa: se parece a otra que ya registraste en **${where}**: ` +
+    `**"${candidate.canonicalText}"**.` +
+    (reason ? ` ${reason}` : "") +
+    `\n\n¿**"${newRoot}"** es la misma causa raíz? Responde **sí** o **no**, ahora o cuando quieras. ` +
+    `Si es la misma, cuenta una sola vez; si no, quedan como dos causas distintas.`
+  );
+}
+
+// Respuesta a la pregunta de causa raíz repetida. Si mientras tanto quedaron raíces por comparar
+// y la IA propone otra coincidencia, se pregunta a continuación.
+function buildRootAnswerMessage(
+  answer: Exclude<PendingRootAnswer, { kind: "no_pending" }>,
+  extra: { followUpQuestion: string | null; offer: string | null }
+) {
+  const head =
+    answer.kind === "merged"
+      ? `Listo: la registré como la misma causa raíz que **"${answer.entry.canonicalText}"**. ` +
+        `Ahora aparece en ${answer.entry.occurrences.length} ramas y cuenta una sola vez para el mínimo; ` +
+        `en tu Pareto, que se repita es una señal de peso.`
+      : `Entendido: **"${answer.entry.canonicalText}"** y **"${answer.other.canonicalText}"** quedan como ` +
+        `dos causas raíz distintas, y no te volveré a preguntar por este par.`;
+
+  if (extra.followUpQuestion) return `${head}\n\n${extra.followUpQuestion}`;
+
+  return [head, extra.offer, "Sigamos: puedes profundizar otra subcausa o pasar a otra categoría del Ishikawa."]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
+}
+
+// La pregunta pendiente en tres formas: sola (el estudiante escribió sobre ella sin un sí o un
+// no claro), al final de otra respuesta (no traba la conversación) o dentro del mapa.
+function buildRootQuestionReminder(
+  state: IshikawaState,
+  pending: PendingRootMatch,
+  mode: "only" | "appended" | "inline"
+) {
+  const registry = parseRootRegistry(state.rootCauses);
+  const provisional = registry.find((entry) => entry.id === pending.rootId);
+  const candidate = registry.find((entry) => entry.id === pending.candidateId);
+
+  const where = candidate?.occurrences[0] ? describeRootOccurrence(state, candidate.occurrences[0]) : "otra rama";
+  const question =
+    provisional && candidate
+      ? `¿**"${provisional.canonicalText}"** es la misma causa raíz que **"${candidate.canonicalText}"** (en ${where})?`
+      : "¿Las dos causas raíz que te mostré son la misma?";
+
+  if (mode === "inline") return `Pregunta pendiente: ${question} Responde **sí** o **no**.`;
+
+  if (mode === "appended") {
+    return (
+      `📌 Pregunta pendiente: ${question} Respóndeme **sí** o **no** cuando quieras; ` +
+      `mientras tanto cuentan como dos causas distintas y no podemos cerrar la etapa.`
+    );
+  }
+
+  return (
+    `Sobre la pregunta pendiente: ${question}\n\n` +
+    `Responde **sí** (es la misma y cuenta una sola vez) o **no** (son distintas).`
+  );
+}
+
+// Mensaje de cierre de rama. El cliente no lee este texto: la respuesta lleva
+// ui.branchJustClosed para no ofrecer el paso a Pareto en el mismo turno. Si la raíz se
+// repite, se informa; si la IA la ve parecida a otra, se pregunta en lugar de las opciones.
+// Si quedan ramas sin terminar, se ofrecen para retomarlas.
+function buildBranchClosedMessage(args: {
+  rootCause: string;
+  mainCauseName: string;
+  reason: string;
+  root: RootResolution;
+  offer: string | null;
+}) {
+  const head =
+    `Bien, con esto cerramos esta subcausa: **"${args.rootCause}"** queda como causa raíz candidata dentro de **"${args.mainCauseName}"**.` +
+    (args.reason ? ` ${args.reason}` : "");
+
+  if (args.root.kind === "question") {
+    return `${head}\n\n${buildRootQuestion(args.root.nextState, args.rootCause, args.root.candidate, args.root.reason)}`;
+  }
+
+  const repeated = args.root.kind === "repeated" ? `\n\n${buildRepeatedRootNote(args.root)}` : "";
+  const offer = args.offer ? `\n\n${args.offer}` : "";
+
+  return (
+    head +
+    repeated +
+    offer +
+    `\n\nAhora podemos hacer una de estas cosas:\n` +
+    `• profundizar otra subcausa en esta misma causa principal\n` +
+    `• pasar a otra categoría del Ishikawa\n` +
+    (args.offer ? `• retomar una rama sin terminar\n` : "") +
+    `• o, si ya lo ves suficiente, revisar si estamos listos para pasar a Pareto\n\n` +
+    `Dime cómo quieres continuar y te guío.`
+  );
+}
+
+function buildReformulateWhyMessage(hint: string, lastWhy: string) {
+  return (
+    `${hint}\n\n` +
+    `Escribe de nuevo esta última causa con esa idea: **"${lastWhy}"**. La reemplazo por tu nueva versión; no agregamos otro porqué.`
+  );
+}
+
+// Se pidió cerrar una rama (el estudiante o el LLM) y el gate no lo permitió: la rama
+// sigue abierta y el mensaje explica qué falta.
+function buildCloseNotReadyMessage(args: BranchNotReady) {
+  const intro = "Todavía no podemos cerrar esta subcausa.";
+
+  if (!args.lastWhy) {
+    return (
+      `${intro} Aún no tiene ningún porqué.\n\n` +
+      `¿Por qué ocurre **"${args.labels.subCauseName}"** en tu caso? Dime qué pasa, dónde o cuándo.`
+    );
+  }
+
+  if (args.decision === "reformulate") {
+    return `${intro}\n\n${buildReformulateWhyMessage(args.hint ?? HINT_REFORMULATE, args.lastWhy)}`;
+  }
+
+  const reason =
+    args.depth < MIN_WHY_DEPTH
+      ? ` Lleva ${args.depth} de al menos ${MIN_WHY_DEPTH} porqués.`
+      : args.judgeFailed
+        ? " No pude comprobar ahora si el último porqué ya es algo que la empresa pueda cambiar."
+        : "";
+
+  return [`${intro}${reason}`, args.hint ?? "", `¿Por qué ocurre **"${args.lastWhy}"**?`]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Qué se le pide en una rama abierta: al retomarla o cuando solo acusa recibo ("ok"). Si la
+// rama quedó en el tope esperando una reformulación, se pide reformular el último porqué, no
+// un porqué más.
+function buildBranchPromptMessage(args: {
+  intro: string;
+  labels: BranchLabels;
+  whys: string[];
+  prompt: BranchPromptKind;
+}): string {
+  const where = `**${args.labels.categoryName} → ${args.labels.mainCauseName} → ${args.labels.subCauseName}**`;
+  const depth = args.whys.length;
+  const lastWhy = depth > 0 ? args.whys[depth - 1] : null;
+
+  if (args.prompt === "reformulate" && lastWhy) {
+    return (
+      `${args.intro} ${where}.\n\n` +
+      `Esta rama llegó al tope de ${MAX_WHY_DEPTH} porqués y está esperando que reformules el último: **"${lastWhy}"**.\n\n` +
+      `${HINT_REFORMULATE}\n\n` +
+      `Escríbelo de nuevo con esa idea: reemplazo ese porqué, no agregamos un sexto.`
+    );
+  }
+
+  if (!lastWhy) {
+    return (
+      `${args.intro} ${where}. Todavía no tiene porqués.\n\n` +
+      `¿Por qué ocurre **"${args.labels.subCauseName}"** en tu caso? Dime qué pasa, dónde o cuándo.`
+    );
+  }
+
+  const closeHint =
+    depth >= MIN_WHY_DEPTH
+      ? "\n\nSi te parece que ese último porqué ya es algo que la empresa puede cambiar, escribe **cerremos** y lo reviso."
+      : "";
+
+  return (
+    `${args.intro} ${where}. Lleva ${depth} ${depth === 1 ? "porqué" : "porqués"}; el último es **"${lastWhy}"**.\n\n` +
+    `¿Por qué ocurre eso?${closeHint}`
+  );
+}
+
+// Un acuse ("ok", "gracias") con una subcausa abierta: se vuelve a mostrar lo pendiente.
+function buildActiveBranchReprompt(state: IshikawaState): string {
+  const active = activeBranchPrompt(state);
+  if (!active) return buildUnknownIntentMessage(state).assistantMessage;
+
+  return buildBranchPromptMessage({
+    intro: "Sigamos con",
+    labels: active.labels,
+    whys: active.whys,
+    prompt: active.prompt,
+  });
+}
+
+// Ramas sin terminar para ofrecer retomarlas (sin la rama activa), o null si no hay.
+function unreviewedOffer(state: IshikawaState): string | null {
+  return buildUnreviewedBranchesOffer(listUnreviewedBranches(state), {
+    activePath: activeBranchPrompt(state)?.path ?? null,
+  });
+}
+
+// Pedido de retomar una rama: mueve el cursor (sin IA) y pide lo que corresponda, o muestra las
+// opciones si no quedó claro cuál.
+function buildResumeResponse(
+  state: IshikawaState,
+  request: ResumeRequest
+): { assistantMessage: string; updates: { nextState: IshikawaState } } {
+  if (request.kind === "nothing_pending") {
+    return {
+      assistantMessage:
+        "No te quedan ramas sin terminar: las que tienen porqués ya están cerradas.\n\n" +
+        "Puedes agregar una causa nueva o, si ya llegaste al mínimo, pedirme pasar a Pareto.",
+      updates: { nextState: state },
+    };
+  }
+
+  if (request.kind === "resume") {
+    const outcome = resumeBranch(state, request.branch.path);
+    if (outcome.kind === "resumed") {
+      return {
+        assistantMessage: buildBranchPromptMessage({
+          intro: "Retomemos",
+          labels: outcome.branch.labels,
+          whys: outcome.branch.whys,
+          prompt: outcome.prompt,
+        }),
+        updates: { nextState: outcome.nextState },
+      };
+    }
+  }
+
+  const options = request.kind === "choose" ? request.options : listUnreviewedBranches(state);
+  const intro =
+    request.kind === "choose" && request.reason === "ambiguous"
+      ? "Hay más de una rama con ese nombre. ¿Cuál quieres retomar?"
+      : request.kind === "choose" && request.reason === "no_reference"
+        ? "¿Qué rama quieres retomar? Estas están sin terminar:"
+        : "No encontré esa rama entre las que están sin terminar. Estas son:";
+
+  const lines = options.slice(0, 10).map((branch) => `${branch.index}) ${describeUnreviewedBranch(branch)}`);
+  const example = options[0]?.index ?? 1;
+
+  return {
+    assistantMessage:
+      `${intro}\n${lines.join("\n")}\n\n` +
+      `Escribe **retomar** y el número (por ejemplo, **retomar ${example}**) o el nombre de la subcausa.`,
+    updates: { nextState: state },
+  };
+}
+
+// "Pasemos a Pareto": qué falta, con las mismas reglas que ishikawa/validate, o la confirmación
+// de que ya se puede validar (el cliente ofrece el paso con ui.offerStageClose).
+function buildStageAdvanceMessage(state: IshikawaState): string {
+  const readiness = evaluateIshikawaReadiness(state);
+  const gaps = describeStageCloseGaps(readiness);
+
+  if (gaps.length === 0) {
+    return (
+      `✅ Ya cumples los mínimos del Ishikawa: ${readiness.rootCount} causas raíz y ` +
+      `${readiness.completeCategories} categorías completas.\n\n` +
+      `Si quieres pasar a la Etapa 5 (Pareto), confírmamelo y lo valido.`
+    );
+  }
+
+  return [
+    "Todavía no podemos pasar a Pareto. Te falta:",
+    gaps.map((gap) => `- ${gap}`).join("\n"),
+    unreviewedOffer(state),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
+}
+
+// Avance ("muéstrame el avance", "¿qué me falta?"): el mapa y cómo seguir.
+function buildMapResponse(state: IshikawaState): {
+  assistantMessage: string;
+  updates: { nextState: IshikawaState };
+} {
+  const nextState = ensureDefaultCategoriesIfEmpty(state);
+  const active = activeBranchPrompt(nextState);
+  const currentCategoryName = getCategoryDisplayName(nextState, nextState.cursor?.categoryId);
+
+  const followUp = active
+    ? `\n\n👉 Seguimos en **${active.labels.subCauseName}** cuando quieras: responde el porqué pendiente, o escribe **retomar** y el número de otra rama.`
+    : currentCategoryName
+      ? `\n\n👉 Si quieres, podemos continuar ahora mismo en **${currentCategoryName}** agregando otra causa principal.`
+      : "";
+
+  return { assistantMessage: buildIshikawaMap(nextState) + followUp, updates: { nextState } };
+}
+
+// Porqués que el LLM quiso agregar en una rama que ya existía y no pasaron el filtro de calidad:
+// se le dice al estudiante con la pista, igual que en la ruta rápida.
+function buildDroppedWhysNote(dropped: readonly DroppedLlmWhy[]): string | null {
+  const shown = dropped.filter((item) => item.existingBranch);
+  if (shown.length === 0) return null;
+
+  return shown.map((item) => `No registré **"${item.text}"** como porqué: ${item.hint}`).join("\n\n");
+}
+
+// whysReplace solo vale para el guardado del turno en que se reemplazó un porqué. El
+// cliente puede reenviarlo en turnos siguientes, así que se descarta al entrar.
+function clearWhysReplaceFlags(state: IshikawaState): IshikawaState {
+  const cloned = safeClone(state);
+
+  for (const cat of cloned.categories ?? []) {
+    for (const mc of cat.mainCauses ?? []) {
+      for (const sc of mc.subCauses ?? []) {
+        delete sc.whysReplace;
+      }
+    }
+  }
+
+  return cloned;
 }
 
 type IshikawaIntent =
@@ -1429,53 +1531,24 @@ type IshikawaTurnAction =
 function classifyIntentRules(msgLower: string): IshikawaIntent {
   if (!msgLower.trim()) return "UNKNOWN";
 
-  const whyIntent = classifyWhyIntent(msgLower);
-
-  if (whyIntent === "ask_guidance" || whyIntent === "ask_example") {
-    return "HELP";
-  }
-
-  if (whyIntent === "switch_context" || whyIntent === "meta_process") {
-    return "NON_CAUSAL";
-  }
-
-  // MAPA / AVANCE / ESTADO
-  if (
-    msgLower.includes("situacion actual") ||
-    msgLower.includes("situación actual") ||
-    msgLower.includes("mapa") ||
-    msgLower.includes("estado actual") ||
-    msgLower.includes("resumen") ||
-    msgLower.includes("que tenemos") ||
-    msgLower.includes("qué tenemos") ||
-    msgLower.includes("en que rama") ||
-    msgLower.includes("en qué rama") ||
-    msgLower.includes("avance") ||
-    msgLower.includes("progreso") ||
-    msgLower.includes("muéstrame") ||
-    msgLower.includes("muestrame") ||
-    msgLower.includes("hasta donde") ||
-    msgLower.includes("donde continuar") ||
-    msgLower.includes("dónde continuar")
-  ) return "SHOW_MAP";
-
-  // AYUDA
-  if (
-    msgLower.includes("ayuda") ||
-    msgLower.includes("no entiendo") ||
-    msgLower.includes("explica") ||
-    msgLower.includes("qué sigue") ||
-    msgLower.includes("que sigue")
-  ) return "HELP";
-
-  // AVANZAR/EMPEZAR ETAPA 4
-  if (isAdvanceToStage4Message(msgLower)) return "ADVANCE_STAGE";
-
-  // CERRAR RAMA
+  // Confirmación explícita de cierre de rama.
   if (isCloseBranchConfirm(msgLower)) return "CLOSE_BRANCH";
 
-  // MENSAJE NO CAUSAL (control/navegación)
-  if (isNonCausalMessage(msgLower)) return "NON_CAUSAL";
+  // Avance, mapa o "¿qué me falta?" (sin confundirlo con una causa que menciona un mapa o un
+  // resumen).
+  if (isProgressRequest(msgLower)) return "SHOW_MAP";
+
+  const whyIntent = classifyWhyIntent(msgLower);
+
+  if (whyIntent === "ask_guidance" || whyIntent === "ask_example") return "HELP";
+  if (whyIntent === "switch_context" || whyIntent === "meta_process") return "NON_CAUSAL";
+
+  // AVANZAR/EMPEZAR ETAPA 4 (solo pesa antes de empezar el Ishikawa)
+  if (isAdvanceToStage4Message(msgLower)) return "ADVANCE_STAGE";
+
+  // El intérprete es permisivo: un mensaje que no pide ayuda, no navega ni pregunta por el
+  // proceso es una causa o un porqué, sin necesidad del clasificador por IA.
+  if (whyIntent === "answer_why") return isNonCausalMessage(msgLower) ? "NON_CAUSAL" : "CAUSE_OR_WHY";
 
   return "UNKNOWN";
 }
@@ -1681,7 +1754,6 @@ function resolveIshikawaTurnAction(args: {
   intent: IshikawaIntent;
 }) : IshikawaTurnAction {
   const text = (args.studentMessage ?? "").trim();
-  const lower = text.toLowerCase();
   const state = ensureDefaultCategoriesIfEmpty(args.state);
   const active = findActiveNodes(state);
   const hasProblem =
@@ -1694,6 +1766,10 @@ function resolveIshikawaTurnAction(args: {
   const whyIntent = classifyWhyIntent(text);
   const alreadyInIshikawa = hasAnyIshikawaWork(state);
 
+  // Solo la confirmación explícita (determinista) pide cerrar; la etiqueta CLOSE_BRANCH del
+  // clasificador por IA no basta.
+  const closeRequested = whyIntent === "close_request";
+
   if (!hasProblem) return "capture_problem";
 
   if (args.intent === "SHOW_MAP") return "show_map";
@@ -1703,15 +1779,15 @@ function resolveIshikawaTurnAction(args: {
   }
 
   if (active?.sc) {
+    if (closeRequested) return "close_branch";
     if (whyIntent === "switch_context") return "switch_category";
     if (whyIntent === "meta_process") return "ask_meta_inside_branch";
     if (whyIntent === "ask_guidance" || whyIntent === "ask_example") {
       return "ask_help_inside_branch";
     }
 
-    if (whyIntent === "answer_why" && !isNonCausalMessage(text)) {
-      return "capture_why_answer";
-    }
+    // Todo lo demás es una respuesta al porqué: se captura y la calidad decide si sirve.
+    if (whyIntent === "answer_why") return "capture_why_answer";
 
     return "fallback_llm";
   }
@@ -1728,7 +1804,7 @@ function resolveIshikawaTurnAction(args: {
     return active?.mc ? "ask_help_inside_branch" : "fallback_llm";
   }
 
-  if (args.intent === "CLOSE_BRANCH") {
+  if (closeRequested) {
     return "close_branch";
   }
 
@@ -1739,8 +1815,11 @@ function resolveIshikawaTurnAction(args: {
   return "fallback_llm";
 }
 
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
 
-export async function POST(req: Request) {
+async function handlePost(req: Request) {
   try {
     const authed = await requireUser(req);
 
@@ -1783,11 +1862,199 @@ export async function POST(req: Request) {
     }
 
     const studentMessage = parsedBody.data.studentMessage;
-    const ishikawaState = parsedBody.data.ishikawaState;
+    const chatId = parsedBody.data.chatId;
+
+    // Propiedad del chat verificada en el servidor (mismo mecanismo que ishikawa/state). Si el
+    // chat no es del usuario, se corta aquí: no se lee ni se escribe nada.
+    const ownership = await assertChatOwner(userId, chatId);
+    if (!ownership.ok) {
+      return failResponse(ownership.code, ownership.message, ownership.status);
+    }
+
+    const stored = await loadStoredIshikawaState(userId, chatId);
+    if (!stored.ok) {
+      console.error("[ISHIKAWA] lectura del estado guardado", stored.error);
+      return failResponse("INTERNAL", "No se pudo leer el estado guardado de Ishikawa.", 500);
+    }
+
+    // closure, rejectedWhyAttempts y reformulateWhy se leen de la base, no del cuerpo: lo que
+    // mande el cliente en esos campos se descarta antes de que el gate decida.
+    const ishikawaState = hydrateServerFields(
+      clearWhysReplaceFlags(parsedBody.data.ishikawaState),
+      stored.value.serverSource
+    );
+    // Registro de raíces y pregunta pendiente siempre explícitos: al guardar, un campo
+    // omitido conserva el valor anterior (así la pregunta se cierra escribiendo null).
+    ishikawaState.rootCauses = parseRootRegistry(ishikawaState.rootCauses);
+    ishikawaState.pendingRootMatch = parsePendingRootMatch(ishikawaState.pendingRootMatch);
+    const serverFieldsAtStart = serverFieldsFingerprint(ishikawaState);
+
+    // Respuesta de un turno. Si el turno cambió campos del servidor, antes de responder se
+    // escriben en plan_stage_states: es la escritura durable, porque el guardado posterior
+    // del cliente conserva esos campos de lo almacenado. Lleva además las señales de UI.
+    const okTurn = async (
+      payload: { assistantMessage: string; updates: { nextState: IshikawaState } },
+      signals: { branchJustClosed?: boolean; rootQuestionShown?: boolean } = {}
+    ) => {
+      const nextState = payload.updates.nextState;
+
+      // Pregunta pendiente de causa raíz repetida: no traba la conversación, pero se vuelve a
+      // mostrar al final de cada respuesta hasta que el estudiante la conteste.
+      const pendingQuestion = parsePendingRootMatch(nextState.pendingRootMatch);
+      const assistantMessage =
+        pendingQuestion && !signals.rootQuestionShown
+          ? `${payload.assistantMessage}\n\n${buildRootQuestionReminder(nextState, pendingQuestion, "appended")}`
+          : payload.assistantMessage;
+
+      if (serverFieldsFingerprint(nextState) !== serverFieldsAtStart) {
+        // Se relee justo antes de escribir para no pisar un guardado intermedio del cliente.
+        const fresh = await loadStoredIshikawaState(userId, chatId);
+        const saved = fresh.ok
+          ? await writeIshikawaStateRow(
+              userId,
+              chatId,
+              compactIshikawaState(mergeAssistantIshikawaState(fresh.value.exact, nextState))
+            )
+          : fresh;
+
+        if (!saved.ok) {
+          console.error("[ISHIKAWA] escritura de campos del servidor", saved.error);
+          return failResponse(
+            "INTERNAL",
+            "No pude guardar el avance de esta rama. Intenta de nuevo.",
+            500
+          );
+        }
+      }
+
+      return ok({
+        assistantMessage,
+        updates: payload.updates,
+        ui: buildIshikawaTurnUi(nextState, { branchJustClosed: signals.branchJustClosed }),
+      });
+    };
     const caseContext = parsedBody.data.caseContext ?? null;
     const stage1Summary = parsedBody.data.stage1Summary ?? null;
-    const brainstormState = parsedBody.data.brainstormState ?? null;
     const recentMessages = parsedBody.data.recentMessages ?? [];
+    const turnNow = new Date().toISOString();
+
+    // Contexto del caso para los prompts (rubro, productos, áreas, FODA y lluvia de ideas). Se
+    // lee de la base por el usuario de la sesión la primera vez que un prompt lo necesita; si
+    // esa lectura no trae el contexto del caso, se usa el que mandó el cliente.
+    let promptContextPromise: Promise<IshikawaPromptContext> | null = null;
+    const getPromptContext = (): Promise<IshikawaPromptContext> => {
+      if (!promptContextPromise) {
+        promptContextPromise = loadIshikawaContextSources(userId, chatId).then((sources) =>
+          buildIshikawaPromptContext({
+            problem: problemTextOf(ishikawaState),
+            caseContext: sources.caseContext ?? caseContext,
+            foda: sources.foda,
+            brainstorm: sources.brainstorm,
+          })
+        );
+      }
+      return promptContextPromise;
+    };
+
+    // Comparación de una raíz nueva contra las candidatas del registro (una llamada a Gemini,
+    // temperatura baja). Solo recibe los textos de las raíces, sin contexto del caso.
+    const matchRoots: RootMatcher = async ({ newRoot, candidates }) => {
+      try {
+        const raw = await geminiText({
+          system: ROOT_MATCH_SYSTEM,
+          prompt: buildRootMatchPrompt(newRoot, candidates),
+          temperature: 0.1,
+        });
+        return interpretRootMatchResponse(raw, candidates.map((candidate) => candidate.id));
+      } catch {
+        return null;
+      }
+    };
+
+    // Raíz de una rama recién cerrada contra el registro: repetida, nueva o pregunta.
+    const resolveRoot = (state: IshikawaState, path: RootPath) =>
+      resolveBranchRoot(
+        {
+          state,
+          path,
+          now: turnNow,
+          newId: randomUUID,
+          // Con otra pregunta abierta no se consulta ni se pisa: la raíz se compara después.
+          canAsk: parsePendingRootMatch(state.pendingRootMatch) === null,
+        },
+        matchRoots
+      );
+
+    // Decisiones deterministas del comienzo del turno (sin Gemini): respuesta a la pregunta de
+    // causa raíz repetida, retomar una rama, avance, pasar de etapa y, con una subcausa abierta,
+    // un acuse. La confirmación de cierre y la respuesta al porqué siguen más abajo.
+    const early = routeIshikawaTurn({ state: ishikawaState, message: studentMessage });
+    logIshikawaDebug("EARLY_ROUTE", {
+      studentMessage,
+      route: early.kind,
+      cursor: ishikawaState.cursor ?? null,
+    });
+
+    if (early.kind === "root_answer") {
+      const resolved = answerPendingRootMatch(ishikawaState, early.answer);
+      if (resolved.kind !== "no_pending") {
+        // Raíces que se cerraron mientras la pregunta estaba abierta: ahora se comparan.
+        const deferred = await resolveDeferredRootQuestion(
+          { state: resolved.nextState, now: turnNow },
+          matchRoots
+        );
+        const followUpQuestion =
+          deferred.kind === "question"
+            ? buildRootQuestion(deferred.nextState, deferred.entry.canonicalText, deferred.candidate, deferred.reason)
+            : null;
+
+        return okTurn(
+          {
+            assistantMessage: buildRootAnswerMessage(resolved, {
+              followUpQuestion,
+              offer: unreviewedOffer(deferred.nextState),
+            }),
+            updates: { nextState: deferred.nextState },
+          },
+          { rootQuestionShown: followUpQuestion !== null }
+        );
+      }
+    }
+
+    if (early.kind === "root_reminder") {
+      const pendingQuestion = parsePendingRootMatch(ishikawaState.pendingRootMatch);
+      if (pendingQuestion) {
+        return okTurn(
+          {
+            assistantMessage: buildRootQuestionReminder(ishikawaState, pendingQuestion, "only"),
+            updates: { nextState: ishikawaState },
+          },
+          { rootQuestionShown: true }
+        );
+      }
+    }
+
+    if (early.kind === "resume") {
+      return okTurn(buildResumeResponse(ensureDefaultCategoriesIfEmpty(ishikawaState), early.request));
+    }
+
+    if (early.kind === "progress") {
+      return okTurn(buildMapResponse(ishikawaState));
+    }
+
+    if (early.kind === "stage_advance") {
+      return okTurn({
+        assistantMessage: buildStageAdvanceMessage(ishikawaState),
+        updates: { nextState: ishikawaState },
+      });
+    }
+
+    if (early.kind === "reprompt") {
+      return okTurn({
+        assistantMessage: sanitizeStudentPlaceholder(buildActiveBranchReprompt(ishikawaState), preferredFirstName),
+        updates: { nextState: ishikawaState },
+      });
+    }
 
     const msgLower = studentMessage.trim().toLowerCase();
 
@@ -1811,7 +2078,7 @@ export async function POST(req: Request) {
     if (intent === "UNKNOWN") {
       const { assistantMessage, nextState } = buildUnknownIntentMessage(ishikawaState);
 
-      return ok({
+      return okTurn({
         assistantMessage,
         updates: { nextState },
       });
@@ -1833,19 +2100,145 @@ export async function POST(req: Request) {
       ishikawaState.problem = { text: ctxProblem.trim() };
     }
 
-    if (turnAction === "show_map") {
-      const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
-      const currentCategoryName = getCategoryDisplayName(nextState, nextState.cursor?.categoryId);
-
-      const followUp =
-        currentCategoryName
-          ? `\n\n👉 Si quieres, podemos continuar ahora mismo en **${currentCategoryName}** agregando otra causa principal.`
-          : "";
-
-      return ok({
-        assistantMessage: buildIshikawaMap(nextState) + followUp,
-        updates: { nextState },
+    // Juicio de accionabilidad de una rama (una llamada a Gemini), con el problema del caso.
+    const judgeBranch = (branch: BranchForJudge) =>
+      judgeWhyActionability({
+        problem:
+          typeof ishikawaState.problem === "string"
+            ? ishikawaState.problem
+            : ishikawaState.problem?.text ?? "",
+        ...branch,
       });
+
+    const respondWith = (
+      message: string,
+      state: IshikawaState,
+      signals?: { branchJustClosed?: boolean; rootQuestionShown?: boolean }
+    ) =>
+      okTurn(
+        {
+          assistantMessage: sanitizeStudentPlaceholder(message, preferredFirstName),
+          updates: { nextState: state },
+        },
+        signals
+      );
+
+    // Redacción de un turno de la ruta rápida (la decisión es pura: resolveFastPathWhyTurn).
+    // null si no hay subcausa abierta: el turno sigue por el camino general.
+    const renderFastPath = async (
+      fastPath: FastPathWhyOutcome,
+      turnState: IshikawaState,
+      answerRaw: string
+    ) => {
+      switch (fastPath.kind) {
+        case "switch_category": {
+          // Cambio de contexto/categoría: no se trata como causa.
+          const switchResponse = buildSwitchCategoryResponse(
+            turnState,
+            detectExplicitCategoryId(turnState, answerRaw)
+          );
+
+          return okTurn({
+            assistantMessage: switchResponse.assistantMessage,
+            updates: { nextState: switchResponse.nextState },
+          });
+        }
+
+        case "meta": {
+          // Consulta meta o navegación residual: se responde según la rama activa.
+          const meta = buildActiveBranchMetaResponse({ state: turnState, studentMessage: answerRaw });
+
+          return okTurn({
+            assistantMessage: meta.assistantMessage,
+            updates: { nextState: meta.nextState },
+          });
+        }
+
+        case "guided_help": {
+          // Pide ayuda o todavía no hay una respuesta: ayuda contextual, sin guardar nada.
+          const guidedHelp = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            ...fastPath.labels,
+            whys: fastPath.whys,
+            maxWhyDepth: MAX_WHY_DEPTH,
+            rejectedAttempts: activeRejectedAttempts(turnState),
+            context: await getPromptContext(),
+          });
+
+          return respondWith(guidedHelp || buildClarifyWhyMessage(answerRaw), turnState);
+        }
+
+        case "blocked":
+          // Rechazo por calidad: el candidato no se guarda ni sube la profundidad.
+          return respondWith(buildBlockedWhyMessage(fastPath.reason, fastPath.hint), fastPath.nextState);
+
+        case "escalate": {
+          // Varios intentos fallidos seguidos: se escala a formulaciones para elegir.
+          let hypothesesHelp = "";
+          try {
+            hypothesesHelp = String(
+              (await llmText(
+                buildBranchHypothesesPrompt({
+                  situation: "repeated_rejections",
+                  ...fastPath.labels,
+                  whys: activeBranchPrompt(fastPath.nextState)?.whys ?? [],
+                  studentMessage: answerRaw,
+                  rejectedAttempts: REJECTED_WHY_ATTEMPTS_LIMIT,
+                  context: await getPromptContext(),
+                })
+              )) ?? ""
+            ).trim();
+          } catch {
+            hypothesesHelp = "";
+          }
+
+          return respondWith(
+            hypothesesHelp || buildBlockedWhyMessage(fastPath.reason, fastPath.hint),
+            fastPath.nextState
+          );
+        }
+
+        case "closed": {
+          const root = await resolveRoot(fastPath.nextState, fastPath.path);
+
+          return respondWith(
+            buildBranchClosedMessage({
+              rootCause: fastPath.rootCause,
+              mainCauseName: fastPath.labels.mainCauseName,
+              reason: fastPath.reason,
+              root,
+              offer: unreviewedOffer(root.nextState),
+            }),
+            root.nextState,
+            { branchJustClosed: true, rootQuestionShown: root.kind === "question" }
+          );
+        }
+
+        case "reformulate":
+          // No se agrega un porqué más: el siguiente reemplaza al último.
+          return respondWith(buildReformulateWhyMessage(fastPath.hint, fastPath.lastWhy), fastPath.nextState);
+
+        case "ask_next": {
+          const guidedMessage = await buildGuidedWhyStep({
+            studentMessage: answerRaw,
+            ...fastPath.labels,
+            whys: fastPath.whys,
+            maxWhyDepth: MAX_WHY_DEPTH,
+            hint: fastPath.hint,
+            rejectedAttempts: activeRejectedAttempts(fastPath.nextState),
+            context: await getPromptContext(),
+          });
+
+          return respondWith(guidedMessage || buildClarifyWhyMessage(answerRaw), fastPath.nextState);
+        }
+
+        case "no_active_subcause":
+          return null;
+      }
+    };
+
+    if (turnAction === "show_map") {
+      return okTurn(buildMapResponse(ishikawaState));
     }
 
     // 0) Si el estudiante está confirmando avanzar a Etapa 4, damos introducción y arrancamos
@@ -1857,7 +2250,7 @@ export async function POST(req: Request) {
             ? ishikawaState.problem
             : ishikawaState.problem?.text ?? "";
 
-        return ok({
+        return okTurn({
         assistantMessage:
             "✅ **Listo, pasamos a la Etapa 4: Ishikawa + 5 Porqués.**\n\n" +
             "**¿Qué haremos?** Ordenaremos causas por categorías (6M) y profundizaremos con “¿por qué?” hasta llegar a una causa raíz.\n\n" +
@@ -1872,6 +2265,61 @@ export async function POST(req: Request) {
         updates: { nextState },
         });
 
+    }
+
+    // Confirmación de cierre ("cerremos", "ok, cerrar"): pasa por el gate de calidad. Solo
+    // cierra con veredicto accionable explícito; si no, explica qué falta sin cerrar.
+    if (turnAction === "close_branch") {
+      const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
+      const closeOutcome = await resolveCloseConfirmation(
+        { state: nextState, now: turnNow },
+        judgeBranch
+      );
+
+      if (closeOutcome.kind === "closed") {
+        const root = await resolveRoot(closeOutcome.nextState, closeOutcome.path);
+
+        return okTurn(
+          {
+            assistantMessage: sanitizeStudentPlaceholder(
+              buildBranchClosedMessage({
+                rootCause: closeOutcome.rootCause,
+                mainCauseName: closeOutcome.labels.mainCauseName,
+                reason: closeOutcome.reason,
+                root,
+                offer: unreviewedOffer(root.nextState),
+              }),
+              preferredFirstName
+            ),
+            updates: { nextState: root.nextState },
+          },
+          { branchJustClosed: true, rootQuestionShown: root.kind === "question" }
+        );
+      }
+
+      if (closeOutcome.kind === "not_ready") {
+        return okTurn({
+          assistantMessage: sanitizeStudentPlaceholder(
+            buildCloseNotReadyMessage(closeOutcome),
+            preferredFirstName
+          ),
+          updates: { nextState: closeOutcome.nextState },
+        });
+      }
+
+      // Sin subcausa abierta no hay rama que cerrar: se sigue en la categoría actual.
+      const categoryId = nextState.cursor?.categoryId;
+      if (categoryId) {
+        const catName =
+          nextState.categories.find((c) => c.id === categoryId)?.name ?? "la categoría actual";
+
+        return okTurn({
+          assistantMessage:
+            `Ahora mismo no hay una subcausa abierta que cerrar.\n` +
+            `Para completar **${catName}**, dime otra **causa principal** (otra rama) dentro de la misma categoría.`,
+          updates: { nextState: { ...nextState, cursor: { categoryId } } },
+        });
+      }
     }
 
     // ...después de validar studentMessage e ishikawaState
@@ -1890,31 +2338,23 @@ export async function POST(req: Request) {
     );
 
     const activeNodes = findActiveNodes(ishikawaState);
+    const normalizedMessage = normalizeIntentText(studentMessage);
 
-    if (
-      activeNodes?.sc &&
-      turnAction === "fallback_llm" &&
-      classifyWhyIntent(studentMessage) === "unclear"
-    ) {
-      const nextState = ensureDefaultCategoriesIfEmpty(ishikawaState);
-
-      return ok({
-        assistantMessage: sanitizeStudentPlaceholder(
-          buildClarifyWhyMessage(studentMessage),
-          preferredFirstName
-        ),
-        updates: { nextState },
-      });
-    }
+    // Respuesta al porqué con una subcausa abierta (el intérprete ya la reconoció sin exigir
+    // frase causal). Antes de capturarla se descarta la navegación que las reglas no ven: una
+    // categoría nombrada con verbo de cambio ("cambiemos a Máquina") o, si el mensaje trae
+    // palabras de navegación, lo que diga el clasificador por IA, que solo puede sumar
+    // navegación, nunca convertir la respuesta en ayuda o consulta.
+    const captureCandidate =
+      Boolean(activeNodes?.sc) &&
+      turnAction === "capture_why_answer" &&
+      !looksLikeCategoryNavigationMessage(studentMessage, ishikawaState);
 
     const shouldRunContextualBranchIntent =
       Boolean(activeNodes?.sc) &&
-      (
-        Boolean(explicitSwitchCategoryId) ||
-        /(?:categoria|categoría|rama|sigamos|continuemos|pasemos|ahora|trabaj|vamos)/i.test(
-          studentMessage
-        )
-      );
+      (captureCandidate
+        ? CAPTURE_NAVIGATION_WORDS.test(normalizedMessage)
+        : Boolean(explicitSwitchCategoryId) || BRANCH_NAVIGATION_WORDS.test(normalizedMessage));
 
     const contextualBranchIntent = shouldRunContextualBranchIntent
       ? await classifyContextualBranchIntent({
@@ -1923,6 +2363,28 @@ export async function POST(req: Request) {
           recentMessages,
         })
       : null;
+
+    const navigationByAi =
+      contextualBranchIntent === "SWITCH_CATEGORY" || contextualBranchIntent === "CONTINUE_SAME_CATEGORY";
+
+    if (captureCandidate && !navigationByAi) {
+      // Se captura siempre por la ruta determinista, sea corta o larga: la calidad decide si
+      // sirve como causa (rechazo con pista) y el gate si la rama se cierra.
+      const nextState = ensureDefaultCategoriesIfEmpty(safeClone(ishikawaState));
+      const fastPath = await resolveFastPathWhyTurn(
+        { state: nextState, studentMessage, contextualIntent: null, now: turnNow },
+        judgeBranch
+      );
+
+      logIshikawaDebug("CAPTURE_WHY_ANSWER", {
+        studentMessage,
+        outcome: fastPath.kind,
+        cursor: nextState.cursor ?? null,
+      });
+
+      const rendered = await renderFastPath(fastPath, nextState, studentMessage.trim());
+      if (rendered) return rendered;
+    }
 
     logIshikawaDebug("BRANCH_CONTEXT", {
       shouldRunContextualBranchIntent,
@@ -1955,7 +2417,7 @@ export async function POST(req: Request) {
         cursorAfter: switchResponse.nextState.cursor ?? null,
       });
 
-      return ok({
+      return okTurn({
         assistantMessage: switchResponse.assistantMessage,
         updates: { nextState: switchResponse.nextState },
       });
@@ -1989,7 +2451,7 @@ export async function POST(req: Request) {
         if (!mainCauseCandidate) {
           nextState.cursor = { categoryId: cat.id };
 
-          return ok({
+          return okTurn({
             assistantMessage:
               `Perfecto. Continuemos dentro de **${cat.name}**.\n\n` +
               `Ahora dime **otra causa principal** de esa categoría que también esté contribuyendo al problema.\n\n` +
@@ -2009,7 +2471,7 @@ export async function POST(req: Request) {
           cat.mainCauses = [...(cat.mainCauses ?? []), newMain];
           nextState.cursor = { categoryId: cat.id, mainCauseId: newMain.id };
 
-          return ok({
+          return okTurn({
             assistantMessage:
               `Bien. Tomo **${mainCauseCandidate}** como una nueva **causa principal** dentro de **${cat.name}**.\n\n` +
               `Ahora vayamos un nivel más abajo: ¿**por qué ocurre** ${mainCauseCandidate.toLowerCase()} en tu caso?`,
@@ -2026,7 +2488,7 @@ export async function POST(req: Request) {
         if (existing) {
           nextState.cursor = { categoryId: cat.id, mainCauseId: existing.id };
 
-          return ok({
+          return okTurn({
             assistantMessage:
               `Esa causa ya la tenemos dentro de **${cat.name}**.\n\n` +
               `Sigamos profundizando esa misma rama: ¿**por qué ocurre** ${mainCauseCandidate.toLowerCase()} en tu caso?`,
@@ -2036,230 +2498,31 @@ export async function POST(req: Request) {
       }
     }
 
-    // ✅ FAST-PATH: si ya estamos en Ishikawa y el mensaje es corto, evitamos Gemini
+    // Ruta rápida para mensajes cortos con una subcausa abierta que no son una respuesta
+    // (navegación, consulta o ayuda): la decisión es pura y aquí solo se redacta. Las
+    // respuestas al porqué ya se capturaron arriba, sin importar su largo.
     if (alreadyInIshikawa && isShortFastPathCandidate(studentMessage)) {
       const nextState = ensureDefaultCategoriesIfEmpty(safeClone(ishikawaState));
-
-      // Caso 1: confirmación de cerrar rama (rápido) -> liberamos cursor a nivel categoría
-      if (isCloseBranchConfirm(studentMessage) && nextState.cursor?.categoryId) {
-        const cat = nextState.categories.find((c) => c.id === nextState.cursor?.categoryId);
-        const catName = cat?.name ?? "la categoría actual";
-
-        // Dejamos cursor solo en categoría (sin mainCauseId/subCauseId)
-        nextState.cursor = { categoryId: nextState.cursor.categoryId };
-
-        return ok({
-          assistantMessage:
-            `✅ Perfecto, cerramos esa rama como **causa raíz candidata**.\n` +
-            `Para completar **${catName}**, dime otra **causa principal** (otra rama) dentro de la misma categoría.`,
-          updates: { nextState },
-        });
-      }
-
-      // Caso 2: respuesta corta a un "¿por qué?" si hay subcausa activa
-      const active = findActiveNodes(nextState);
-      if (active?.sc) {
-        const sc = active.sc;
-        const whysArr = sanitizeWhyList(sc.whys);
-
-        const answerRaw = studentMessage.trim();
-        const whyIntent = classifyWhyIntent(answerRaw);
-
-        logIshikawaDebug("ACTIVE_BRANCH_FAST_PATH", {
-          answerRaw,
-          whyIntent,
-          contextualBranchIntent,
-          category: active.cat.name ?? null,
-          mainCause: active.mc.name ?? active.mc.text ?? null,
-          subCause: sc.name ?? sc.text ?? null,
-          currentWhyDepth: whysArr.length,
-        });
-
-        // 1) Cambio de contexto/categoría: no tratarlo como causa
-        if (
-          whyIntent === "switch_context" ||
-          contextualBranchIntent === "SWITCH_CATEGORY"
-        ) {
-          const switchResponse = buildSwitchCategoryResponse(
-            nextState,
-            detectExplicitCategoryId(nextState, answerRaw)
-          );
-
-          return ok({
-            assistantMessage: switchResponse.assistantMessage,
-            updates: { nextState: switchResponse.nextState },
-          });
-        }
-
-        // 2) Consulta meta del proceso: responder según la rama activa
-        if (
-            whyIntent === "meta_process" ||
-            contextualBranchIntent === "META_PROCESS"
-          ) {
-          const meta = buildActiveBranchMetaResponse({
-            state: nextState,
-            studentMessage: answerRaw,
-          });
-
-          return ok({
-            assistantMessage: meta.assistantMessage,
-            updates: { nextState: meta.nextState },
-          });
-        }
-
-        // 3) El estudiante está pidiendo ayuda o ejemplos, no respondiendo una causa
-        if (
-            whyIntent === "ask_guidance" ||
-            whyIntent === "ask_example" ||
-            contextualBranchIntent === "ASK_GUIDANCE"
-          ) {
-          const currentWhys = sanitizeWhyList(sc.whys);
-
-          const guidedHelp = await buildGuidedWhyStep({
-            studentMessage: answerRaw,
-            categoryName: active.cat.name ?? "Sin categoría",
-            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-            whys: currentWhys,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
-          });
-
-          return ok({
-            assistantMessage: sanitizeStudentPlaceholder(
-              guidedHelp || buildClarifyWhyMessage(answerRaw),
-              preferredFirstName
-            ),
-            updates: { nextState },
-          });
-        }
-
-        // 4) Mensaje de navegación/control residual
-        if (isNonCausalMessage(answerRaw)) {
-          const meta = buildActiveBranchMetaResponse({
-            state: nextState,
-            studentMessage: answerRaw,
-          });
-
-          return ok({
-            assistantMessage: meta.assistantMessage,
-            updates: { nextState: meta.nextState },
-          });
-        }
-        // 3) Muy vaga todavía -> pedir ayuda contextual real, no mensaje fijo
-        if (isVagueWhyAnswer(answerRaw)) {
-          const guidedHelp = await buildGuidedWhyStep({
-            studentMessage: answerRaw,
-            categoryName: active.cat.name ?? "Sin categoría",
-            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-            whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
-          });
-
-          return ok({
-            assistantMessage: sanitizeStudentPlaceholder(
-              guidedHelp || buildClarifyWhyMessage(answerRaw),
-              preferredFirstName
-            ),
-            updates: { nextState },
-          });
-        }
-
-        // 4) Sanitizar antes de persistir
-        const cleanWhy = sanitizeWhyCandidate(answerRaw);
-        if (!cleanWhy) {
-          const guidedHelp = await buildGuidedWhyStep({
-            studentMessage: answerRaw,
-            categoryName: active.cat.name ?? "Sin categoría",
-            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-            whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
-          });
-
-          return ok({
-            assistantMessage: sanitizeStudentPlaceholder(
-              guidedHelp || buildClarifyWhyMessage(answerRaw),
-              preferredFirstName
-            ),
-            updates: { nextState },
-          });
-        }
-
-        const answer = normalizeWhyText(cleanWhy);
-
-        // 5) Debe ser una causa accionable real, no texto meta
-        if (!isActionableWhyText(answer)) {
-          const guidedHelp = await buildGuidedWhyStep({
-            studentMessage: answerRaw,
-            categoryName: active.cat.name ?? "Sin categoría",
-            mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-            subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-            whys: whysArr,
-            maxWhyDepth: nextState.maxWhyDepth ?? 3,
-          });
-
-          return ok({
-            assistantMessage: sanitizeStudentPlaceholder(
-              guidedHelp || buildClarifyWhyMessage(answerRaw),
-              preferredFirstName
-            ),
-            updates: { nextState },
-          });
-        }
-
-        const alreadyExists = whysArr.some(
-          (w) => w.toLowerCase() === answer.toLowerCase()
-        );
-
-        if (!alreadyExists) {
-          whysArr.push(answer);
-        }
-
-        sc.whys = whysArr;
-
-        const depth = whysArr.length;
-        const max = nextState.maxWhyDepth ?? 3;
-
-        // Si ya llegamos a profundidad, proponemos cerrar
-        if (depth >= max) {
-          // liberamos subCauseId para permitir otra subcausa en la misma causa principal
-          nextState.cursor = { categoryId: active.cat.id, mainCauseId: active.mc.id };
-
-          return ok({
-            assistantMessage:
-              `Bien, con esto ya llegamos a una causa raíz suficientemente clara dentro de esta línea.\n\n` +
-              `Voy a dejar cerrada esta subcausa como candidata dentro de **"${active.mc.name ?? active.mc.text ?? "esta causa"}"**.\n\n` +
-              `Ahora podemos hacer una de estas tres cosas:\n` +
-              `• profundizar otra subcausa en esta misma causa principal\n` +
-              `• pasar a otra categoría del Ishikawa\n` +
-              `• o, si ya lo ves suficiente, revisar si estamos listos para pasar a Pareto\n\n` +
-              `Dime cómo quieres continuar y te guío.`,
-            updates: { nextState },
-          });
-        }
-
-        // Si aún no llegamos, seguimos profundizando con ayuda contextual real
-        const guidedMessage = await buildGuidedWhyStep({
+      const answerRaw = studentMessage.trim();
+      const fastPath = await resolveFastPathWhyTurn(
+        {
+          state: nextState,
           studentMessage,
-          categoryName: active.cat.name ?? "Sin categoría",
-          mainCauseName: active.mc.name ?? active.mc.text ?? "Sin causa principal",
-          subCauseName: sc.name ?? sc.text ?? "Sin subcausa",
-          whys: whysArr,
-          maxWhyDepth: max,
-        });
+          contextualIntent: contextualBranchIntent,
+          now: turnNow,
+        },
+        judgeBranch
+      );
 
-        return ok({
-          assistantMessage: sanitizeStudentPlaceholder(
-            guidedMessage || buildClarifyWhyMessage(studentMessage),
-            preferredFirstName
-          ),
-          updates: { nextState },
-        });
-      }
+      logIshikawaDebug("ACTIVE_BRANCH_FAST_PATH", {
+        answerRaw,
+        outcome: fastPath.kind,
+        contextualBranchIntent,
+        cursor: nextState.cursor ?? null,
+      });
 
-      // Si no hay subcausa activa, NO hacemos fast-path (evitamos “inventar” flujo)
-      // Caemos al Gemini normal.
+      const rendered = await renderFastPath(fastPath, nextState, answerRaw);
+      if (rendered) return rendered;
     }
 
     // 1) TRANSICIÓN: SOLO si todavía NO empezamos Ishikawa
@@ -2298,38 +2561,20 @@ export async function POST(req: Request) {
         const mainName = active.mc.name ?? active.mc.text ?? "esta causa principal";
         const subName = active.sc.name ?? active.sc.text ?? "esta subcausa";
 
-        const currentWhys = sanitizeWhyList(active.sc.whys);
-        const lastWhy = currentWhys.length > 0 ? currentWhys[currentWhys.length - 1] : null;
-
-        const guidancePrompt = `
-    Eres un asesor académico guiando un análisis Ishikawa + 5 porqués.
-
-    El estudiante está dentro de una rama activa y pidió ayuda para formular mejor la causa raíz.
-    NO debes sacarlo del flujo ni preguntarle si quiere cambiar de categoría.
-    Debes ayudarlo a aterrizar la MISMA rama actual.
-
-    Contexto de la rama:
-    - Categoría: ${catName}
-    - Causa principal: ${mainName}
-    - Subcausa: ${subName}
-    - Último porqué registrado: ${lastWhy ?? "(ninguno)"}
-
-    Mensaje del estudiante:
-    "${studentMessage}"
-
-    Tu objetivo:
-    - interpretar qué quiso decir,
-    - ayudarle a aterrizar la causa,
-    - proponer 2 o 3 formulaciones plausibles y accionables si hace falta,
-    - mantener la conversación natural,
-    - terminar con una sola pregunta concreta para que el estudiante elija o precise.
-
-    Responde SOLO en texto, no JSON.
-    `;
+        const guidancePrompt = buildBranchHypothesesPrompt({
+          situation: "asked_help",
+          categoryName: catName,
+          mainCauseName: mainName,
+          subCauseName: subName,
+          whys: whyTexts(active.sc.whys),
+          studentMessage,
+          rejectedAttempts: active.sc.rejectedWhyAttempts ?? 0,
+          context: await getPromptContext(),
+        });
 
         const guidedHelp = await llmText(guidancePrompt);
 
-        return ok({
+        return okTurn({
           assistantMessage: sanitizeStudentPlaceholder(
             String(guidedHelp ?? "").trim(),
             preferredFirstName
@@ -2338,7 +2583,7 @@ export async function POST(req: Request) {
         });
       }
 
-      return ok({
+      return okTurn({
         assistantMessage:
           "Claro. Sigamos paso a paso dentro del Ishikawa.\n\n" +
           "Cuéntame una causa concreta del problema y yo te ayudo a ubicarla y profundizarla con los porqués.",
@@ -2346,30 +2591,30 @@ export async function POST(req: Request) {
       });
     }
 
-    const problemText =
-      typeof ishikawaState.problem === "string"
-        ? ishikawaState.problem
-        : ishikawaState.problem?.text ?? "";
-
-    const minimalContext = {
-      product: getStringField(caseContext, "product", "producto"),
-      sector: getStringField(caseContext, "sector", "rubro"),
-      areas: getStringField(caseContext, "areas", "area"),
-      problem: problemText || null,
-      cursor: ishikawaState.cursor ?? null,
-    };
+    // Contexto real del caso (rubro, productos, áreas, FODA y lluvia de ideas, leídos por el
+    // servidor). Las instrucciones de coherencia solo nombran lo que el prompt recibe.
+    const promptContext = await getPromptContext();
+    const earlierStagesAvailable = [
+      hasFoda(promptContext) ? "el FODA (Etapa 2)" : null,
+      hasBrainstorm(promptContext) ? "la lluvia de ideas (Etapa 3)" : null,
+    ].filter((item): item is string => item !== null);
+    const coherenceWith =
+      earlierStagesAvailable.length > 0
+        ? `el contexto del caso, la problemática y ${earlierStagesAvailable.join(" y ")}`
+        : "el contexto del caso y la problemática";
 
     const system = `
     Eres OPT-IA (asesor académico) guiando la ETAPA 4: DIAGRAMA ISHIKAWA + 5 POR QUÉS.
 
     Objetivo:
-    - Construir un Ishikawa coherente con el caso y con la Etapa 3 (Brainstorm).
+    - Construir un Ishikawa coherente con ${coherenceWith}.
     - Profundizar con "¿por qué?" hasta llegar a causas raíz (registradas como lista whys[] dentro de una subcausa).
 
     Reglas de interacción:
     - Conversación natural (sin formularios), breve y clara.
     - NO inventes datos del caso. Si falta info, pregunta 1 cosa concreta.
-    - Mantén coherencia con: contexto del caso + problemática + brainstorm.
+    - Mantén coherencia con ${coherenceWith}.
+    - ${NO_PROPER_NAMES_RULE}
     - Tu salida SIEMPRE debe ser JSON válido y SOLO JSON (sin markdown).
     - Si el estudiante pide "pasar a etapa 4", "qué sigue" o pide explicación del Ishikawa, responde con una explicación corta (para novatos) y cómo trabajaremos, y devuelve nextState sin cambios.
     - Aunque no haya cambios en el diagrama, SIEMPRE devuelve JSON con assistantMessage y updates.nextState válido.
@@ -2392,15 +2637,15 @@ export async function POST(req: Request) {
     - categories[]: categorías (ideal 6M: Hombre, Máquina, Método, Material, Medida, Entorno).
     - mainCauses[] dentro de cada categoría.
     - subCauses[] dentro de cada causa principal.
-    - whys[] dentro de cada subcausa para registrar los “por qué” (profundidad 3 preferida, máximo maxWhyDepth).
+    - whys[] dentro de cada subcausa para registrar los “por qué” (mínimo ${MIN_WHY_DEPTH} antes de cerrar una rama, máximo ${MAX_WHY_DEPTH}).
 
     Mínimos (orientativos, guía):
     - minCategories: ideal 5 (6M).
     - Por categoría: mínimo 3 causas principales. 
     - Si el estudiante tiene otra idea sólida, llegar a 4 (preguntar explícitamente si desea agregar una 4ta).
     - Por causa principal: 2-3 subcausas.
-    - Profundidad: 3 porqués como base; llegar a 4–5 SOLO si aún no es causa raíz accionable.
-    - Por subcausa: completar whys[] cuando el estudiante responda "por qué" (1 a maxWhyDepth).
+    - Profundidad: ${MIN_WHY_DEPTH} porqués como base; llegar a ${MIN_WHY_DEPTH + 1}–${MAX_WHY_DEPTH} SOLO si aún no es causa raíz accionable.
+    - Por subcausa: completar whys[] cuando el estudiante responda "por qué" (1 a ${MAX_WHY_DEPTH}).
 
     Tu tarea con cada mensaje del estudiante:
     1) Clasifica la intención del mensaje:
@@ -2414,16 +2659,15 @@ export async function POST(req: Request) {
     3) Si el estudiante no indica categoría, ubícala tú en la mejor categoría 6M.
     4) Si el mensaje es ambiguo, haz 1 pregunta corta y no cambies el estado.
     5) Si acabas de agregar una causa principal o subcausa nueva, actualiza cursor para apuntar a esa rama (categoryId + mainCauseId) y haz la primera pregunta de “¿por qué?”.
-    6) Antes de cambiar de rama, intenta llegar a al menos 3 respuestas en whys[] para una subcausa importante.
+    6) Antes de cambiar de rama, intenta llegar a al menos ${MIN_WHY_DEPTH} respuestas en whys[] para una subcausa importante.
     7) Para la categoría actual, completa mínimo minMainCausesPerCategory causas principales antes de proponer cambiar a otra categoría.
         Si el estudiante menciona una idea que cae en otra categoría mientras la categoría actual aún no llega al mínimo:
         Reconoce la idea (sin guardarla)
         Pregunta si la anotamos para después
         Pide una causa principal adicional para completar la categoría actual.
     8) Cierre de rama y continuación (OBLIGATORIO):
-        - Considera “rama lista” cuando:
-        (a) una subcausa clave ya tiene 2–3 porqués y la última respuesta es accionable/sistémica, o
-        (b) ya se alcanzó maxWhyDepth.
+        - Considera “rama lista” SOLO cuando una subcausa clave ya tiene al menos ${MIN_WHY_DEPTH} porqués y la última respuesta es accionable/sistémica (algo que la empresa puede cambiar: un proceso, un control, una capacitación o un responsable).
+        - Llegar al tope de ${MAX_WHY_DEPTH} porqués NO deja lista la rama: si en el tope la última respuesta todavía no es accionable, NO cierres ni limpies el cursor; pide al estudiante que reformule ese último porqué (sin agregar otro).
         - Cuando una rama esté lista:
         1) Propón cerrar la causa raíz candidata (resumen 1 línea).
         2) Limpia el cursor para permitir ampliar el diagrama en la MISMA categoría:
@@ -2441,11 +2685,11 @@ export async function POST(req: Request) {
     1) NO lo guardes aún.
     2) Pregunta si desea: (1) seguir con la rama actual (recomendado) o (2) cambiar de rama.
     3) Solo si confirma (2), entonces actualiza cursor hacia la nueva categoría/causa y recién agrega esa nueva causa.
-    - Objetivo docente: profundiza con “¿por qué?” hasta registrar al menos 3 elementos en whys[] para una subcausa importante antes de cerrar la rama y permitir cambio.
+    - Objetivo docente: profundiza con “¿por qué?” hasta registrar al menos ${MIN_WHY_DEPTH} elementos en whys[] para una subcausa importante antes de cerrar la rama y permitir cambio.
     - En modo cursor activo, tu explicación debe referirse SOLO a la rama actual (no menciones otra categoría).
     - Cierre de causa raíz:
-    - NO es obligatorio llegar al 5º porqué.
-    - Si en 2–3 porqués ya aparece una causa sistémica accionable (ej: ausencia de estándar, mantenimiento inexistente, falta de método, falta de capacitación, falta de repuestos), propón cerrarla como "causa raíz candidata".
+    - NO es obligatorio llegar al ${MAX_WHY_DEPTH}º porqué.
+    - Si al llegar a ${MIN_WHY_DEPTH} porqués ya aparece una causa sistémica accionable (ej: ausencia de estándar, mantenimiento inexistente, falta de método, falta de capacitación, falta de repuestos), propón cerrarla como "causa raíz candidata".
     - Pregunta al estudiante si están de acuerdo en cerrarla y pasar a otra subcausa/rama.
 
 
@@ -2480,8 +2724,10 @@ export async function POST(req: Request) {
     "updates": { "nextState": { ...ishikawaState completo actualizado... } }
     }
 
-    Contexto mínimo:
-      ${JSON.stringify(minimalContext)}
+    Contexto del caso:
+    ${formatCaseContextBlock(promptContext, { foda: true, brainstorm: true })}
+
+      Cursor actual: ${JSON.stringify(ishikawaState.cursor ?? null)}
 
       Contexto conversacional reciente (máximo 6 mensajes):
       ${buildRecentMessagesDigest(recentMessages) || "(sin historial reciente)"}
@@ -2530,7 +2776,7 @@ Responde SOLO con JSON válido (sin markdown).
             ? `Ok, esto suena a **${catName}**. ¿Quieres que lo registremos como una causa principal en esa categoría?`
             : `Ok, entiendo la causa. Para ubicarla bien, dime si encaja mejor en: Hombre / Máquina / Método / Material / Medición / Entorno.`;
 
-        return ok({
+        return okTurn({
             assistantMessage: msg,
             updates: { nextState },
         });
@@ -2593,20 +2839,50 @@ Responde SOLO con JSON válido (sin markdown).
       }
     }
 
-    const merged = mergeIshikawaState(
-      ishikawaState,
-      parsed.updates.nextState as IshikawaState
+    // El LLM no escribe campos del servidor (closure, contadores, registro) ni cierra una
+    // rama soltando el cursor: si suelta la subcausa activa, el cierre se valida con el gate;
+    // si no pasa, el cursor se conserva y el mensaje pide lo que falta. Antes, los porqués
+    // guardados se restituyen tal cual y los que agregó el LLM pasan por el mismo criterio que
+    // una respuesta de la ruta rápida (prepareLlmTurnState), para que el gate decida sobre la
+    // cadena real y no sobre la que devolvió el LLM.
+    const prepared = prepareLlmTurnState(ishikawaState, parsed.updates.nextState as IshikawaState, turnNow);
+
+    const cursorGate = await resolveLlmCursorRelease(
+      { prevState: ishikawaState, mergedState: prepared.state, now: turnNow },
+      judgeBranch
     );
 
-    const sanitizedMerged = sanitizeIshikawaStateForWhyQuality(merged);
+    // Cierre validado: la raíz se resuelve contra el registro (repetida, nueva o pregunta).
+    const root =
+      cursorGate.kind === "closed" ? await resolveRoot(cursorGate.nextState, cursorGate.path) : null;
 
-    return ok({
-      assistantMessage: sanitizeStudentPlaceholder(
-        String(parsed.assistantMessage ?? ""),
-        preferredFirstName
-      ),
-      updates: { nextState: sanitizedMerged },
-    });
+    const llmMessage = String(parsed.assistantMessage ?? "");
+    const droppedNote = buildDroppedWhysNote(prepared.dropped);
+    const baseMessage = droppedNote ? `${llmMessage}\n\n${droppedNote}` : llmMessage;
+    const turnMessage =
+      cursorGate.kind === "kept_open"
+        ? buildCloseNotReadyMessage(cursorGate)
+        : cursorGate.kind === "closed" && root?.kind === "question"
+          ? buildBranchClosedMessage({
+              rootCause: cursorGate.rootCause,
+              mainCauseName: cursorGate.labels.mainCauseName,
+              reason: cursorGate.reason,
+              root,
+              offer: null,
+            })
+          : root?.kind === "repeated"
+            ? `${baseMessage}\n\n${buildRepeatedRootNote(root)}`
+            : baseMessage;
+
+    const finalState = root?.nextState ?? cursorGate.nextState;
+
+    return okTurn(
+      {
+        assistantMessage: sanitizeStudentPlaceholder(turnMessage, preferredFirstName),
+        updates: { nextState: finalState },
+      },
+      { branchJustClosed: cursorGate.kind === "closed", rootQuestionShown: root?.kind === "question" }
+    );
 
     } catch (err: unknown) {
     const authCode = getAuthErrorCode(err);

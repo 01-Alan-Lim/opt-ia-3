@@ -13,7 +13,6 @@ import { PremiumFlowShowcase } from "@/components/landing/PremiumFlowShowcase";
 import { LandingScrollSection } from "@/components/landing/LandingScrollSection";
 import { ClickSparkLite } from "@/components/landing/ClickSparkLite";
 import { MinimalIcon, type MinimalIconName } from "@/components/landing/MinimalIcon";
-import Magnet from "@/components/Magnet";
 import GlareHover from "@/components/GlareHover";
 import { cn } from "@/lib/utils";
 
@@ -193,35 +192,19 @@ export function LandingPage() {
               con IA académica y trazabilidad para revisión docente.
             </motion.p>
 
-            {/* CTAs — con magnetismo */}
+            {/* CTAs estáticos con feedback visual */}
             <motion.div
               variants={fadeUp}
-              className="mt-7 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center"
+              className="mt-7 flex flex-col items-stretch gap-4 sm:flex-row sm:items-center"
             >
-              <Magnet
-                padding={70}
-                magnetStrength={4}
-                disabled={!!shouldReduce}
-                wrapperClassName="w-full sm:w-auto"
-                innerClassName="w-full sm:w-auto"
-              >
-                <LoginButton className="rounded-2xl w-full transition-shadow hover:shadow-[0_0_32px_-6px_rgba(56,189,248,0.6)]" />
-              </Magnet>
+              <LoginButton className="w-full rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)] sm:w-auto" />
 
-              <Magnet
-                padding={70}
-                magnetStrength={5}
-                disabled={!!shouldReduce}
-                wrapperClassName="w-full sm:w-auto"
-                innerClassName="w-full sm:w-auto"
+              <a
+                href="#flujo"
+                className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 text-sm font-semibold text-slate-200 transition-[background-color,border-color,box-shadow] duration-200 ease-out hover:border-sky-300/35 hover:bg-white/[0.08] hover:shadow-[0_0_16px_-9px_rgba(56,189,248,0.45)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 sm:w-auto"
               >
-                <a
-                  href="#flujo"
-                  className="w-full sm:w-auto inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-5 h-12 text-sm font-semibold text-slate-200 hover:bg-white/10 hover:border-sky-400/40 hover:shadow-[0_0_24px_-8px_rgba(56,189,248,0.5)] transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
-                >
-                  Ver flujo metodológico
-                </a>
-              </Magnet>
+                Ver flujo metodológico
+              </a>
             </motion.div>
 
             {/* Mini-badges */}
@@ -427,9 +410,7 @@ export function LandingPage() {
               </p>
             </div>
             <div className="flex-shrink-0">
-              <Magnet padding={70} magnetStrength={4} disabled={!!shouldReduce}>
-                <LoginButton className="rounded-2xl transition-shadow hover:shadow-[0_0_32px_-6px_rgba(56,189,248,0.6)]" />
-              </Magnet>
+              <LoginButton className="rounded-2xl transition-[background-color,box-shadow] duration-200 ease-out hover:shadow-[0_0_18px_-8px_rgba(34,211,238,0.65)]" />
             </div>
           </div>
         </LandingScrollSection>

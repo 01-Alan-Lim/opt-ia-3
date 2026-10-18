@@ -10,6 +10,12 @@ import {
   mergeParetoCriteriaMonotonic,
   mergeParetoStringListMonotonic,
 } from "@/lib/plan/paretoParsing";
+import {
+  evaluateParetoCut,
+  mergeCriticalSelection,
+  normalizeEffectPercent,
+  normalizeJustification,
+} from "@/lib/plan/paretoCut";
 
 export const runtime = "nodejs";
 
@@ -39,8 +45,8 @@ type ParetoState = {
   selectedRoots: string[];
   criteria: ParetoCriterion[];
   criticalRoots: string[];
-  minSelected: number;
-  maxSelected: number;
+  criticalEffectPercent: number | null;
+  criticalJustification: string | null;
   step: ParetoStep;
 };
 
@@ -169,25 +175,22 @@ function hasWeights(state: ParetoState) {
   );
 }
 
-function ceil20Percent(n: number) {
-  return Math.max(1, Math.ceil(n * 0.2));
-}
-
 function resolveParetoStepFromState(state: ParetoState): ParetoStep {
   const selectedCount = Array.isArray(state.selectedRoots) ? state.selectedRoots.length : 0;
-  const minSelected =
-    Number.isFinite(state.minSelected) && state.minSelected > 0 ? state.minSelected : 10;
-  const maxSelected =
-    Number.isFinite(state.maxSelected) && state.maxSelected >= minSelected
-      ? state.maxSelected
-      : 15;
-
-  if (selectedCount < minSelected || selectedCount > maxSelected) return "select_roots";
+  // Pareto no tiene mínimo ni tope propio (CLAUDE.md): basta con tener causas cargadas.
+  if (selectedCount === 0) return "select_roots";
+  // Paso de revisión: se queda aquí hasta que el estudiante confirme su lista (o proponga criterios).
+  if (state.step === "select_roots" && state.criteria.length === 0) return "select_roots";
   if (!hasThreeCriteria(state)) return "define_criteria";
   if (!hasWeights(state)) return "set_weights";
 
-  const minCritical = ceil20Percent(selectedCount);
-  if (state.criticalRoots.length >= minCritical) return "done";
+  // Principio de Pareto (CLAUDE.md), no un 20% fijo.
+  const cut = evaluateParetoCut({
+    selectedCount,
+    criticalCount: state.criticalRoots.length,
+    effectPercent: state.criticalEffectPercent,
+  });
+  if (cut.ok) return "done";
   if (state.criticalRoots.length > 0) return "collect_critical";
 
   return state.step === "collect_critical" || state.step === "excel_work"
@@ -222,13 +225,6 @@ function normalizeStep(input: unknown): ParetoStep {
   return legacyMap[raw] ?? "select_roots";
 }
 
-function normalizePositiveInt(input: unknown, fallback: number): number {
-  const n = Number(input);
-  if (!Number.isFinite(n)) return fallback;
-  const rounded = Math.round(n);
-  return rounded > 0 ? rounded : fallback;
-}
-
 function normalizeParetoState(input: unknown): ParetoState {
   const source =
     typeof input === "object" && input !== null
@@ -236,18 +232,15 @@ function normalizeParetoState(input: unknown): ParetoState {
       : {};
 
   const roots = dedupeStrings(asStringArray(source.roots));
-  const minSelected = normalizePositiveInt(source.minSelected, 10);
-  const maxSelectedRaw = normalizePositiveInt(source.maxSelected, 15);
-  const maxSelected = Math.max(minSelected, maxSelectedRaw);
-
+  // Pareto no tiene mínimo ni tope propio (CLAUDE.md): recibe todas las raíces de Ishikawa.
+  // minSelected/maxSelected de estados antiguos se ignoran.
   const selectedRootsRaw = asStringArray(source.selectedRoots);
-  const selectedRootsBase =
-    selectedRootsRaw.length > 0 ? selectedRootsRaw : roots.slice(0, maxSelected);
+  const selectedRootsBase = selectedRootsRaw.length > 0 ? selectedRootsRaw : roots;
 
   const rootsSet = new Set(roots.map((item) => item.toLowerCase()));
   const selectedRoots = dedupeStrings(
     selectedRootsBase.filter((item) => rootsSet.size === 0 || rootsSet.has(item.toLowerCase()))
-  ).slice(0, maxSelected);
+  );
 
   const selectedSet = new Set(selectedRoots.map((item) => item.toLowerCase()));
   const criticalRoots = dedupeStrings(asStringArray(source.criticalRoots)).filter((item) =>
@@ -259,8 +252,8 @@ function normalizeParetoState(input: unknown): ParetoState {
     selectedRoots,
     criteria: normalizeCriteria(source.criteria),
     criticalRoots,
-    minSelected,
-    maxSelected,
+    criticalEffectPercent: normalizeEffectPercent(source.criticalEffectPercent),
+    criticalJustification: normalizeJustification(source.criticalJustification),
     step: normalizeStep(source.step),
   };
 }
@@ -309,7 +302,7 @@ function sanitizeParetoStateWithOfficialRoots(
 
   const selectedRoots = dedupeStrings(
     state.selectedRoots.filter((item) => officialSet.has(normalizeRootKey(item)))
-  ).slice(0, state.maxSelected);
+  );
 
   const selectedSet = new Set(selectedRoots.map((item) => normalizeRootKey(item)));
 
@@ -345,9 +338,8 @@ function mergeParetoState(baseRaw: unknown, incomingRaw: unknown): ParetoState {
     criteria: mergeParetoCriteriaMonotonic(base.criteria, incomingState.criteria, {
       createId: () => crypto.randomUUID(),
     }),
-    criticalRoots: mergeParetoStringListMonotonic(base.criticalRoots, incomingState.criticalRoots),
-    minSelected: hasOwn(incoming, "minSelected") ? incoming.minSelected : base.minSelected,
-    maxSelected: hasOwn(incoming, "maxSelected") ? incoming.maxSelected : base.maxSelected,
+    // Una entrega nueva del grupo crítico reemplaza la anterior (no se une).
+    ...mergeCriticalSelection(base, incomingState),
     step: hasOwn(incoming, "step") ? incoming.step : base.step,
   });
 

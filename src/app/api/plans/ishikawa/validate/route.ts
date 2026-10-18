@@ -9,6 +9,16 @@ import { PLAN_STAGE_ARTIFACTS_ON_CONFLICT } from "@/lib/db/planArtifacts";
 import { getPeriodKeyLaPaz } from "@/lib/time/periodKey";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
+import { MIN_ROOT_CAUSES, REQUIRE_REVIEWED_CLOSURE } from "@/lib/plan/rootCauseLimits";
+import { parsePendingRootMatch, parseRootRegistry, type IshikawaState } from "@/lib/plan/ishikawaTree";
+import { deriveRootCauses, type RootCauseSummary } from "@/lib/plan/ishikawaRoots";
+import { evaluateIshikawaReadiness } from "@/lib/plan/ishikawaReadiness";
+import {
+  describeUnreviewedBranch,
+  listUnreviewedBranches,
+  type UnreviewedBranch,
+} from "@/lib/plan/ishikawaResume";
 
 export const runtime = "nodejs";
 
@@ -35,37 +45,58 @@ function extractJsonSafe(text: string) {
   }
 }
 
-function countRootCandidates(state: any) {
-  const cats = Array.isArray(state?.categories) ? state.categories : [];
-  const roots: string[] = [];
+const MAX_PENDING_LISTED = 10;
 
-  for (const c of cats) {
-    const mains = Array.isArray(c?.mainCauses) ? c.mainCauses : [];
+// Faltan raíces: cuántas faltan y qué ramas quedan sin terminar, numeradas como en el chat para
+// que el estudiante pueda retomarlas ("retomar 2").
+function buildMissingRootsMessage(
+  summary: RootCauseSummary,
+  minRoots: number,
+  unreviewed: readonly UnreviewedBranch[]
+) {
+  const count = summary.roots.length;
 
-    for (const m of mains) {
-      const subs = Array.isArray(m?.subCauses) ? m.subCauses : [];
+  if (!REQUIRE_REVIEWED_CLOSURE) {
+    return (
+      `Aún hay pocas causas raíz/candidatas (${count}/${minRoots}). ` +
+      `Completa al menos ${minRoots} para pasar a Pareto.`
+    );
+  }
 
-      for (const s of subs) {
-        const whys = Array.isArray(s?.whys) ? s.whys : [];
+  const lines = [
+    `Aún hay pocas causas raíz revisadas (${count}/${minRoots}): faltan ${minRoots - count}.`,
+    "Una rama cuenta cuando la cerramos al confirmar que su último porqué es algo que la empresa puede cambiar. Una misma causa en varias ramas cuenta una sola vez.",
+  ];
 
-        const normalizedWhys = whys
-          .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-          .map((t: any) => (t ?? "").toString().trim())
-          .filter(Boolean);
-
-        if (normalizedWhys.length > 0) {
-          const last = normalizedWhys[normalizedWhys.length - 1];
-          if (last) roots.push(last);
-          continue;
-        }
-
-        const t = (s?.text ?? s?.name ?? "").toString().trim();
-        if (t) roots.push(t);
-      }
+  if (summary.entries.length > 0) {
+    lines.push("", "Causas raíz registradas (y en cuántas ramas aparece cada una):");
+    for (const entry of summary.entries.slice(0, MAX_PENDING_LISTED)) {
+      lines.push(`- ${entry.text} (${entry.occurrences} ${entry.occurrences === 1 ? "rama" : "ramas"})`);
+    }
+    if (summary.entries.length > MAX_PENDING_LISTED) {
+      lines.push(`- ... (+${summary.entries.length - MAX_PENDING_LISTED} más)`);
     }
   }
 
-  return roots;
+  if (unreviewed.length === 0) {
+    lines.push("", "No quedan ramas sin terminar: agrega causas nuevas y profundízalas con porqués.");
+    return lines.join("\n");
+  }
+
+  lines.push("", `Ramas sin terminar (${unreviewed.length}):`);
+  for (const branch of unreviewed.slice(0, MAX_PENDING_LISTED)) {
+    lines.push(`${branch.index}) ${describeUnreviewedBranch(branch)}`);
+  }
+  if (unreviewed.length > MAX_PENDING_LISTED) {
+    lines.push(`... (+${unreviewed.length - MAX_PENDING_LISTED} más)`);
+  }
+  lines.push(
+    "",
+    `Para retomar una, escribe en el chat **retomar ${unreviewed[0].index}** (o el nombre de la subcausa), ` +
+      "llévala hasta una causa que la empresa pueda cambiar y ciérrala, o agrega ramas nuevas."
+  );
+
+  return lines.join("\n");
 }
 
 function buildScore(state: any, roots: string[]) {
@@ -73,7 +104,7 @@ function buildScore(state: any, roots: string[]) {
   // - base: 40 si hay problemática
   // - +15 si cumple min categorías
   // - +15 si cumple min main/sub (si llega aquí, cumple)
-  // - +30 proporcional por raíces (10 → 30 pts, 15+ → 30 pts)
+  // - +30 proporcional por raíces (MIN_ROOT_CAUSES o más → 30 pts)
   const problemText =
     typeof state?.problem === "string"
       ? state.problem
@@ -89,7 +120,7 @@ function buildScore(state: any, roots: string[]) {
     (hasProblem ? 40 : 0) +
     (cats.length >= minCats ? 15 : 0) +
     15 +
-    Math.min(30, Math.round((Math.min(roots.length, 15) / 10) * 30));
+    Math.round((Math.min(roots.length, MIN_ROOT_CAUSES) / MIN_ROOT_CAUSES) * 30);
 
   return {
     total: Math.min(100, Math.max(0, total)),
@@ -221,93 +252,80 @@ export async function POST(req: Request) {
       return ok({ valid: false, message: "Falta la problemática (cabeza del Ishikawa)." });
     }
 
-    const cats = Array.isArray(s?.categories) ? s.categories : [];
+    // Pregunta abierta sobre causas raíz repetidas: la decide el estudiante antes de cerrar
+    // la etapa (la IA solo propone).
+    const pendingRoot = parsePendingRootMatch(s?.pendingRootMatch);
+    if (pendingRoot) {
+      const registry = parseRootRegistry(s?.rootCauses);
+      const provisional = registry.find((entry) => entry.id === pendingRoot.rootId)?.canonicalText;
+      const candidate = registry.find((entry) => entry.id === pendingRoot.candidateId)?.canonicalText;
 
-    // ✅ Nuevas reglas (si el state trae números, los usa; si no, usa defaults nuevos)
-    const minCats = typeof s?.minCategories === "number" ? s.minCategories : 3;
-    const minMain = typeof s?.minMainCausesPerCategory === "number" ? s.minMainCausesPerCategory : 2;
-    const minSub = typeof s?.minSubCausesPerMain === "number" ? s.minSubCausesPerMain : 1;
-    const minRoots =
-    typeof s?.minRootCandidates === "number"
-      ? s.minRootCandidates
-      : Math.max(1, minCats * minMain);
-
-    const isPlaceholder = (x: any) => {
-      const t = (x ?? "").toString().trim().toLowerCase();
-      return !t || t === "causa" || t === "subcausa";
-    };
-
-    const normalizeWhys = (sc: any) => {
-      const whys = Array.isArray(sc?.whys) ? sc.whys : [];
-      return whys
-        .map((w: any) => (typeof w === "string" ? w : (w?.text ?? "")))
-        .map((t: any) => (t ?? "").toString().trim())
-        .filter(Boolean);
-    };
-
-    const isSubValid = (sc: any) => {
-      const n = (sc?.name ?? sc?.text ?? "").toString().trim();
-      if (n && !isPlaceholder(n)) return true;
-      return normalizeWhys(sc).length > 0;
-    };
-
-    // ✅ Una causa principal “completa” = tiene ≥ minSub subcausas válidas
-    const isMainComplete = (mc: any) => {
-      const subs = Array.isArray(mc?.subCauses) ? mc.subCauses : [];
-      const validSubs = subs.filter(isSubValid);
-      return validSubs.length >= minSub;
-    };
-
-    // ✅ Conteo por categoría: cuántas causas principales completas tiene
-    const mainCompleteCount = (cat: any) => {
-      const mains = Array.isArray(cat?.mainCauses) ? cat.mainCauses : [];
-      return mains.filter(isMainComplete).length;
-    };
-
-    // ✅ Categoría completa = tiene ≥ minMain causas principales completas
-    const completeCats = cats.filter((c: any) => mainCompleteCount(c) >= minMain);
-
-    if (completeCats.length < minCats) {
-      const statusPerCat = cats
-        .map((c: any) => `${c?.name ?? "Categoría"}: ${mainCompleteCount(c)}/${minMain}`)
-        .join(" | ");
-
-      return NextResponse.json(
-        ok({
-          valid: false,
-          message:
-            `Aún no cumples el mínimo de categorías completas: ` +
-            `${completeCats.length}/${minCats}. ` +
-            `Debes completar ${minCats} categorías con ≥${minMain} causas principales completas (y cada una con ≥${minSub} subcausa válida).`,
-          detail: { statusPerCat },
-        })
-      );
+      return ok({
+        valid: false,
+        message:
+          provisional && candidate
+            ? `Antes de pasar a Pareto responde en el chat si "${provisional}" y "${candidate}" son la misma causa raíz (sí o no).`
+            : "Antes de pasar a Pareto responde en el chat la pregunta pendiente sobre causas raíz repetidas.",
+      });
     }
 
-    const roots = Array.from(
-      new Set(
-        countRootCandidates(s)
-          .map((r: any) => (r ?? "").toString().trim())
-          .filter(Boolean)
-      )
-    );
+    // Categorías completas: mismas reglas que el mapa del asistente y el cliente
+    // (ishikawaReadiness.ts). El mínimo de raíces no se lee del estado: estados antiguos
+    // guardaron 6 y permitían cerrar con menos.
+    const readiness = evaluateIshikawaReadiness(s);
+    const minRoots = MIN_ROOT_CAUSES;
+
+    if (readiness.completeCategories < readiness.requiredCategories) {
+      const statusPerCat = readiness.categories
+        .map(
+          (category) =>
+            `${category.name}: ${category.completeMainCauses}/${readiness.requiredMainCausesPerCategory}`
+        )
+        .join(" | ");
+
+      // ok() ya es la respuesta: envolverla en NextResponse.json la serializaba como {} y
+      // el cliente mostraba un error genérico en lugar de este mensaje.
+      return ok({
+        valid: false,
+        message:
+          `Aún no cumples el mínimo de categorías completas: ` +
+          `${readiness.completeCategories}/${readiness.requiredCategories}. ` +
+          `Debes completar ${readiness.requiredCategories} categorías con ≥${readiness.requiredMainCausesPerCategory} causas principales completas (y cada una con ≥${readiness.requiredSubCausesPerMain} subcausa válida).`,
+        detail: { statusPerCat },
+      });
+    }
+
+    // Derivación compartida con el cliente y el asistente. Con REQUIRE_REVIEWED_CLOSURE solo
+    // cuentan las ramas cerradas tras revisión (closure.reviewed === true).
+    const rootSummary = deriveRootCauses(s);
+    const roots = rootSummary.roots;
 
     if (roots.length < minRoots) {
-      return NextResponse.json(
-        ok({
-          valid: false,
-          message:
-            `Aún hay pocas causas raíz/candidatas (${roots.length}/${minRoots}). ` +
-            `Completa al menos ${minRoots} (recomendado 10–15) para pasar a Pareto.`,
-        })
-      );
+      const unreviewed = listUnreviewedBranches(s as IshikawaState);
+
+      return ok({
+        valid: false,
+        message: buildMissingRootsMessage(rootSummary, minRoots, unreviewed),
+        detail: {
+          rootsCount: roots.length,
+          minRoots,
+          pendingBranches: unreviewed.map(describeUnreviewedBranch),
+        },
+      });
     }
 
     // 3) preparar payload final + score estructural (se mantiene)
+    // Contrato con E5: roots sigue siendo string[] (canonicalText de cada causa raíz, una vez
+    // cada una). rootOccurrences guarda en cuántas ramas apareció cada una, para usarlo más
+    // adelante en Pareto; hoy E5 no lo lee.
     const finalPayload = {
       ...s,
       validatedAt: new Date().toISOString(),
       roots,
+      rootOccurrences: rootSummary.entries.map((entry) => ({
+        text: entry.text,
+        occurrences: entry.occurrences,
+      })),
     };
     const score = buildScore(s, roots);
 
@@ -415,26 +433,18 @@ ${JSON.stringify(
       if (existingEvalErr) {
         evalWarning = { warning: "Etapa 4 validada, pero no se pudo verificar evaluación existente." };
       } else if (!existingEval) {
-        const payloadEval = { status: "validated", rootsCount: roots.length };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: userId,
-          chat_id: chatId ?? stateChatId ?? null,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          // ✅ mantenemos lo que ya tenías:
-          status: "validated",
-          payload_json: payloadEval,
-
-          // ✅ añadimos rúbrica IA estilo E2/E3:
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId,
+            chatId: chatId ?? stateChatId ?? null,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 4 validada, pero no se pudo insertar la evaluación IA." };

@@ -15,6 +15,7 @@ import {
   loadLatestValidatedArtifact,
 } from "@/lib/plan/stageValidation";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { buildStageEvaluationRow } from "@/lib/plan/stageEvaluationRow";
 
 
 
@@ -120,7 +121,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         valid: false,
-        message: "Para validar Etapa 7 primero debes tener Pareto final validado con causas críticas (top 20%).",
+        message: "Para validar Etapa 7 primero debes tener Pareto final validado con su grupo crítico de causas.",
       });
     }
 
@@ -453,29 +454,18 @@ ${JSON.stringify(
         .maybeSingle();
 
       if (!existingEvalErr && !existingEval) {
-        const payloadEval = {
-          status: "validated",
-          initiativesCount: initiatives.length,
-          totalWeeks,
-          coveredRoots: Array.from(covered),
-        };
-
-        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert({
-          user_id: user.userId,
-          chat_id: chatId,
-          stage: STAGE,
-          artifact_type: FinalType,
-          artifact_id: finalArtifactId,
-          period_key: PERIOD_KEY,
-
-          status: "validated",
-          payload_json: payloadEval,
-
-          rubric_json: rubric,
-          result_json: evaluation,
-          total_score: evaluation.total_score,
-          total_label: evaluation.total_label,
-        });
+        const { error: evalInsErr } = await supabaseServer.from("plan_stage_evaluations").insert(
+          buildStageEvaluationRow({
+            userId: user.userId,
+            chatId,
+            stage: STAGE,
+            artifactType: FinalType,
+            artifactId: finalArtifactId,
+            periodKey: PERIOD_KEY,
+            rubric,
+            evaluation,
+          })
+        );
 
         if (evalInsErr) {
           evalWarning = { warning: "Etapa 7 validada, pero no se pudo insertar la evaluación IA." };
