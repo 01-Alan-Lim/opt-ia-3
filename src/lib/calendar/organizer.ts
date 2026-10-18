@@ -24,7 +24,6 @@ const MAX_ERROR = 300;
 // Google ni tokens.
 export const ORGANIZER_ERRORS = {
   revoked: "Google revocó o caducó el acceso de la cuenta organizadora. Vuelve a conectarla.",
-  unreadable: "No se pudo leer la conexión guardada (cambió la clave de cifrado). Vuelve a conectar la cuenta.",
 } as const;
 
 export type OrganizerConfig = { oauth: boolean; encryptionKey: boolean };
@@ -173,11 +172,10 @@ export async function getOrganizerAccess(params: { fetchImpl?: FetchLike; config
   const row = data as Pick<OrganizerRow, "google_email" | "calendar_id" | "status" | "refresh_token_ciphertext"> | null;
   if (!row || row.status !== "connected") return { ok: false, reason: "NOT_CONNECTED" };
 
+  // Ilegible con la clave de este entorno: no se toca la fila. Preview y local pueden compartir la
+  // base con Production; un entorno con otra clave no debe desconectar la cuenta de Production.
   const refreshToken = decryptRefreshToken(key.key, row.refresh_token_ciphertext);
-  if (!refreshToken) {
-    await recordOrganizerError(ORGANIZER_ERRORS.unreadable, true);
-    return { ok: false, reason: "TOKEN_UNREADABLE" };
-  }
+  if (!refreshToken) return { ok: false, reason: "TOKEN_UNREADABLE" };
 
   const access = await refreshGoogleAccessToken({ refreshToken, config, fetchImpl: params.fetchImpl });
   if (!access.ok) {

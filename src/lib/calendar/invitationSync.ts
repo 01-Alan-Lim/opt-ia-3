@@ -108,7 +108,7 @@ const ORGANIZER_MESSAGES = {
   NOT_CONFIGURED: "El calendario no está configurado en el servidor.",
   NOT_CONNECTED: "No hay una cuenta organizadora conectada; no se enviaron invitaciones.",
   UNAVAILABLE: "El calendario no está disponible todavía (falta preparar la base de datos).",
-  TOKEN_UNREADABLE: "No se pudo leer la conexión guardada. Vuelve a conectar la cuenta organizadora.",
+  TOKEN_UNREADABLE: "Este entorno no puede leer la conexión guardada (su clave de cifrado es otra). Si la clave cambió, vuelve a conectar la cuenta organizadora.",
   REVOKED: "Google revocó o caducó el acceso de la cuenta organizadora. Vuelve a conectarla.",
   GOOGLE_UNAVAILABLE: "Google no respondió; se reintentará en la próxima sincronización.",
 } as const;

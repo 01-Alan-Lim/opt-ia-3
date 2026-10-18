@@ -335,13 +335,18 @@ async function main() {
   assert.equal(revokedStatus.data.lastError, organizer.ORGANIZER_ERRORS.revoked);
   google.refresh = "ok";
 
-  // Texto cifrado con otra clave (p. ej. se cambió la variable): no se usa y se pide reconectar.
+  // Texto cifrado con otra clave (otro entorno con la misma base, o la variable cambió): no se usa
+  // y la fila no se toca, para que un Preview con otra clave no desconecte Production.
   state.tables.calendar_organizer[0].status = "connected";
+  state.tables.calendar_organizer[0].last_error = null;
   state.tables.calendar_organizer[0].refresh_token_ciphertext = cipher.encryptRefreshToken(otherKey.key, currentToken);
   const callsBefore = google.tokenCalls.length;
+  const writesBefore = stub.writes("calendar_organizer");
   assert.deepEqual(await organizer.getOrganizerAccess(), { ok: false, reason: "TOKEN_UNREADABLE" });
   assert.equal(google.tokenCalls.length, callsBefore, "sin token legible no se llama a Google");
-  assert.equal(state.tables.calendar_organizer[0].last_error, organizer.ORGANIZER_ERRORS.unreadable);
+  assert.equal(stub.writes("calendar_organizer"), writesBefore, "no escribe en la base");
+  assert.equal(state.tables.calendar_organizer[0].status, "connected");
+  assert.equal(state.tables.calendar_organizer[0].last_error, null);
 
   // Sin la tabla (M3 sin aplicar).
   state.missingTables = ["calendar_organizer"];
@@ -351,6 +356,12 @@ async function main() {
 
   // ---------------- Desconectar ----------------
   state.tables.calendar_organizer[0].refresh_token_ciphertext = cipher.encryptRefreshToken(key.key, currentToken);
+  // Un entorno sin el calendario configurado no puede desconectar (la base puede ser compartida).
+  delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const blocked = await statusRoute.DELETE(request("DELETE", "/api/teacher/calendar-organizer"));
+  assert.equal(blocked.status, 503);
+  assert.equal(state.tables.calendar_organizer.length, 1, "sigue conectada");
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET = CLIENT_SECRET;
   const disconnected = await statusRoute.DELETE(request("DELETE", "/api/teacher/calendar-organizer"));
   assert.equal(disconnected.status, 200);
   assert.deepEqual(((await disconnected.json()) as Json).data, { disconnected: true, revokedAtGoogle: true });
