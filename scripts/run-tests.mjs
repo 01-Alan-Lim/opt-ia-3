@@ -56,6 +56,7 @@ const TESTS = [
   "assistantRouteOptionalChat",
   "advisorApiChatId",
   "assistantRouteReceiptsE1E3",
+  "signedAssistantReply",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

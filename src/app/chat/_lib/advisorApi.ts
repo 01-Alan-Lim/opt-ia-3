@@ -18,6 +18,7 @@ import {
   type ProductivityDraft,
   type ProgressState,
 } from "@/lib/plan/advisorStates";
+import { readSignedAssistantReply } from "@/lib/chat/signedAssistantReply";
 
 type AuthHeaders = Record<string, string>;
 export async function getActiveAdvisorStage(authHeaders: AuthHeaders) {
@@ -217,7 +218,7 @@ export async function callProductivityAssistant(authHeaders: AuthHeaders, input:
   const okk = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
 
-  return { ok: okk, payload: payload as ProdAssistantResponse };
+  return { ok: okk, payload: payload as ProdAssistantResponse, signedReply: readSignedAssistantReply(okk, payload, chatId) };
 }
 
 export async function getFodaState(authHeaders: AuthHeaders, effectiveChatId: string | null) {
@@ -270,7 +271,7 @@ export async function callFodaAssistant(authHeaders: AuthHeaders, input: { stude
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
 
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function getBrainstormState(authHeaders: AuthHeaders, effectiveChatId: string | null) {
@@ -347,7 +348,7 @@ export async function callBrainstormAssistant(authHeaders: AuthHeaders, input: {
   const json = await res.json().catch(() => null);
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function validateBrainstorm(authHeaders: AuthHeaders, chatId: string | null) {
@@ -421,7 +422,7 @@ export async function callParetoAssistant(authHeaders: AuthHeaders, input: { stu
   const json = await res.json().catch(() => null);
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function validatePareto(authHeaders: AuthHeaders, cid: string | null) {
@@ -504,7 +505,7 @@ export async function callObjectivesAssistant(authHeaders: AuthHeaders, input: {
   const json = await res.json().catch(() => null);
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, cid) };
 }
 
 export async function validateObjectives(authHeaders: AuthHeaders, cid: string | null) {
@@ -535,7 +536,7 @@ export async function callImprovementAssistant(authHeaders: AuthHeaders, input: 
   const json = await res.json().catch(() => null);
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, cid) };
 }
 
 export async function validateImprovement(authHeaders: AuthHeaders, cid: string | null) {
@@ -566,7 +567,7 @@ export async function callPlanningAssistant(authHeaders: AuthHeaders, args: { st
   const json = await res.json().catch(() => null);
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function validatePlanning(authHeaders: AuthHeaders, cid: string | null) {
@@ -597,7 +598,7 @@ export async function callProgressAssistant(authHeaders: AuthHeaders, args: { st
   const ok = res.ok && json?.ok !== false;
   const payload = json?.data ?? json;
 
-  return { ok, payload };
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function validateProgress(authHeaders: AuthHeaders, cid: string | null) {
@@ -625,7 +626,9 @@ export async function callFinalDocAssistant(authHeaders: AuthHeaders, args: { fi
   });
 
   const json = await res.json().catch(() => null);
-  return { ok: res.ok && json?.ok !== false, payload: json?.data ?? json };
+  const ok = res.ok && json?.ok !== false;
+  const payload = json?.data ?? json;
+  return { ok, payload, signedReply: readSignedAssistantReply(ok, payload, chatId) };
 }
 
 export async function validateFinalDoc(authHeaders: AuthHeaders, cid: string | null) {

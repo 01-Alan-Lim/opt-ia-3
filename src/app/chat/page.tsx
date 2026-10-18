@@ -107,6 +107,7 @@ import {
   softenAssistantLeadInChat,
 } from "@/lib/chat/assistantFormat";
 import { chatIdStorageKey, messagesStorageKey } from "@/lib/chat/chatStorage";
+import { readSignedAssistantReply } from "@/lib/chat/signedAssistantReply";
 
 
 type ChatMode = "general" | "plan_mejora";
@@ -1836,7 +1837,7 @@ export default function ChatPage() {
 
     if (!ok) {
       console.error("[ISHIKAWA] assistant failed", { status: res.status, json });
-      return { ok: false as const, assistantMessage: "⚠️ No pude procesar tu mensaje en Ishikawa.", nextState: args.ishikawaState, ui: NO_TURN_UI };
+      return { ok: false as const, assistantMessage: "⚠️ No pude procesar tu mensaje en Ishikawa.", nextState: args.ishikawaState, ui: NO_TURN_UI, signedReply: null };
     }
 
     const data = json?.data ?? json?.payload ?? json ?? null;
@@ -1854,6 +1855,7 @@ export default function ChatPage() {
         assistantMessage: "⚠️ No pude interpretar bien este turno de Ishikawa. Vuelve a escribir tu idea y seguimos desde la misma rama.",
         nextState: args.ishikawaState,
         ui: NO_TURN_UI,
+        signedReply: null,
       };
     }
 
@@ -1862,6 +1864,7 @@ export default function ChatPage() {
       assistantMessage,
       nextState: nextState as IshikawaState,
       ui: parseIshikawaTurnUi(data?.ui),
+      signedReply: readSignedAssistantReply(true, data, args.chatId),
     };
   }
 

@@ -17,6 +17,7 @@ import type {
   ProgressState,
 } from "@/lib/plan/advisorStates";
 import type { IshikawaTurnUi } from "@/lib/plan/ishikawaTree";
+import type { SignedAssistantReply } from "@/lib/chat/signedAssistantReply";
 import type { Message } from "@/lib/types";
 import type * as AdvisorApi from "../advisorApi";
 import type {
@@ -93,7 +94,13 @@ export type AdvisorTurnDeps = {
       stage1Summary: unknown;
       brainstormState: unknown;
       recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
-    }) => Promise<{ ok: boolean; assistantMessage: string; nextState: IshikawaState; ui: IshikawaTurnUi }>;
+    }) => Promise<{
+      ok: boolean;
+      assistantMessage: string;
+      nextState: IshikawaState;
+      ui: IshikawaTurnUi;
+      signedReply: SignedAssistantReply | null;
+    }>;
     callObjectivesAssistant: (input: {
       studentMessage: string;
       objectivesState: ObjectivesState;
