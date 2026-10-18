@@ -68,7 +68,7 @@ export async function handleIshikawaTurn(
         if (ai.ok) {
           setIshikawaState(ai.nextState);
           await saveIshikawaState(ai.nextState, effectiveChatId);
-          await appendAssistant(ai.assistantMessage);
+          await appendAssistant(ai.assistantMessage, ai.signedReply);
         } else {
           await appendAssistant("⚠️ Estoy detectando que el Ishikawa no tiene el problema cargado. ¿Puedes volver a pegar el problema principal en 1 línea?");
         }
@@ -185,7 +185,7 @@ export async function handleIshikawaTurn(
   setIshikawaState(nextState);
   await saveIshikawaState(nextState, effectiveChatId);
 
-  await appendAssistant(assistant.assistantMessage);
+  await appendAssistant(assistant.assistantMessage, assistant.signedReply);
 
   // ✅ Solo ofrecemos pasar de etapa si el servidor lo admite en este turno (no justo tras cerrar una rama)
   if (shouldOfferIshikawaStageClose(nextState, assistant.ui)) {

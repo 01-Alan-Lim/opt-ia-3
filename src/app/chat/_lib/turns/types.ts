@@ -154,7 +154,8 @@ export type AdvisorTurnDeps = {
     validateProgress: (effectiveChatId?: string | null) => ReturnType<typeof AdvisorApi.validateProgress>;
   };
   chat: {
-    appendAssistant: (content: unknown) => Promise<void>;
+    // reply: solo con la respuesta de una ruta assistant (su signedReply), nunca con textos locales.
+    appendAssistant: (content: unknown, reply?: SignedAssistantReply | null) => Promise<void>;
     buildRecentMessagesForIshikawa: (maxMessages?: number) => { role: "user" | "assistant"; content: string }[];
   };
   flow: {

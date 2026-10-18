@@ -38,6 +38,7 @@ import {
   promptForStep,
 } from "@/lib/plan/stage0Context";
 import type { Message } from "@/lib/types";
+import type { PersistMessageInput } from "./advisorApi";
 import type * as AdvisorApi from "./advisorApi";
 
 export function shouldPreserveAdvisorStateOnRefreshFailure(args: {
@@ -193,7 +194,7 @@ export type AdvisorTransitionDeps = {
   };
   chat: {
     appendAssistant: (content: unknown) => Promise<void>;
-    persistMessageDB: (input: { chatId: string; role: "user" | "assistant" | "system"; content: string }) => Promise<unknown>;
+    persistMessageDB: (input: PersistMessageInput) => Promise<unknown>;
     setMessages: Setter<Message[]>;
     displayName: string;
   };

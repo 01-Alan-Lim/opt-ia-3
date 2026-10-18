@@ -18,7 +18,7 @@ import {
   type ProductivityDraft,
   type ProgressState,
 } from "@/lib/plan/advisorStates";
-import { readSignedAssistantReply } from "@/lib/chat/signedAssistantReply";
+import { readSignedAssistantReply, type AssistantServerReply } from "@/lib/chat/signedAssistantReply";
 
 type AuthHeaders = Record<string, string>;
 export async function getActiveAdvisorStage(authHeaders: AuthHeaders) {
@@ -39,7 +39,19 @@ export async function getActiveAdvisorStage(authHeaders: AuthHeaders) {
   };
 }
 
-export async function persistMessageDB(authHeaders: AuthHeaders, input: { chatId: string; role: "user" | "assistant" | "system"; content: string }) {
+// serverReply: solo para "assistant", la respuesta original de la ruta assistant con su recibo,
+// tal cual llegó (R1). Hoy /api/messages no la lee (su esquema descarta campos desconocidos) y
+// guarda content como siempre; viajar con recibo no hace verificado al mensaje.
+export type PersistMessageInput = {
+  chatId: string;
+  role: "user" | "assistant";
+  content: string;
+  serverReply?: AssistantServerReply;
+};
+
+export async function persistMessageDB(authHeaders: AuthHeaders, input: PersistMessageInput) {
+  const serverReply = input.role === "assistant" ? input.serverReply : undefined;
+
   const res = await fetch("/api/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
@@ -47,6 +59,14 @@ export async function persistMessageDB(authHeaders: AuthHeaders, input: { chatId
       chatId: input.chatId,
       role: input.role,
       content: input.content,
+      ...(serverReply
+        ? {
+            serverReply: {
+              assistantMessage: serverReply.assistantMessage,
+              assistantReceipt: serverReply.assistantReceipt,
+            },
+          }
+        : {}),
     }),
   });
 

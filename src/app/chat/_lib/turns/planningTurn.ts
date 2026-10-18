@@ -39,7 +39,7 @@ export async function handlePlanningTurn(
   setPlanningState(nextState);
   await savePlanningState(nextState, effectiveChatId);
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   if (!shouldValidateNow) {
     return;

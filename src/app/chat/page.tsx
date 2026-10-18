@@ -14,6 +14,8 @@ import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScr
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ModeSelector } from "@/components/chat/ModeSelector";
 import * as advisorApi from "./_lib/advisorApi";
+import type { PersistMessageInput } from "./_lib/advisorApi";
+import { appendAssistantMessage } from "./_lib/appendAssistantMessage";
 import { useAccessGate } from "./_lib/useAccessGate";
 import { useChatSession } from "./_lib/useChatSession";
 import {
@@ -101,13 +103,9 @@ import {
   buildStage6ProgressTruthMessage,
   getAdvisorStageLabel,
 } from "@/lib/plan/advisorMessages";
-import {
-  createMessage,
-  formatAssistantMessageForReadability,
-  softenAssistantLeadInChat,
-} from "@/lib/chat/assistantFormat";
+import { createMessage } from "@/lib/chat/assistantFormat";
 import { chatIdStorageKey, messagesStorageKey } from "@/lib/chat/chatStorage";
-import { readSignedAssistantReply } from "@/lib/chat/signedAssistantReply";
+import { readSignedAssistantReply, type SignedAssistantReply } from "@/lib/chat/signedAssistantReply";
 
 
 type ChatMode = "general" | "plan_mejora";
@@ -785,44 +783,15 @@ export default function ChatPage() {
     return true;
   }
 
-  async function persistMessageDB(input: {
-    chatId: string;
-    role: "user" | "assistant" | "system";
-    content: string;
-  }) {
+  async function persistMessageDB(input: PersistMessageInput) {
     const authHeaders = await getAuthHeaders();
 
     return advisorApi.persistMessageDB(authHeaders, input);
   }
 
-  async function appendAssistant(content: unknown) {
-    const safeRaw =
-      typeof content === "string"
-        ? content
-        : content == null
-          ? ""
-          : (() => {
-              try {
-                return JSON.stringify(content);
-              } catch {
-                return String(content);
-              }
-            })();
-
-    let safe =
-      modeRef.current === "plan_mejora"
-        ? softenAssistantLeadInChat(safeRaw)
-        : safeRaw;
-
-    if (modeRef.current === "plan_mejora") {
-      safe = formatAssistantMessageForReadability(safe);
-    }
-
-    setMessages((prev) => [...prev, createMessage("assistant", safe)]);
-
-    if (modeRef.current === "plan_mejora" && chatIdRef.current) {
-      await persistMessageDB({ chatId: chatIdRef.current, role: "assistant", content: safe });
-    }
+  // reply: solo cuando content es la respuesta de una ruta assistant (su signedReply).
+  async function appendAssistant(content: unknown, reply?: SignedAssistantReply | null) {
+    await appendAssistantMessage({ modeRef, chatIdRef, setMessages, persistMessageDB }, content, reply);
   }
 
   async function interpretStage0WithLLM(step: 1 | 2 | 3, userText: string, ctxJson: any) {
@@ -2588,7 +2557,7 @@ export default function ChatPage() {
       setFinalDocState(nextState);
       await saveFinalDocState(nextState, effectiveChatId);
 
-      await appendAssistant(a.payload.assistantMessage);
+      await appendAssistant(a.payload.assistantMessage, a.signedReply);
 
       // 3) Validar / cerrar o pedir v2
       const v = await validateFinalDoc(effectiveChatId);

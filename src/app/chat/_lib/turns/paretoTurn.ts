@@ -40,7 +40,7 @@ export async function handleParetoTurn(
 
   // Si aún no está cerrado, mostramos guía normal
   if (nextState.step !== "done") {
-    await appendAssistant(assistant.payload.assistantMessage);
+    await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
     return;
   }
 
@@ -79,7 +79,7 @@ export async function handleParetoTurn(
     return;
   }
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   const moved = await applyBackendAdvisorAdvance({
     fromStage: 5,

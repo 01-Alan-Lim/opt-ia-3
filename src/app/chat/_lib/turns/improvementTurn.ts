@@ -39,7 +39,7 @@ export async function handleImprovementTurn(
   setImprovementState(nextState);
   await saveImprovementState(nextState, effectiveChatId);
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   if (!shouldValidateNow) {
     return;

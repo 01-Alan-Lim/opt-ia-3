@@ -78,7 +78,7 @@ export async function handleObjectivesTurn(
   setObjectivesState(nextState);
   await saveObjectivesState(nextState, effectiveChatId);
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   // Validamos Etapa 6 cuando el estado ya está en review
   // y el estudiante confirma cierre con una frase natural o una respuesta corta.

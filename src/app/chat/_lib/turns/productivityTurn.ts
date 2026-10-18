@@ -130,7 +130,7 @@ export async function handleProductivityWizardTurn(
   const a = assistant.payload;
 
   // 2) Mostrar mensaje “humano”
-  await appendAssistant(a.assistantMessage);
+  await appendAssistant(a.assistantMessage, assistant.signedReply);
 
   // 3) Aplicar patch + acumular costos
   const patched = applyAssistantPatchToDraft(prodDraft, a.updates?.patch ?? {});

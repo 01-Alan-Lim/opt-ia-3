@@ -87,7 +87,7 @@ export async function handleFodaTurn(
   const action = assistant.payload.updates?.action as string | undefined;
 
   // 1) mostrar respuesta “docente”
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   // 2) aplicar estado y guardar
   setFodaState(nextState);

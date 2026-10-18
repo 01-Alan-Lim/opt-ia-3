@@ -109,7 +109,7 @@ export async function handleBrainstormTurn(
 
   const nextState = sanitizeBrainstormState(assistant.payload.updates.nextState);
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   setBrainstormState(nextState);
   await saveBrainstormState(nextState, effectiveChatId);

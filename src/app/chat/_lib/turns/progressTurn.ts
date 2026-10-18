@@ -38,7 +38,7 @@ export async function handleProgressTurn(
   setProgressState(nextState);
   await saveProgressState(nextState, effectiveChatId);
 
-  await appendAssistant(assistant.payload.assistantMessage);
+  await appendAssistant(assistant.payload.assistantMessage, assistant.signedReply);
 
   const progressAction = assistant.payload?.updates?.action;
 
