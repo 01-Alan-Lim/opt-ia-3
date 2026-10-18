@@ -9,8 +9,10 @@
 //       · Sin sesión y sin GIS (falta NEXT_PUBLIC_GOOGLE_CLIENT_ID, o el script está bloqueado
 //         o falló): un botón de texto con el inicio OAuth de Supabase.
 //       · Con sesión: "Entrar a OPT-IA", que termina en la rutina común (finishLogin.ts).
-//   - LoginAlternative: debajo del grupo de botones, el acceso alternativo (OAuth) y el estado
-//     del inicio con Google. Ocupa siempre una línea, haya o no texto.
+//   - LoginAlternative: debajo del grupo de botones, el estado del inicio con Google y, solo si
+//     ese inicio falló, el acceso alternativo (OAuth). Para soporte, ?acceso=alternativo lo
+//     muestra siempre (p. ej. si el botón de Google no responde en un navegador concreto). Ocupa
+//     siempre una línea, haya o no texto.
 // El controlador de GIS es uno por página: aunque haya dos botones, se inicializa una vez.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -151,15 +153,20 @@ export function LoginButton({ className }: { className?: string }) {
   );
 }
 
+const subscribeToNothing = () => () => {};
+const readForcedAlternative = () => new URLSearchParams(window.location.search).get("acceso") === "alternativo";
+
 export function LoginAlternative({ className }: { className?: string }) {
   const [loading, setLoading] = useState(false);
   const isAuthed = Boolean(useSessionEmail());
   const { state: google } = useGoogleSignIn();
+  const forced = useSyncExternalStore(subscribeToNothing, readForcedAlternative, () => false);
 
-  // Sin GIS el botón principal ya es el OAuth; con sesión no hace falta.
-  const visible = !isAuthed && google.status !== "unavailable";
   const signingIn = google.status === "signing_in";
   const error = google.status === "ready" ? google.error : null;
+  // Sin GIS el botón principal ya es el OAuth; con sesión no hace falta. Con GIS, solo si el
+  // inicio con Google falló o si se pidió con ?acceso=alternativo.
+  const visible = !isAuthed && google.status !== "unavailable" && (Boolean(error) || forced);
 
   async function signInWithOAuth() {
     setLoading(true);
@@ -172,7 +179,7 @@ export function LoginAlternative({ className }: { className?: string }) {
 
   return (
     <div aria-live="polite" className={clsx("min-h-5 text-xs leading-5 text-slate-400", className)}>
-      {visible && signingIn && "Ingresando…"}
+      {!isAuthed && signingIn && "Ingresando…"}
       {visible && !signingIn && (
         <>
           {error && <span className="mr-1">{error}</span>}
@@ -182,7 +189,7 @@ export function LoginAlternative({ className }: { className?: string }) {
             disabled={loading}
             className="rounded-sm text-slate-400 underline decoration-slate-600 underline-offset-4 transition-colors hover:text-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 disabled:opacity-60"
           >
-            {loading ? "Abriendo Google…" : "¿Problemas con el botón? Usa el acceso alternativo"}
+            {loading ? "Abriendo Google…" : error ? "Acceso alternativo" : "¿Problemas con el botón? Usa el acceso alternativo"}
           </button>
         </>
       )}

@@ -48,6 +48,14 @@ function main() {
   assert.ok(live.includes("const redirectTo = `${window.location.origin}/auth/callback`;"));
   assert.ok(live.includes("export function LoginAlternative("));
   assert.ok(live.includes("¿Problemas con el botón? Usa el acceso alternativo"));
+  // El acceso alternativo solo aparece si el inicio con Google falló, o con ?acceso=alternativo
+  // (recuperación para soporte); sin GIS el botón principal ya es el OAuth.
+  assert.ok(live.includes('const visible = !isAuthed && google.status !== "unavailable" && (Boolean(error) || forced);'));
+  assert.ok(live.includes('const error = google.status === "ready" ? google.error : null;'));
+  assert.ok(live.includes('new URLSearchParams(window.location.search).get("acceso") === "alternativo"'));
+  assert.ok(live.includes("useSyncExternalStore(subscribeToNothing, readForcedAlternative, () => false)"), "sin desajuste de hidratación");
+  assert.ok(live.includes('{!isAuthed && signingIn && "Ingresando…"}'), "el estado se ve aunque el enlace esté oculto");
+  assert.ok(live.includes('error ? "Acceso alternativo" : "¿Problemas con el botón? Usa el acceso alternativo"'));
   assert.ok(live.includes('className={clsx("min-h-5 text-xs leading-5 text-slate-400", className)}'), "una línea fija: sin saltos");
   assert.ok(live.includes("focus-visible:outline-sky-300"), "foco visible");
   assert.equal(live.match(/onClick=\{signInWithOAuth\}/g)?.length, 2, "botón sin GIS y enlace alternativo");
