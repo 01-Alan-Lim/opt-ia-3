@@ -24,7 +24,10 @@ export type ApiErrorCode =
   // Panel docente (GET /api/teacher/dashboard).
   | "INVALID_QUERY"
   | "COHORT_NOT_FOUND"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  // Ruta retirada que se conserva para responder de forma explícita
+  // (POST /api/chats/[chatId]/clear).
+  | "GONE";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

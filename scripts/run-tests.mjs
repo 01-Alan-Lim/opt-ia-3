@@ -47,6 +47,7 @@ const TESTS = [
   "teacherDashboardAnalyticsView",
   "teacherDashboardView",
   "messageWritePolicy",
+  "chatClearRoute",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
