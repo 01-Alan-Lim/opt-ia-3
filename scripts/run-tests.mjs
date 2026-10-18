@@ -53,6 +53,7 @@ const TESTS = [
   "assistantRouteOwnership",
   "assistantRouteReceipts",
   "assistantRouteReceiptsNoKey",
+  "assistantRouteOptionalChat",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
