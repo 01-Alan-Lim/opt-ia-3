@@ -49,6 +49,7 @@ const TESTS = [
   "messageWritePolicy",
   "chatClearRoute",
   "assistantReceipt",
+  "withAssistantReceipt",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
