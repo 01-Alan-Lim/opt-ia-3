@@ -225,6 +225,19 @@ async function main() {
   const withdraw = await import("../../app/api/teacher/calendar-organizer/withdraw/route");
   const onboarding = await import("../../app/api/onboarding/submit/route");
   const { clearStudentEmailAuthorizationCache } = await import("../auth/studentEmailAuthorization");
+  const { calendarReportText } = await import("../calendar/syncReportText");
+
+  // =============== Textos para el docente ===============
+  const quiet = { quietWhenNotConnected: true };
+  assert.equal(calendarReportText({ status: "ok", created: 3 }), "Calendario: 3 invitaciones enviadas.");
+  assert.equal(calendarReportText({ status: "ok", created: 1, updated: 2, cancelled: 1 }), "Calendario: 1 invitación enviada, 2 actualizadas, 1 cancelada.");
+  assert.equal(calendarReportText({ status: "ok" }), "Calendario: invitaciones al día.");
+  assert.equal(calendarReportText({ status: "ok" }, quiet), "");
+  assert.equal(calendarReportText({ status: "organizer_not_connected" }, quiet), "", "en aprobaciones no se repite");
+  assert.ok(calendarReportText({ status: "organizer_not_connected" }).includes("conecta la cuenta organizadora"));
+  assert.equal(calendarReportText({ status: "not_configured", message: "x" }, quiet), "");
+  assert.equal(calendarReportText({ status: "error", message: "Google no respondió." }, quiet), "Calendario: Google no respondió.", "los fallos sí se muestran");
+  assert.equal(calendarReportText(null), "");
 
   // =============== Contenido e ID (puro) ===============
   const cohortRow = state.tables.cohorts[0] as unknown as Parameters<typeof content.buildInvitationEvent>[0]["cohort"];
@@ -362,6 +375,20 @@ async function main() {
     assert.equal(res.status, 200);
     return json.data;
   };
+
+  // Antes de aplicar M3 (sin la tabla del organizador): aprobar funciona y no se llama a Google.
+  state.missingTables = ["calendar_organizer", "user_google_calendar_event_map"];
+  state.tables.profiles.push(student({ id: "a0000000-0000-4000-8000-00000000000a", email: "previo@umsa.bo" }, C1, "pending"));
+  const early = await approveAs({ id: "a0000000-0000-4000-8000-00000000000a" }, "approved");
+  assert.equal(early.student.registration_status, "approved");
+  assert.equal(early.calendar.status, "not_configured");
+  state.missingTables = [];
+  state.tables.profiles = state.tables.profiles.filter((p) => p.user_id !== "a0000000-0000-4000-8000-00000000000a");
+
+  // Sin las variables de Google en el servidor.
+  delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  assert.equal((await runCohortSync()).status, "not_configured");
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret-de-prueba";
 
   // Sin cuenta organizadora: nada que enviar, nada falla.
   let report = await runCohortSync();

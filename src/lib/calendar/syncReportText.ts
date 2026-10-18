@@ -17,12 +17,13 @@ function plural(n: number, one: string, many: string): string {
 }
 
 // quietWhenNotConnected: en aprobaciones y correos no se repite en cada acción que falta conectar
-// la cuenta organizadora (ya lo dice el panel de Configuración).
+// o configurar la cuenta organizadora (ya lo dice el panel de Configuración).
 export function calendarReportText(report: CalendarReportLike, opts: { quietWhenNotConnected?: boolean } = {}): string {
   if (!report || !report.status) return "";
   if (report.status === "organizer_not_connected") {
     return opts.quietWhenNotConnected ? "" : "Calendario: conecta la cuenta organizadora para enviar invitaciones.";
   }
+  if (report.status === "not_configured" && opts.quietWhenNotConnected) return "";
   if (report.status !== "ok") return `Calendario: ${report.message ?? "no se pudo sincronizar."}`;
   const parts: string[] = [];
   if (report.created) parts.push(plural(report.created, "invitación enviada", "invitaciones enviadas"));

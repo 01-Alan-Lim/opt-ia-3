@@ -176,8 +176,13 @@ const keyOf = (userId: string, eventId: string) => `${userId}|${eventId}`;
 export async function reconcileInvitations(scope: SyncScope, options: SyncOptions): Promise<SyncReport> {
   const access = await getOrganizerAccess({ fetchImpl: options.fetchImpl });
   if (!access.ok) {
+    // Sin configurar o sin M3 es un estado del despliegue, no un fallo de esta operación.
     const status: SyncStatus =
-      access.reason === "NOT_CONNECTED" ? "organizer_not_connected" : access.reason === "NOT_CONFIGURED" ? "not_configured" : "error";
+      access.reason === "NOT_CONNECTED"
+        ? "organizer_not_connected"
+        : access.reason === "NOT_CONFIGURED" || access.reason === "UNAVAILABLE"
+          ? "not_configured"
+          : "error";
     return { status, message: ORGANIZER_MESSAGES[access.reason], ...emptyCounts };
   }
   const accessToken = access.accessToken;

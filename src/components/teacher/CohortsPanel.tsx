@@ -133,7 +133,7 @@ async function runCohortCalendarSync(cohortId: string): Promise<{ ok: boolean; m
   }
 
   const report = json?.data?.calendar as CalendarReportLike;
-  const ok = report?.status === "ok" || report?.status === "organizer_not_connected";
+  const ok = report?.status === "ok" || report?.status === "organizer_not_connected" || report?.status === "not_configured";
   return { ok, message: calendarReportText(report) };
 }
 
