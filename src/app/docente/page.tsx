@@ -4,7 +4,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { calendarReportText } from "@/lib/calendar/syncReportText";
 import { AuthorizedEmailsPanel } from "@/components/teacher/AuthorizedEmailsPanel";
+import { CalendarOrganizerPanel } from "@/components/teacher/CalendarOrganizerPanel";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
 import { TeacherChat } from "@/components/teacher/TeacherChat";
 import { TeacherDashboard } from "@/components/teacher/TeacherDashboard";
@@ -456,7 +458,8 @@ export default function DocenteHome() {
           ? (status === "rejected" ? "Estudiante habilitado." : "Estudiante aprobado.")
           : (status === "approved" ? "Estudiante deshabilitado." : "Estudiante rechazado.");
 
-      setInfoMsg(msg);
+      const calendar = calendarReportText(json?.data?.calendar, { quietWhenNotConnected: true });
+      setInfoMsg(calendar ? `${msg} ${calendar}` : msg);
       await loadStudents();
     } catch {
       setErrorMsg("Error de red al actualizar estado.");
@@ -612,7 +615,12 @@ export default function DocenteHome() {
                 </h1>
               </div>
 
-              {tab === "config" && <CohortsPanel />}
+              {tab === "config" && (
+                <>
+                  <CalendarOrganizerPanel />
+                  <CohortsPanel />
+                </>
+              )}
 
               {tab === "approvals" && (
                 <>

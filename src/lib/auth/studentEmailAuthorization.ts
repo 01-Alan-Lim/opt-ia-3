@@ -80,3 +80,56 @@ export async function lookupStudentEmailAuthorization(rawEmail: string, now: num
   cache.set(email, { value, expires: now + CACHE_TTL_MS });
   return value;
 }
+
+// Decisión para varios correos a la vez, sin caché (la usa la sincronización de invitaciones de
+// Calendar: solo se invita a quien hoy podría entrar). Mismas reglas que requireUser. Un error de
+// la base que no sea "la tabla no existe" lanza: quien llama no debe cancelar nada con datos
+// dudosos.
+export function allowedEmailDomain(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  const v = normalizeEmail(env.ALLOWED_EMAIL_DOMAIN);
+  if (!v) return null;
+  return v.startsWith("@") ? v.slice(1) : v;
+}
+
+function envList(value: string | undefined): string[] {
+  return (value ?? "").split(",").map((e) => normalizeEmail(e)).filter(Boolean);
+}
+
+export async function decideStudentAccessForEmails(rawEmails: string[]): Promise<Map<string, StudentAccessDecision>> {
+  const domain = allowedEmailDomain();
+  const legacy = new Set(envList(process.env.STUDENT_TEST_EMAIL_ALLOWLIST));
+  const emails = [...new Set(rawEmails.map((e) => normalizeEmail(e)).filter(Boolean))];
+  const external = emails.filter((e) => !isInstitutionalEmail(e, domain));
+
+  const lookups = new Map<string, StudentEmailLookup>();
+  if (external.length > 0) {
+    const { data, error } = await supabaseServer
+      .from("student_email_authorizations")
+      .select("email, revoked_at")
+      .in("email", external)
+      .limit(5000);
+    if (error) {
+      if (!isMissingTable(error)) throw new Error("AUTHORIZATION_LOOKUP_FAILED");
+      for (const e of external) lookups.set(e, "unavailable");
+    } else {
+      const rows = (data ?? []) as Array<{ email: string; revoked_at: string | null }>;
+      for (const e of external) {
+        const mine = rows.filter((r) => r.email === e);
+        lookups.set(e, mine.some((r) => r.revoked_at === null) ? "active" : mine.length > 0 ? "revoked" : "none");
+      }
+    }
+  }
+
+  const decisions = new Map<string, StudentAccessDecision>();
+  for (const e of emails) {
+    decisions.set(
+      e,
+      decideStudentAccess({
+        institutional: isInstitutionalEmail(e, domain),
+        lookup: lookups.get(e) ?? "none",
+        envAllowlisted: legacy.has(e),
+      }),
+    );
+  }
+  return decisions;
+}

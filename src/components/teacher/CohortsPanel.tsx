@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { calendarReportText, type CalendarReportLike } from "@/lib/calendar/syncReportText";
 
 type Cohort = {
   id: string;
@@ -115,30 +116,25 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-async function runCohortCalendarSync(cohortId: string): Promise<{
-  ok: boolean;
-  message?: string;
-  data?: any;
-}> {
+// Invitaciones de Calendar de la cohorte desde la cuenta organizadora (crea, actualiza o cancela
+// lo que cambió). Se llama después de guardar: un fallo aquí no deshace el guardado.
+async function runCohortCalendarSync(cohortId: string): Promise<{ ok: boolean; message: string }> {
   const headers = await getAuthHeaders();
 
   const res = await fetch(`/api/teacher/cohorts/${cohortId}/calendar/sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify({ dryRun: false, limit: 200 }),
   });
 
   const json = await res.json().catch(() => null);
 
   if (!res.ok || json?.ok === false) {
-    return {
-      ok: false,
-      message: json?.message ?? "Falló la sincronización de calendarios.",
-      data: json,
-    };
+    return { ok: false, message: json?.message ?? "Falló la sincronización de invitaciones." };
   }
 
-  return { ok: true, data: json?.data };
+  const report = json?.data?.calendar as CalendarReportLike;
+  const ok = report?.status === "ok" || report?.status === "organizer_not_connected";
+  return { ok, message: calendarReportText(report) };
 }
 
 export function CohortsPanel() {
@@ -448,16 +444,14 @@ export function CohortsPanel() {
 
       if (newCohortId) {
         setSyncing(true);
-        setSyncMsg("Sincronizando calendarios de estudiantes...");
+        setSyncMsg("Sincronizando invitaciones de Calendar...");
         const sync = await runCohortCalendarSync(newCohortId);
 
         if (!sync.ok) {
-          setError(sync.message ?? "Falló la sincronización.");
+          setSyncMsg(null);
+          setError(sync.message);
         } else {
-          const d = sync.data;
-          setSyncMsg(
-            `Calendario actualizado: conectados ${d?.connected ?? 0}/${d?.processed ?? 0} • created ${d?.created ?? 0} • updated ${d?.updated ?? 0}`
-          );
+          setSyncMsg(sync.message || null);
         }
       }
 
@@ -517,18 +511,16 @@ export function CohortsPanel() {
 
       // ✅ 3) Sincronizar calendarios de estudiantes (AUTOMÁTICO)
       setSyncing(true);
-      setSyncMsg("Sincronizando calendarios de estudiantes...");
+      setSyncMsg("Sincronizando invitaciones de Calendar...");
 
       const sync = await runCohortCalendarSync(selected.id);
 
       if (!sync.ok) {
         // No cancelamos el guardado; solo mostramos error
-        setError(sync.message ?? "Falló la sincronización.");
+        setSyncMsg(null);
+        setError(sync.message);
       } else {
-        const d = sync.data;
-        setSyncMsg(
-          `Calendario actualizado: conectados ${d?.connected ?? 0}/${d?.processed ?? 0} • created ${d?.created ?? 0} • updated ${d?.updated ?? 0}`
-        );
+        setSyncMsg(sync.message || null);
       }
 
       await load();

@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import { ok, failResponse } from "@/lib/api/response";
 import { requireTeacher } from "@/lib/auth/requireTeacher";
+import { syncStudentInvitationsByEmail } from "@/lib/calendar/invitationTriggers";
 import {
   clearStudentEmailAuthorizationCache,
   isInstitutionalEmail,
@@ -21,6 +22,7 @@ import {
 import { supabaseServer } from "@/lib/supabaseServer";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -133,7 +135,9 @@ export async function POST(req: Request) {
   }
 
   clearStudentEmailAuthorizationCache(email);
-  return ok({ authorization: data as AuthorizationRow, created: true });
+  // Si ya estaba aprobado (p. ej. se le había revocado y vuelve), recupera sus invitaciones.
+  const calendar = await syncStudentInvitationsByEmail(email, new URL(req.url).origin);
+  return ok({ authorization: data as AuthorizationRow, created: true, calendar });
 }
 
 export async function DELETE(req: Request) {
@@ -167,5 +171,8 @@ export async function DELETE(req: Request) {
 
   clearStudentEmailAuthorizationCache(email);
 
-  return ok({ revoked: true, wasActive });
+  // Sin acceso no recibe recordatorios: se cancelan sus invitaciones futuras.
+  const calendar = await syncStudentInvitationsByEmail(email, new URL(req.url).origin);
+
+  return ok({ revoked: true, wasActive, calendar });
 }

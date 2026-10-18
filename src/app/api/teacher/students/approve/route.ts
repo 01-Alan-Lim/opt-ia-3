@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
+import { syncStudentInvitations } from "@/lib/calendar/invitationTriggers";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const BodySchema = z.object({
   user_id: z.string().min(3).max(200), // soporta uuid y también ids legacy tipo did:privy...
@@ -49,7 +51,11 @@ export async function POST(req: Request) {
       return NextResponse.json(fail("NOT_FOUND", "Estudiante no encontrado."), { status: 404 });
     }
 
-    return ok({ student: data });
+    // La aprobación ya está guardada; las invitaciones de Calendar se envían (o cancelan) después y
+    // su resultado solo se informa: un fallo de Google no la deshace.
+    const calendar = await syncStudentInvitations(data.user_id, new URL(req.url).origin);
+
+    return ok({ student: data, calendar });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "INTERNAL";
     if (msg === "UNAUTHORIZED") {

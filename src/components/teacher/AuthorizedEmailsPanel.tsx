@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { calendarReportText, type CalendarReportLike } from "@/lib/calendar/syncReportText";
 
 type AuthorizationItem = {
   id: string;
@@ -17,8 +18,6 @@ type AuthorizationItem = {
   active: boolean;
   registrationStatus: string | null;
 };
-
-type CalendarSummary = { status: string; cancelled?: number } | null | undefined;
 
 const ACADEMIC_LABEL: Record<string, string> = {
   pending: "Pendiente de aprobación",
@@ -37,12 +36,9 @@ function formatDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("es-BO", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function calendarText(calendar: CalendarSummary): string {
-  if (!calendar) return "";
-  if (calendar.status === "ok" && calendar.cancelled) return ` Se cancelaron ${calendar.cancelled} invitaciones de calendario.`;
-  if (calendar.status === "organizer_not_connected") return "";
-  if (calendar.status === "error" || calendar.status === "partial") return " No se pudieron cancelar todas sus invitaciones de calendario; usa Sincronizar en Configuración.";
-  return "";
+function calendarText(calendar: CalendarReportLike): string {
+  const text = calendarReportText(calendar, { quietWhenNotConnected: true });
+  return text ? ` ${text}` : "";
 }
 
 export function AuthorizedEmailsPanel() {
@@ -92,7 +88,10 @@ export function AuthorizedEmailsPanel() {
         setErrorMsg(json?.message ?? "No se pudo autorizar el correo.");
         return;
       }
-      setInfoMsg(json?.data?.created ? "Correo autorizado. Ya puede registrarse; su acceso quedará pendiente de tu aprobación." : "Ese correo ya estaba autorizado.");
+      setInfoMsg(
+        (json?.data?.created ? "Correo autorizado. Ya puede registrarse; su acceso quedará pendiente de tu aprobación." : "Ese correo ya estaba autorizado.") +
+          calendarText(json?.data?.calendar as CalendarReportLike),
+      );
       setEmail("");
       setNote("");
       await load();
@@ -116,7 +115,7 @@ export function AuthorizedEmailsPanel() {
         setErrorMsg(json?.message ?? "No se pudo revocar el acceso.");
         return;
       }
-      setInfoMsg(`Acceso revocado para ${target}.${calendarText(json?.data?.calendar as CalendarSummary)}`);
+      setInfoMsg(`Acceso revocado para ${target}.${calendarText(json?.data?.calendar as CalendarReportLike)}`);
       await load();
     } finally {
       setBusy(false);

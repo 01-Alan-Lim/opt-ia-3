@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
+import { syncStudentInvitations } from "@/lib/calendar/invitationTriggers";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 
@@ -135,6 +136,12 @@ export async function POST(req: Request) {
       return NextResponse.json(fail("INTERNAL", "No se pudo guardar el registro.", upsertErr), {
         status: 500,
       });
+    }
+
+    // Aprobado que se cambia de cohorte: queda pendiente y se cancelan sus invitaciones de la
+    // cohorte anterior (las de la nueva llegarán cuando el docente lo apruebe).
+    if (existing?.registration_status === "approved" && !keepsApproval) {
+      await syncStudentInvitations(authed.userId, new URL(req.url).origin);
     }
 
     return ok({ profile: saved });
