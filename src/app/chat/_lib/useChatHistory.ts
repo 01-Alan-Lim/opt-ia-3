@@ -62,16 +62,16 @@ export function useChatHistory({
         if (Array.isArray(parsed) && parsed.length > 0) {
           setMessages(parsed);
         } else {
-          if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
+          if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
           else setMessages([]);
         }
       } else {
-        if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
+        if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
         else setMessages([]);
       }
     } catch (e) {
       console.warn("No se pudo leer storage:", e);
-      if (mode === "general") setMessages([createMessage("assistant", GREETING)]);
+      if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
       else setMessages([]); // ✅ Asesor en blanco
     }
 
@@ -88,7 +88,7 @@ export function useChatHistory({
     if (!authenticated) {
       setChatId(null);
       setMessages(modeRef.current === "general"
-        ? [createMessage("assistant", GREETING)]
+        ? [createMessage("advisor", GREETING)]
         : []
       );
       return;

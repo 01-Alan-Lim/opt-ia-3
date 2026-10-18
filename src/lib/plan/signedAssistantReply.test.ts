@@ -23,7 +23,7 @@ import type {
 } from "./advisorStates";
 import type { BrainstormState } from "./brainstormFlow";
 import {
-  attachSignedReply,
+  classifyAdvisorText,
   readSignedAssistantReply,
   type SignedAssistantReply,
 } from "../chat/signedAssistantReply";
@@ -150,14 +150,14 @@ async function main() {
     assert.equal(readSignedAssistantReply(true, "texto", CHAT), null);
   }
 
-  // ---------------- Asociación exacta ----------------
+  // ---------------- Procedencia del texto: exacta ----------------
   {
     const reply = readSignedAssistantReply(true, { assistantMessage: MESSAGE, assistantReceipt: RECEIPT }, CHAT);
-    const attached = attachSignedReply({ content: MESSAGE, chatId: CHAT, reply });
-    assert.deepEqual(attached, { attached: true, serverReply: { assistantMessage: MESSAGE, assistantReceipt: RECEIPT } });
-    assert.ok(attached.attached && Object.isFrozen(attached.serverReply));
+    const server = classifyAdvisorText(MESSAGE, reply);
+    assert.deepEqual(server, { origin: "server", chatId: CHAT, serverReply: { assistantMessage: MESSAGE, assistantReceipt: RECEIPT } });
+    assert.ok(server.origin === "server" && Object.isFrozen(server.serverReply));
 
-    // Sin normalizar: cualquier diferencia de texto deja el mensaje sin recibo.
+    // Sin normalizar: cualquier diferencia de texto lo deja como texto local.
     assert.notEqual(MESSAGE.normalize("NFD"), MESSAGE);
     for (const content of [
       `⚠️ ${MESSAGE}`,
@@ -167,26 +167,26 @@ async function main() {
       MESSAGE.normalize("NFD"),
       "1. Revisa la causa\n\n2. Mide el tiempo",
     ]) {
-      assert.deepEqual(attachSignedReply({ content, chatId: CHAT, reply }), { attached: false, reason: "CONTENT_MISMATCH" });
+      assert.deepEqual(classifyAdvisorText(content, reply), { origin: "local", reason: "CONTENT_MISMATCH" });
     }
-    // Otro chat: no se reutiliza.
-    assert.deepEqual(attachSignedReply({ content: MESSAGE, chatId: OTHER_CHAT, reply }), {
-      attached: false,
-      reason: "CHAT_MISMATCH",
-    });
-    // Mensajes locales: sin recibo.
-    assert.deepEqual(attachSignedReply({ content: MESSAGE, chatId: CHAT, reply: null }), { attached: false, reason: "NO_RECEIPT" });
-    assert.deepEqual(attachSignedReply({ content: MESSAGE, chatId: CHAT, reply: undefined }), {
-      attached: false,
-      reason: "NO_RECEIPT",
+    // El recibo va al chat de la petición, no al que esté activo al guardar.
+    const other = readSignedAssistantReply(true, { assistantMessage: MESSAGE, assistantReceipt: RECEIPT }, OTHER_CHAT);
+    const toOther = classifyAdvisorText(MESSAGE, other);
+    assert.ok(toOther.origin === "server" && toOther.chatId === OTHER_CHAT);
+    // Mensajes locales y contenido que no es texto.
+    assert.deepEqual(classifyAdvisorText(MESSAGE, null), { origin: "local", reason: "NO_RECEIPT" });
+    assert.deepEqual(classifyAdvisorText(MESSAGE, undefined), { origin: "local", reason: "NO_RECEIPT" });
+    assert.deepEqual(classifyAdvisorText({ a: 1 }, readSignedAssistantReply(true, { assistantMessage: '{"a":1}', assistantReceipt: RECEIPT }, CHAT)), {
+      origin: "local",
+      reason: "NOT_TEXT",
     });
 
     // Dos respuestas con el mismo texto y recibos distintos: cada una conserva el suyo.
     const first = readSignedAssistantReply(true, { assistantMessage: "¿Seguimos?", assistantReceipt: "ar1.a.uno" }, CHAT);
     const second = readSignedAssistantReply(true, { assistantMessage: "¿Seguimos?", assistantReceipt: "ar1.b.dos" }, CHAT);
-    const a = attachSignedReply({ content: "¿Seguimos?", chatId: CHAT, reply: first });
-    const b = attachSignedReply({ content: "¿Seguimos?", chatId: CHAT, reply: second });
-    assert.ok(a.attached && b.attached);
+    const a = classifyAdvisorText("¿Seguimos?", first);
+    const b = classifyAdvisorText("¿Seguimos?", second);
+    assert.ok(a.origin === "server" && b.origin === "server");
     assert.equal(a.serverReply.assistantReceipt, "ar1.a.uno");
     assert.equal(b.serverReply.assistantReceipt, "ar1.b.dos");
   }

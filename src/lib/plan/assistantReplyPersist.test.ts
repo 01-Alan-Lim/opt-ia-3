@@ -10,7 +10,7 @@ import { handleIshikawaTurn } from "../../app/chat/_lib/turns/ishikawaTurn";
 import { handleParetoTurn } from "../../app/chat/_lib/turns/paretoTurn";
 import { handleProgressTurn } from "../../app/chat/_lib/turns/progressTurn";
 import type { AdvisorTurnDeps, PlanContextStatus } from "../../app/chat/_lib/turns/types";
-import { formatAssistantMessageForReadability, softenAssistantLeadInChat } from "../chat/assistantFormat";
+import { formatAdvisorReplyForChat, formatAssistantMessageForReadability, softenAssistantLeadInChat } from "../chat/assistantFormat";
 import { loadAssistantReceiptKey } from "../chat/assistantReceiptConfig";
 import { decideMessageWrite, parsePersistMessageBody } from "../chat/messageWritePolicy";
 import { readSignedAssistantReply, type SignedAssistantReply } from "../chat/signedAssistantReply";
@@ -19,9 +19,9 @@ import type { FodaState, ParetoState, ProgressState } from "./advisorStates";
 
 // Guardado de las respuestas del asesor con su recibo (R1). Comprueba que:
 //   - el recibo llega intacto desde la respuesta de la ruta hasta el cuerpo de POST /api/messages,
-//     junto al texto original, mientras content sigue siendo el texto formateado de siempre;
-//   - solo lo lleva el mensaje que vino de esa respuesta, en el chat de la petición: los
-//     mensajes locales, los textos distintos y los guardados en otro chat van sin recibo;
+//     junto al texto original, y el mensaje se guarda como assistant en el chat de la petición;
+//   - los textos locales del asesor (y cualquier texto distinto del de la respuesta) se guardan
+//     como advisor, nunca como assistant, y se ven igual que antes;
 //   - cada mensaje se guarda una sola vez y los turnos mantienen su orden de siempre;
 //   - /api/messages exige el recibo para assistant (las pruebas de la ruta están en
 //     messagesRoute.test.ts).
@@ -121,40 +121,24 @@ async function main() {
   {
     sent.length = 0;
     await persistMessageDB(AUTH, { chatId: CHAT, role: "user", content: "Hola" });
-    await persistMessageDB(AUTH, { chatId: CHAT, role: "assistant", content: "Texto local" });
+    await persistMessageDB(AUTH, { chatId: CHAT, role: "advisor", content: "Texto local", clientMessageId: "c-1" });
     await persistMessageDB(AUTH, {
       chatId: CHAT,
       role: "assistant",
-      content: "Texto formateado",
       serverReply: { assistantMessage: "Texto original", assistantReceipt: RECEIPT },
     });
-    // Un serverReply con role "user" o con campos de más no sale tal cual.
-    await persistMessageDB(AUTH, {
-      chatId: CHAT,
-      role: "user",
-      content: "Hola",
-      serverReply: { assistantMessage: "x", assistantReceipt: RECEIPT },
-    });
+    // Un serverReply con campos de más no sale tal cual.
     const withExtra = { assistantMessage: "Texto original", assistantReceipt: RECEIPT, chatId: OTHER_CHAT, verified: true };
-    await persistMessageDB(AUTH, { chatId: CHAT, role: "assistant", content: "Texto", serverReply: withExtra });
+    await persistMessageDB(AUTH, { chatId: CHAT, role: "assistant", serverReply: withExtra });
 
     assert.deepEqual(messageBodies(), [
       { chatId: CHAT, role: "user", content: "Hola" },
-      { chatId: CHAT, role: "assistant", content: "Texto local" },
-      {
-        chatId: CHAT,
-        role: "assistant",
-        content: "Texto formateado",
-        serverReply: { assistantMessage: "Texto original", assistantReceipt: RECEIPT },
-      },
-      { chatId: CHAT, role: "user", content: "Hola" },
-      { chatId: CHAT, role: "assistant", content: "Texto", serverReply: { assistantMessage: "Texto original", assistantReceipt: RECEIPT } },
+      { chatId: CHAT, role: "advisor", content: "Texto local", clientMessageId: "c-1" },
+      { chatId: CHAT, role: "assistant", serverReply: { assistantMessage: "Texto original", assistantReceipt: RECEIPT } },
+      { chatId: CHAT, role: "assistant", serverReply: { assistantMessage: "Texto original", assistantReceipt: RECEIPT } },
     ]);
-    // Sin recibo, el cuerpo es exactamente el de antes (mismo orden de campos).
-    assert.equal(
-      JSON.stringify(messageBodies()[1]),
-      JSON.stringify({ chatId: CHAT, role: "assistant", content: "Texto local" }),
-    );
+    // assistant no manda content: el texto guardado lo calcula el servidor.
+    assert.ok(!("content" in messageBodies()[2]));
   }
 
   // ================= 2) /api/messages exige y lee el recibo =================
@@ -185,11 +169,12 @@ async function main() {
 
   // ================= 3) appendAssistant =================
   {
-    // Texto transformado: se pinta y se guarda formateado (como siempre); el recibo viaja con
-    // el original exacto que firmó el servidor.
+    // Respuesta del servidor: se pinta formateada (como siempre) y se guarda como assistant con
+    // el original exacto y su recibo; el servidor calcula el mismo texto formateado.
     const raw = "Entendido, Ana, registré tu avance: 1. Capacitación del personal 2. Medición de tiempos";
     const display = formatted(raw);
     assert.notEqual(display, raw, "el ejemplo sí se transforma");
+    assert.equal(formatAdvisorReplyForChat(raw), display, "mismo formato en navegador y servidor");
     const reply = signed(raw);
     const h = appendHarness("plan_mejora", CHAT);
     await appendAssistantMessage(h.deps, raw, reply);
@@ -197,28 +182,28 @@ async function main() {
     assert.equal(h.shown[0].role, "assistant");
     assert.equal(h.shown[0].content, display, "se ve igual que antes");
     assert.equal(h.persisted.length, 1, "un solo guardado");
-    assert.deepEqual(h.persisted[0], {
-      chatId: CHAT,
-      role: "assistant",
-      content: display,
-      serverReply: { assistantMessage: raw, assistantReceipt: RECEIPT },
-    });
-    assert.equal(h.persisted[0].serverReply?.assistantReceipt, reply?.assistantReceipt, "recibo intacto");
+    assert.deepEqual(h.persisted[0], { chatId: CHAT, role: "assistant", serverReply: { assistantMessage: raw, assistantReceipt: RECEIPT } });
+    const p0 = h.persisted[0];
+    assert.ok(p0.role === "assistant" && p0.serverReply.assistantReceipt === reply?.assistantReceipt, "recibo intacto");
   }
   {
-    // Mensaje local: sin recibo, igual que antes.
+    // Texto local: advisor, con el id del mensaje como clave de idempotencia.
     const h = appendHarness("plan_mejora", CHAT);
     await appendAssistantMessage(h.deps, "✅ Ya tenemos suficientes causas.");
-    assert.deepEqual(h.persisted, [{ chatId: CHAT, role: "assistant", content: "✅ Ya tenemos suficientes causas." }]);
+    assert.equal(h.shown[0].role, "advisor");
+    assert.deepEqual(h.persisted, [
+      { chatId: CHAT, role: "advisor", content: "✅ Ya tenemos suficientes causas.", clientMessageId: h.shown[0].id },
+    ]);
   }
   {
-    // Un mensaje local no toma el recibo de otra respuesta, aunque se lo pasen.
+    // Un texto local no toma el recibo de otra respuesta, aunque se lo pasen: va como advisor.
     const h = appendHarness("plan_mejora", CHAT);
     const other = signed("Indícame qué causas raíz quieres priorizar.");
     await appendAssistantMessage(h.deps, "⚠️ Indícame qué causas raíz quieres priorizar.", other);
     await appendAssistantMessage(h.deps, "Indícame qué causas raíz quieres priorizar. ", other);
-    assert.equal(h.persisted.length, 2);
-    for (const p of h.persisted) assert.ok(!("serverReply" in p), "texto distinto: sin recibo");
+    assert.deepEqual(h.persisted.map((p) => p.role), ["advisor", "advisor"]);
+    assert.ok(h.persisted.every((p) => !("serverReply" in p)));
+    assert.deepEqual(h.shown.map((m) => m.role), ["advisor", "advisor"]);
   }
   {
     // Dos respuestas con el mismo texto y recibos distintos: cada guardado lleva el suyo.
@@ -226,51 +211,58 @@ async function main() {
     await appendAssistantMessage(h.deps, "¿Seguimos?", signed("¿Seguimos?", "ar1.uno.a"));
     await appendAssistantMessage(h.deps, "¿Seguimos?", signed("¿Seguimos?", "ar1.dos.b"));
     assert.deepEqual(
-      h.persisted.map((p) => p.serverReply?.assistantReceipt),
+      h.persisted.map((p) => (p.role === "assistant" ? p.serverReply.assistantReceipt : null)),
       ["ar1.uno.a", "ar1.dos.b"],
     );
   }
   {
-    // Cambio de chat antes de guardar: se guarda en el chat activo (como siempre), sin el
-    // recibo del anterior.
+    // Cambio de chat antes de guardar: la respuesta va al chat de la petición (el del recibo y
+    // del estado de la etapa), no al activo.
     const h = appendHarness("plan_mejora", OTHER_CHAT);
     await appendAssistantMessage(h.deps, "¿Seguimos?", signed("¿Seguimos?"));
-    assert.deepEqual(h.persisted, [{ chatId: OTHER_CHAT, role: "assistant", content: "¿Seguimos?" }]);
+    assert.deepEqual(h.persisted, [{ chatId: CHAT, role: "assistant", serverReply: { assistantMessage: "¿Seguimos?", assistantReceipt: RECEIPT } }]);
   }
   {
-    // Sin chat activo: se pinta y no se guarda; en modo general, sin formato ni guardado.
+    // Sin chat activo: un texto local se pinta y no se guarda; una respuesta del servidor se
+    // guarda en su chat. En modo general, sin formato ni guardado.
     const noChat = appendHarness("plan_mejora", null);
-    await appendAssistantMessage(noChat.deps, "Entendido, Ana, sigamos.", signed("Entendido, Ana, sigamos."));
-    assert.equal(noChat.shown[0].content, formatted("Entendido, Ana, sigamos."));
+    await appendAssistantMessage(noChat.deps, "Recarga para continuar.");
     assert.equal(noChat.persisted.length, 0);
+    await appendAssistantMessage(noChat.deps, "Entendido, Ana, sigamos.", signed("Entendido, Ana, sigamos."));
+    assert.equal(noChat.shown[1].content, formatted("Entendido, Ana, sigamos."));
+    assert.deepEqual(noChat.persisted.map((p) => [p.chatId, p.role]), [[CHAT, "assistant"]]);
 
     const general = appendHarness("general", CHAT);
     await appendAssistantMessage(general.deps, "Entendido, Ana, sigamos.", signed("Entendido, Ana, sigamos."));
+    await appendAssistantMessage(general.deps, "Listo.");
     assert.equal(general.shown[0].content, "Entendido, Ana, sigamos.");
+    assert.equal(general.shown[1].role, "advisor");
     assert.equal(general.persisted.length, 0);
   }
   {
-    // Contenido que no es texto: se serializa como antes y no lleva recibo.
+    // Contenido que no es texto: se serializa como antes y va como advisor.
     const h = appendHarness("plan_mejora", CHAT);
     await appendAssistantMessage(h.deps, { a: 1 }, signed('{"a":1}'));
     await appendAssistantMessage(h.deps, null, signed("x"));
-    assert.equal(h.persisted[0].content, '{"a":1}');
-    assert.ok(!("serverReply" in h.persisted[0]), "sin texto de la ruta no hay recibo");
-    assert.ok(!("serverReply" in h.persisted[1]));
+    assert.deepEqual(h.persisted.map((p) => p.role), ["advisor", "advisor"]);
+    assert.ok(h.persisted[0].role === "advisor" && h.persisted[0].content === '{"a":1}');
   }
   {
-    // Formato visual sin cambios para textos de etapas reales.
+    // Formato visual sin cambios para textos de etapas reales, con y sin recibo.
     for (const raw of [
       "Perfecto, Ana. Ahora sí cuéntame qué actividades lograste ejecutar.",
       "✅ El FODA ya está completo en sus 4 cuadrantes.\n👉 Ahora corresponde validarlo.",
       "Tus causas: 1. Falta de capacitación 2. Máquinas sin mantenimiento\nAhora elige una.",
       "**Versión 1**: objetivo general redactado",
     ]) {
-      const h = appendHarness("plan_mejora", CHAT);
-      await appendAssistantMessage(h.deps, raw, signed(raw));
-      assert.equal(h.shown[0].content, formatted(raw));
-      assert.equal(h.persisted[0].content, formatted(raw));
-      assert.equal(h.persisted[0].serverReply?.assistantMessage, raw);
+      const signedRun = appendHarness("plan_mejora", CHAT);
+      await appendAssistantMessage(signedRun.deps, raw, signed(raw));
+      const localRun = appendHarness("plan_mejora", CHAT);
+      await appendAssistantMessage(localRun.deps, raw);
+      assert.equal(signedRun.shown[0].content, formatted(raw));
+      assert.equal(localRun.shown[0].content, formatted(raw), "advisor se ve igual");
+      const local = localRun.persisted[0];
+      assert.ok(local.role === "advisor" && local.content === formatted(raw));
     }
   }
 
@@ -475,25 +467,18 @@ async function main() {
     const { raw, bodies, routeCalls } = await paretoEndToEnd(chatIdRef);
     assert.equal(routeCalls.length, 1, "una sola llamada a la ruta (y al modelo)");
     assert.equal(routeCalls[0].body.chatId, CHAT);
-    assert.deepEqual(bodies, [
-      {
-        chatId: CHAT,
-        role: "assistant",
-        content: formatted(raw),
-        serverReply: { assistantMessage: raw, assistantReceipt: RECEIPT },
-      },
-    ]);
+    assert.deepEqual(bodies, [{ chatId: CHAT, role: "assistant", serverReply: { assistantMessage: raw, assistantReceipt: RECEIPT } }]);
   }
   {
-    // El estudiante cambia de chat mientras espera la respuesta: se guarda donde se guardaba
-    // (el chat activo), pero sin el recibo, que era del chat anterior.
+    // El estudiante cambia de chat mientras espera la respuesta: la respuesta se guarda en el
+    // chat de la petición, que es el del recibo y donde el turno guardó el estado.
     const chatIdRef = { current: CHAT as string | null };
     onRouteCall = () => {
       chatIdRef.current = OTHER_CHAT;
     };
     const { raw, bodies } = await paretoEndToEnd(chatIdRef);
     onRouteCall = () => undefined;
-    assert.deepEqual(bodies, [{ chatId: OTHER_CHAT, role: "assistant", content: formatted(raw) }]);
+    assert.deepEqual(bodies, [{ chatId: CHAT, role: "assistant", serverReply: { assistantMessage: raw, assistantReceipt: RECEIPT } }]);
   }
 
   // ================= 6) Código: cada recibo sale de su propia respuesta =================
@@ -544,11 +529,25 @@ async function main() {
     ),
   );
   assert.ok(!page.includes("softenAssistantLeadInChat") && !page.includes("formatAssistantMessageForReadability"));
-  // Un solo guardado por mensaje.
-  assert.equal(read("src", "app", "chat", "_lib", "appendAssistantMessage.ts").match(/persistMessageDB\(/g)?.length, 1);
+  // Un solo guardado por mensaje: dos ramas excluyentes (assistant con recibo o advisor).
+  const appendCode = read("src", "app", "chat", "_lib", "appendAssistantMessage.ts");
+  assert.equal(appendCode.match(/persistMessageDB\(/g)?.length, 2);
+  assert.ok(appendCode.includes('role: "assistant", serverReply: origin.serverReply });\n    return;'));
   // Las transiciones solo emiten textos locales: no reciben ni pasan recibos.
   assert.ok(!read("src", "app", "chat", "_lib", "advisorTransitions.ts").includes("signedReply"));
   assert.ok(read("src", "app", "chat", "_lib", "advisorTransitions.ts").includes("appendAssistant: (content: unknown) => Promise<void>;"));
+  // ...y los guardan y pintan como advisor.
+  const transitions = read("src", "app", "chat", "_lib", "advisorTransitions.ts");
+  assert.ok(!transitions.includes('role: "assistant"') && !transitions.includes('createMessage("assistant"'));
+  assert.equal(transitions.match(/role: "advisor", content: msg/g)?.length, 12);
+  assert.ok(!read("src", "app", "chat", "_lib", "useChatHistory.ts").includes('createMessage("assistant"'));
+  // En page.tsx solo quedan como assistant los dos textos que escribe el servidor: la revisión
+  // del plan (/api/plans/review) y la respuesta del chat general (/api/chat).
+  assert.deepEqual(page.match(/createMessage\("assistant", [^)]*\)/g), [
+    'createMessage("assistant", feedbackText)',
+    'createMessage("assistant", payload.reply ?? "Listo.")',
+  ]);
+  assert.ok(!page.includes('role: "assistant"'), "page.tsx no guarda nada como assistant por su cuenta");
 }
 
 main()

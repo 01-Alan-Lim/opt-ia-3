@@ -397,8 +397,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en la **Etapa 10 (Informe final)**.\n\n" +
         "👉 Continúa subiendo, corrigiendo o validando tu informe final.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -413,8 +413,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en **Etapa 9 (Reporte de avances)**.\n\n" +
         "👉 Continúa registrando avances, evidencias y resultados parciales o finales.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -428,8 +428,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en **Etapa 8 (Planificación / Cronograma)**.\n\n" +
         "👉 Continúa armando el cronograma, responsables, recursos y tiempos.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -443,8 +443,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en **Etapa 7 (Plan de Mejora)**.\n\n" +
         "👉 Continúa estructurando la propuesta de mejora.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -458,8 +458,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en **Etapa 6 (Objetivos)**.\n\n" +
         "👉 Continúa trabajando el objetivo general y los objetivos específicos.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -475,8 +475,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Estabas en **Etapa 5 (Pareto)**.\n\n" +
         "👉 Continúa priorizando tus causas y, cuando corresponda, compárteme las causas críticas.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -499,8 +499,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         (problemText ? `- Problema principal: **${problemText}**\n\n` : "") +
         "👉 Continúa completando causas, subcausas y profundizando con los 5 porqués donde haga falta.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -521,8 +521,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         `- Ideas registradas: **${nIdeas}**\n\n` +
         "👉 Continúa aportando ideas claras y concretas relacionadas con el problema.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -579,8 +579,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
           `- Amenazas: **${foda2.items.A.length}**\n\n` +
           `👉 Continuemos exactamente desde **${currentLabel}**.`;
 
-        setMessages([createMessage("assistant", msg)]);
-        await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+        setMessages([createMessage("advisor", msg)]);
+        await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
         return true;
       }
 
@@ -590,8 +590,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
         "Ahora corresponde continuar con la **Etapa 2 (FODA)**.\n\n" +
         "👉 Empecemos por lo más fácil: dime una **fortaleza interna** de la empresa o del proceso analizado.";
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -622,8 +622,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
       // Evita que el efecto de restauración local vuelva a empujar el mismo prompt
       restoredWizardRef.current = effectiveChatId;
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 
@@ -647,8 +647,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
 
       const msg = `${greet}\n\n${promptForStep(step)}`;
 
-      setMessages([createMessage("assistant", msg)]);
-      await persistMessageDB({ chatId: effectiveChatId, role: "assistant", content: msg });
+      setMessages([createMessage("advisor", msg)]);
+      await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });
       return true;
     }
 

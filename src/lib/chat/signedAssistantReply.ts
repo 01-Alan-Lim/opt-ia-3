@@ -6,9 +6,10 @@
 //
 // Un recibo vale para el texto EXACTO que emitió el servidor, para el usuario de la sesión y
 // para el chat enviado en la petición. Por eso viaja con ese texto y ese chat, como metadato
-// de la respuesta que lo trajo (no hay registro global), y se adjunta al guardado solo si el
-// texto que se guarda viene de esa respuesta (comparación exacta, sin normalizar) y se guarda
-// en ese mismo chat. En cualquier otro caso el mensaje se guarda igual que antes, sin recibo.
+// de la respuesta que lo trajo (no hay registro global). Un texto del asesor es respuesta del
+// servidor solo si es exactamente el assistantMessage de esa respuesta (comparación exacta, sin
+// normalizar); entonces se guarda como assistant, con su recibo, en el chat de la petición. Todo
+// lo demás es texto local y se guarda como advisor (ver messageProvenance.ts).
 //
 // Que un mensaje viaje con recibo no lo hace verificado: eso solo puede decidirlo el servidor.
 
@@ -27,9 +28,10 @@ export type AssistantServerReply = Readonly<{
   assistantReceipt: string;
 }>;
 
-export type SignedReplyAttachment =
-  | { attached: true; serverReply: AssistantServerReply }
-  | { attached: false; reason: "NO_RECEIPT" | "CONTENT_MISMATCH" | "CHAT_MISMATCH" };
+export type AdvisorTextOrigin =
+  // chatId: el de la petición, al que el servidor ató el recibo (y donde el turno guarda el estado).
+  | { origin: "server"; chatId: string; serverReply: AssistantServerReply }
+  | { origin: "local"; reason: "NO_RECEIPT" | "NOT_TEXT" | "CONTENT_MISMATCH" };
 
 // Lee el recibo de una respuesta de ruta assistant. null si la respuesta falló, si la petición
 // no llevó chat o si no hay texto y recibo como strings no vacíos.
@@ -48,21 +50,18 @@ export function readSignedAssistantReply(
   return Object.freeze({ chatId: requestChatId, assistantMessage, assistantReceipt });
 }
 
-// Decide si el recibo acompaña al mensaje que se va a guardar. content es el texto que recibió
-// appendAssistant (antes de suavizarlo y darle formato) y chatId el chat donde se guarda.
-export function attachSignedReply(input: {
-  content: string;
-  chatId: string;
-  reply: SignedAssistantReply | null | undefined;
-}): SignedReplyAttachment {
-  const { content, chatId, reply } = input;
-
-  if (!reply) return { attached: false, reason: "NO_RECEIPT" };
-  if (reply.assistantMessage !== content) return { attached: false, reason: "CONTENT_MISMATCH" };
-  if (reply.chatId !== chatId) return { attached: false, reason: "CHAT_MISMATCH" };
+// Clasifica el texto que recibió appendAssistant (antes de suavizarlo y darle formato).
+export function classifyAdvisorText(
+  content: unknown,
+  reply: SignedAssistantReply | null | undefined,
+): AdvisorTextOrigin {
+  if (!reply) return { origin: "local", reason: "NO_RECEIPT" };
+  if (typeof content !== "string") return { origin: "local", reason: "NOT_TEXT" };
+  if (reply.assistantMessage !== content) return { origin: "local", reason: "CONTENT_MISMATCH" };
 
   return {
-    attached: true,
+    origin: "server",
+    chatId: reply.chatId,
     serverReply: Object.freeze({
       assistantMessage: reply.assistantMessage,
       assistantReceipt: reply.assistantReceipt,

@@ -39,35 +39,40 @@ export async function getActiveAdvisorStage(authHeaders: AuthHeaders) {
   };
 }
 
-// serverReply: solo para "assistant", la respuesta original de la ruta assistant con su recibo,
-// tal cual llegó (R1). Hoy /api/messages no la lee (su esquema descarta campos desconocidos) y
-// guarda content como siempre; viajar con recibo no hace verificado al mensaje.
-export type PersistMessageInput = {
-  chatId: string;
-  role: "user" | "assistant";
-  content: string;
-  serverReply?: AssistantServerReply;
-};
+// Qué puede guardar el navegador (R1, ver messageProvenance.ts):
+//   - user: lo que escribió el estudiante.
+//   - advisor: textos locales del asesor (guías, transiciones, validaciones, reanudaciones, E0).
+//   - assistant: solo la respuesta de una ruta assistant, con su recibo tal cual llegó. El
+//     servidor verifica el recibo y calcula él mismo el texto que guarda; no se manda content.
+// clientMessageId: clave de idempotencia de user y advisor, la misma en cada reintento.
+export type PersistMessageInput =
+  | { chatId: string; role: "user" | "advisor"; content: string; clientMessageId?: string }
+  | { chatId: string; role: "assistant"; serverReply: AssistantServerReply };
+
+function persistMessageBody(input: PersistMessageInput) {
+  if (input.role === "assistant") {
+    return {
+      chatId: input.chatId,
+      role: input.role,
+      serverReply: {
+        assistantMessage: input.serverReply.assistantMessage,
+        assistantReceipt: input.serverReply.assistantReceipt,
+      },
+    };
+  }
+  return {
+    chatId: input.chatId,
+    role: input.role,
+    content: input.content,
+    ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+  };
+}
 
 export async function persistMessageDB(authHeaders: AuthHeaders, input: PersistMessageInput) {
-  const serverReply = input.role === "assistant" ? input.serverReply : undefined;
-
   const res = await fetch("/api/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
-    body: JSON.stringify({
-      chatId: input.chatId,
-      role: input.role,
-      content: input.content,
-      ...(serverReply
-        ? {
-            serverReply: {
-              assistantMessage: serverReply.assistantMessage,
-              assistantReceipt: serverReply.assistantReceipt,
-            },
-          }
-        : {}),
-    }),
+    body: JSON.stringify(persistMessageBody(input)),
   });
 
   const json = await res.json().catch(() => null);

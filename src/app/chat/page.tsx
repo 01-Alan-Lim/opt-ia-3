@@ -436,12 +436,12 @@ export default function ChatPage() {
                 `- Ideas: **${nIdeas} / ${min}**\n\n` +
                 "👉 Continúa con la siguiente causa (una idea clara y concreta).";
 
-              setMessages([createMessage("assistant", resumeMsg)]);
+              setMessages([createMessage("advisor", resumeMsg)]);
 
               if (created.ok && created.chatId) {
                 await persistMessageDB({
                   chatId: created.chatId,
-                  role: "assistant",
+                  role: "advisor",
                   content: resumeMsg,
                 });
               }
@@ -461,12 +461,12 @@ export default function ChatPage() {
               `- Tipo: **${type}**\n\n` +
               "👉 Puedes continuar con **Etapa 2: Análisis FODA** cuando quieras.";
 
-            setMessages([createMessage("assistant", doneMsg)]);
+            setMessages([createMessage("advisor", doneMsg)]);
 
             if (created.ok && created.chatId) {
               await persistMessageDB({
                 chatId: created.chatId,
-                role: "assistant",
+                role: "advisor",
                 content: doneMsg,
               });
             }
@@ -489,8 +489,8 @@ export default function ChatPage() {
         const greet = advisorResumeGreeting(ctx.contextJson, step);
 
         setMessages([
-          createMessage("assistant", greet),
-          createMessage("assistant", promptForStep(step)),
+          createMessage("advisor", greet),
+          createMessage("advisor", promptForStep(step)),
         ]);
 
         return;
@@ -695,7 +695,7 @@ export default function ChatPage() {
     setMessages((prev) => {
       const last = [...prev].reverse().find((m) => isAdvisorSideRole(m.role))?.content ?? "";
       if (last.trim() === text.trim()) return prev;
-      return [...prev, createMessage("assistant", text)];
+      return [...prev, createMessage("advisor", text)];
     });
   }
 
@@ -1992,7 +1992,7 @@ export default function ChatPage() {
         setShowHoursInline(true);
         setMessages((prev) => [
           ...prev,
-          createMessage("assistant", "Listo ✅ Aquí tienes el formulario para registrar tus horas de esta semana."),
+          createMessage("advisor", "Listo ✅ Aquí tienes el formulario para registrar tus horas de esta semana."),
         ]);
         return;
       }
@@ -2024,7 +2024,7 @@ export default function ChatPage() {
 
           setMessages((prev) => [
             ...prev,
-            createMessage("assistant", bootstrapError),
+            createMessage("advisor", bootstrapError),
           ]);
           return;
         }
@@ -2294,7 +2294,7 @@ export default function ChatPage() {
     } catch {
       setMessages((prev) => [
         ...prev,
-        createMessage("assistant", "⚠️ Ocurrió un error al procesar tu mensaje."),
+        createMessage("advisor", "⚠️ Ocurrió un error al procesar tu mensaje."),
       ]);
     } finally {
       setIsSending(false);
@@ -2312,7 +2312,7 @@ export default function ChatPage() {
     if (nextMode === "general") {
       chatIdRef.current = null;
       setChatId(null);
-      setMessages([createMessage("assistant", GREETING)]);
+      setMessages([createMessage("advisor", GREETING)]);
 
       try {
         // Limpia general
@@ -2344,7 +2344,7 @@ export default function ChatPage() {
       setIsSending(false);
 
       // NO reseteamos el progreso (etapas). Solo creamos un chat nuevo.
-      setMessages([createMessage("assistant", "⏳ Creando un nuevo chat para continuar tu avance...")]);
+      setMessages([createMessage("advisor", "⏳ Creando un nuevo chat para continuar tu avance...")]);
 
       // Limpia cache local del chat actual (solo UI), pero NO toca el estado del caso
       try {
@@ -2427,7 +2427,7 @@ export default function ChatPage() {
     if (!userId) {
       setMessages((prev) => [
         ...prev,
-        createMessage("assistant", "Debes iniciar sesión para subir y revisar un plan de mejora."),
+        createMessage("advisor", "Debes iniciar sesión para subir y revisar un plan de mejora."),
       ]);
       return;
     }

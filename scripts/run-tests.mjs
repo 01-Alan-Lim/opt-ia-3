@@ -63,6 +63,7 @@ const TESTS = [
   "messagesRouteNoKey",
   "messagesRouteIdempotency",
   "planContextRoute",
+  "advisorPersistEndToEnd",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
