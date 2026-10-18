@@ -10,11 +10,14 @@ import { ChatLayout } from "@/components/chat/ChatLayout";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MessageList } from "@/components/chat/MessageList";
 import { MessageInput } from "@/components/chat/MessageInput";
+import { PersistFailureNotice } from "@/components/chat/PersistFailureNotice";
 import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScreen";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ModeSelector } from "@/components/chat/ModeSelector";
 import * as advisorApi from "./_lib/advisorApi";
-import type { PersistMessageInput } from "./_lib/advisorApi";
+import type { PersistMessageInput, PersistMessageResult } from "./_lib/advisorApi";
+import { describePersistFailures, withClientMessageId } from "./_lib/persistFailures";
+import { usePersistFailures } from "./_lib/usePersistFailures";
 import { appendAssistantMessage } from "./_lib/appendAssistantMessage";
 import { useAccessGate } from "./_lib/useAccessGate";
 import { useChatSession } from "./_lib/useChatSession";
@@ -175,6 +178,8 @@ export default function ChatPage() {
   const advisorChatBootstrapErrorRef = useRef<string | null>(null);
   const modeRef = useRef<ChatMode>("general");
   const messagesRef = useRef<Message[]>([]);
+  // Mensajes que no se pudieron guardar en el historial (aviso y reintento).
+  const persistFailures = usePersistFailures();
 
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const composerMeasureRef = useRef<HTMLDivElement | null>(null);
@@ -784,10 +789,28 @@ export default function ChatPage() {
     return true;
   }
 
-  async function persistMessageDB(input: PersistMessageInput) {
-    const authHeaders = await getAuthHeaders();
+  // Todo guardado de mensajes pasa por aquí (appendAssistant, transiciones y el texto del
+  // estudiante). Si falla, el mensaje queda pendiente y se avisa; los siguientes del mismo chat
+  // esperan en cola detrás para no desordenar el historial. Ver _lib/persistFailures.ts.
+  async function persistMessageDB(input: PersistMessageInput): Promise<PersistMessageResult> {
+    const request = withClientMessageId(input, () => crypto.randomUUID());
+    if (persistFailures.blocks(request.chatId)) {
+      persistFailures.queue(request);
+      return { ok: false, status: 0, code: "QUEUED", message: null, data: null };
+    }
 
-    return advisorApi.persistMessageDB(authHeaders, input);
+    const result = await sendMessageToHistory(request);
+    if (!result.ok) persistFailures.report(request, result);
+    return result;
+  }
+
+  async function sendMessageToHistory(input: PersistMessageInput): Promise<PersistMessageResult> {
+    try {
+      const authHeaders = await getAuthHeaders();
+      return await advisorApi.persistMessageDB(authHeaders, input);
+    } catch {
+      return { ok: false, status: 0, code: "NETWORK", message: null, data: null };
+    }
   }
 
   // reply: solo cuando content es la respuesta de una ruta assistant (su signedReply).
@@ -2031,7 +2054,7 @@ export default function ChatPage() {
 
         const advisorChatId = effectiveChatId;
 
-        await persistMessageDB({ chatId: advisorChatId, role: "user", content: text });
+        await persistMessageDB({ chatId: advisorChatId, role: "user", content: text, clientMessageId: userMessage.id });
 
         if (looksLikeAdvisorProgressStatusQuestion(text)) {
           await handleAdvisorProgressStatusQuestion();
@@ -2670,6 +2693,12 @@ export default function ChatPage() {
 
         <div className="chat-composer absolute inset-x-0 bottom-3 z-20 pointer-events-none px-2 sm:px-3">
           <div ref={composerMeasureRef} className="pointer-events-auto relative z-10 mx-auto w-full max-w-4xl">
+            <PersistFailureNotice
+              notice={describePersistFailures(persistFailures.failures)}
+              retrying={persistFailures.retrying}
+              onRetry={() => void persistFailures.retry(sendMessageToHistory)}
+              onDismiss={persistFailures.dismiss}
+            />
             <MessageInput
               onSend={handleSend}
               disabled={isSending || !canInteract}

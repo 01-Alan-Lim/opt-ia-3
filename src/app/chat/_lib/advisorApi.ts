@@ -68,17 +68,37 @@ function persistMessageBody(input: PersistMessageInput) {
   };
 }
 
-export async function persistMessageDB(authHeaders: AuthHeaders, input: PersistMessageInput) {
-  const res = await fetch("/api/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders },
-    body: JSON.stringify(persistMessageBody(input)),
-  });
+// Resultado del guardado. Un fallo de red no lanza: vuelve con status 0 y code NETWORK, para que
+// quien llama pueda avisar y reintentar (ver persistFailures.ts).
+export type PersistMessageResult =
+  | { ok: true; status: number; duplicate: boolean; data: unknown }
+  | { ok: false; status: number; code: string | null; message: string | null; data: unknown };
+
+export async function persistMessageDB(authHeaders: AuthHeaders, input: PersistMessageInput): Promise<PersistMessageResult> {
+  let res: Response;
+  try {
+    res = await fetch("/api/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify(persistMessageBody(input)),
+    });
+  } catch {
+    return { ok: false, status: 0, code: "NETWORK", message: null, data: null };
+  }
 
   const json = await res.json().catch(() => null);
   const okk = res.ok && json?.ok !== false;
 
-  return { ok: okk, data: json?.data ?? json };
+  if (okk) {
+    return { ok: true, status: res.status, duplicate: json?.data?.duplicate === true, data: json?.data ?? json };
+  }
+  return {
+    ok: false,
+    status: res.status,
+    code: typeof json?.code === "string" ? json.code : null,
+    message: typeof json?.message === "string" ? json.message : null,
+    data: json,
+  };
 }
 
 export async function interpretStage0WithLLM(authHeaders: AuthHeaders, step: 1 | 2 | 3, userText: string, ctxJson: unknown) {
