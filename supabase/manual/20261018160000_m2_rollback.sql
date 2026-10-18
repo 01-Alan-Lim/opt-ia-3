@@ -1,4 +1,4 @@
--- Reversión completa de M2 (20261018160000_message_provenance_receipt_idempotency).
+-- Reversión completa de M2 (20261018184547_message_provenance_receipt_idempotency).
 -- Fuera de supabase/migrations a propósito: no lo aplica db push. Ejecutar solo a mano y solo
 -- después de haber revertido el código del release (el código nuevo necesita M2).
 --

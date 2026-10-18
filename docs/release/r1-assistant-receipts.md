@@ -41,7 +41,7 @@ mensaje no guardado. Rotar fuera del horario de uso.
 
 ## Migración M2
 
-`supabase/migrations/20261018160000_message_provenance_receipt_idempotency.sql`
+`supabase/migrations/20261018184547_message_provenance_receipt_idempotency.sql` (versión registrada en Supabase)
 
 - Admite `role = 'advisor'` y deja de admitir `system` (0 filas).
 - Añade `receipt_nonce` (único en toda la tabla) y `client_message_id` (único por chat).

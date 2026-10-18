@@ -1,4 +1,4 @@
-// Prueba de M2 (20261018160000_message_provenance_receipt_idempotency) en un Postgres en
+// Prueba de M2 (20261018184547_message_provenance_receipt_idempotency) en un Postgres en
 // memoria (PGlite). No toca ninguna base real.
 //
 // Uso: node supabase/tests/m2_message_provenance.pglite.mjs <carpeta-con-node_modules/@electric-sql/pglite>
@@ -22,10 +22,12 @@ const { PGlite } = await import(
   pathToFileURL(path.join(envDir, "node_modules", "@electric-sql", "pglite", "dist", "index.js")).href
 );
 
-const VERSION = "20261018160000";
-const migration = readFileSync(path.join(root, "supabase", "migrations", `${VERSION}_message_provenance_receipt_idempotency.sql`), "utf8");
-const verify = readFileSync(path.join(root, "supabase", "manual", `${VERSION}_m2_verify.sql`), "utf8");
-const rollback = readFileSync(path.join(root, "supabase", "manual", `${VERSION}_m2_rollback.sql`), "utf8");
+// La migración lleva la versión registrada en Supabase; los archivos manuales conservan su nombre.
+const MIGRATION = "20261018184547_message_provenance_receipt_idempotency.sql";
+const MANUAL = "20261018160000";
+const migration = readFileSync(path.join(root, "supabase", "migrations", MIGRATION), "utf8");
+const verify = readFileSync(path.join(root, "supabase", "manual", `${MANUAL}_m2_verify.sql`), "utf8");
+const rollback = readFileSync(path.join(root, "supabase", "manual", `${MANUAL}_m2_rollback.sql`), "utf8");
 
 const db = new PGlite();
 let failures = 0;

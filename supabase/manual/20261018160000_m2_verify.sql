@@ -1,4 +1,4 @@
--- Verificación de M2 (20261018160000_message_provenance_receipt_idempotency). SOLO LECTURA.
+-- Verificación de M2 (20261018184547_message_provenance_receipt_idempotency). SOLO LECTURA.
 -- Fuera de supabase/migrations a propósito: no lo aplica db push.
 -- Cada fila trae ok = true si la comprobación pasa. Antes de aplicar M2, guardar el resultado
 -- de la consulta 2 para compararlo con el posterior.
