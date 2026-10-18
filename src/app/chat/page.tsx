@@ -977,7 +977,6 @@ export default function ChatPage() {
       products?: string[];
       process_focus?: string[];
     },
-    opts?: { userMessage?: string; assistantMessage?: string },
     baseContextJson?: {
       sector?: string;
       products?: string[];
@@ -1013,18 +1012,15 @@ export default function ChatPage() {
       `Proceso/área: ${(contextJson.process_focus || []).join(", ") || "(pendiente)"}`,
     ].join("\n");
 
+    // Solo el contexto: la conversación de E0 se guarda por /api/messages.
     const reqBody: {
       contextJson: Stage0ContextJson;
       contextText: string;
-      userMessage?: string;
-      assistantMessage?: string;
       chatId?: string;
     } = {
       contextJson,
       contextText: contextText ?? "",
     };
-    if (opts?.userMessage) reqBody.userMessage = opts.userMessage;
-    if (opts?.assistantMessage) reqBody.assistantMessage = opts.assistantMessage;
     if (chatIdRef.current) reqBody.chatId = chatIdRef.current;
 
     const res = await fetch("/api/plans/context", {
@@ -1126,11 +1122,7 @@ export default function ChatPage() {
       const nextContext = mergeStage0Context(currentStage0Context, extractedContext);
       const assistantMessage = buildStage0ProgressMessage(extractedContext, nextContext);
 
-      const saved = await savePlanContextDraft(
-        extractedContext,
-        undefined,
-        currentStage0Context
-      );
+      const saved = await savePlanContextDraft(extractedContext, currentStage0Context);
 
       if (!saved.ok) {
         await appendAssistant("No pude guardar el contexto en este momento. Intenta otra vez.");

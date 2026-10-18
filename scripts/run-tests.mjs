@@ -62,6 +62,7 @@ const TESTS = [
   "messagesRoute",
   "messagesRouteNoKey",
   "messagesRouteIdempotency",
+  "planContextRoute",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
