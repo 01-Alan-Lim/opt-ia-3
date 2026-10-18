@@ -10,6 +10,7 @@ import type { MessageStore, StoredMessage } from "@/lib/chat/messageStore";
 import {
   decideMessageWrite,
   type MessageAccessGate,
+  type MessageInsertRow,
   type PersistMessageBody,
 } from "@/lib/chat/messageWritePolicy";
 
@@ -56,7 +57,42 @@ export async function persistChatMessage(input: {
     };
   }
   if (inserted.failure === "DUPLICATE") {
-    return { ok: false, status: 409, code: "CONFLICT", message: "Este mensaje ya estaba guardado." };
+    return resolveDuplicate(store, decision.row);
   }
   return { ok: false, status: 500, code: "INTERNAL", message: "No se pudo guardar el mensaje" };
+}
+
+// Idempotencia (R1-D). Los índices únicos de M2 deciden en Postgres, también entre solicitudes
+// concurrentes o instancias distintas: solo una inserción gana. Las demás devuelven la fila que
+// ya existe, sin crear otra:
+//   - assistant: un recibo, una fila (receipt_nonce). El recibo ya se verificó para este
+//     usuario y este chat, así que la fila existente es esa misma respuesta.
+//   - user/advisor: un client_message_id por chat. Si llega con otro texto u otro role, no es
+//     un reintento: 409.
+async function resolveDuplicate(store: MessageStore, row: MessageInsertRow): Promise<PersistChatMessageResult> {
+  const existing = row.receipt_nonce
+    ? await store.findByReceiptNonce(row.receipt_nonce)
+    : row.client_message_id
+      ? await store.findByClientMessageId(row.chat_id, row.client_message_id)
+      : null;
+
+  if (!existing) {
+    return { ok: false, status: 500, code: "INTERNAL", message: "No se pudo guardar el mensaje" };
+  }
+
+  const sameMessage =
+    existing.chatId === row.chat_id &&
+    existing.role === row.role &&
+    (row.receipt_nonce !== undefined || existing.content === row.content);
+
+  if (!sameMessage) {
+    return {
+      ok: false,
+      status: 409,
+      code: "CONFLICT",
+      message: "La clave de este mensaje ya se usó para otro mensaje.",
+    };
+  }
+
+  return { ok: true, message: existing, duplicate: true };
 }
