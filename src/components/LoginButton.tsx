@@ -4,13 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
 import { supabase } from "@/lib/supabaseClient";
-
-type Role = "student" | "teacher";
-
-async function getAccessToken(): Promise<string | null> {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.access_token ?? null;
-}
+import { finishBrowserLogin } from "@/lib/auth/loginClient";
 
 export function LoginButton({ className }: { className?: string }) {
   const router = useRouter();
@@ -56,40 +50,11 @@ export function LoginButton({ className }: { className?: string }) {
     }
   }
 
+  // Con sesión: la rutina común decide el rol en el servidor y redirige (finishLogin.ts).
   async function goToApp() {
     setLoading(true);
     try {
-      const token = await getAccessToken();
-      if (!token) {
-        router.push("/");
-        return;
-      }
-
-      const res = await fetch("/api/auth/after-login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({}),
-      });
-
-      const json = await res.json().catch(() => null);
-
-      if (res.status === 403) {
-        await supabase.auth.signOut();
-        router.push("/?reason=forbidden");
-        return;
-      }
-
-      if (!res.ok || json?.ok === false) {
-        router.push("/");
-        return;
-      }
-
-      const payload = (json?.data ?? json) as { role?: Role } | null;
-      const role = payload?.role ?? "student";
-      router.push(role === "teacher" ? "/docente" : "/chat");
+      await finishBrowserLogin((path) => router.push(path));
     } finally {
       setLoading(false);
     }
