@@ -15,7 +15,8 @@ import {
 // Recibos en las rutas assistant que reciben chatId (R1, paso 3). Se ejecutan las rutas
 // reales contra Supabase y Gemini simulados (sin red, escrituras rechazadas), con una clave de
 // prueba. Lo que se comprueba:
-//   - qué rutas están envueltas y cuáles no (brainstorm, foda y productivity quedan fuera);
+//   - que las diez rutas assistant están envueltas (E1–E3 se prueban aparte, con chatId
+//     opcional, en assistantRouteReceiptsE1E3.test.ts);
 //   - una respuesta real del servidor (fija o generada por el modelo) sale con un recibo que
 //     verifica el texto EXACTO emitido, el usuario de la sesión y el chat;
 //   - errores, chat ajeno, falta de la etapa previa y fallos del modelo salen igual y sin
@@ -68,8 +69,18 @@ const planningArtifact = {
   updated_at: "2026-10-10T12:00:00Z",
 };
 
-const WRAPPED = ["final_doc", "improvement", "ishikawa", "objectives", "pareto", "planning", "progress"];
-const NOT_YET = ["brainstorm", "foda", "productivity"];
+const WRAPPED = [
+  "brainstorm",
+  "final_doc",
+  "foda",
+  "improvement",
+  "ishikawa",
+  "objectives",
+  "pareto",
+  "planning",
+  "productivity",
+  "progress",
+];
 
 type Json = Record<string, unknown>;
 
@@ -95,9 +106,6 @@ async function main() {
       `${stage} envuelta`,
     );
     assert.ok(!/export async function POST/.test(code), `${stage}: un solo POST exportado`);
-  }
-  for (const stage of NOT_YET) {
-    assert.ok(!routeSource(stage).includes("withAssistantReceipt"), `${stage} todavía sin recibos`);
   }
 
   const stub = installFetchStub(state);

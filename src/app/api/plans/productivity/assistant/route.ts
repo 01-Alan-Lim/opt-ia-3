@@ -8,6 +8,8 @@ import { z } from "zod";
 import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { ok, fail, failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { assistantReceiptServerDeps } from "@/lib/chat/assistantReceiptServerDeps";
+import { withAssistantReceipt } from "@/lib/chat/withAssistantReceipt";
 import { assertChatOwner } from "@/lib/auth/chatOwner";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -194,7 +196,11 @@ REGLAS DE patch y addCosts
 `.trim();
 }
 
-export async function POST(req: Request) {
+// Las respuestas con assistantMessage llevan un recibo firmado del servidor (R1). Sin clave,
+// sin sesión, sin chatId o con un chat ajeno salen igual que antes: ver withAssistantReceipt.
+export const POST = withAssistantReceipt(handlePost, assistantReceiptServerDeps);
+
+async function handlePost(req: Request) {
   try {
     const user = await requireUser(req);
 

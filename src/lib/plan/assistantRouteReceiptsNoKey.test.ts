@@ -56,6 +56,24 @@ async function main() {
       assert.equal(json.ok, true);
       assert.deepEqual(Object.keys(json.data), ["assistantMessage", "updates"], "sin recibo y sin campos nuevos");
     }
+
+    // Una ruta de E1–E3 (foda, avance determinista) también sale sin recibo y sin otro aviso.
+    const foda = await import("../../app/api/plans/foda/assistant/route");
+    const items = (p: string) => [1, 2, 3].map((n) => ({ text: `${p} ${n}`, evidence: `Evidencia ${p} ${n}` }));
+    const fodaRes = await foda.POST(
+      routeRequest("/api/plans/foda/assistant", {
+        chatId: CHAT,
+        studentMessage: "continuemos",
+        fodaState: {
+          currentQuadrant: "A",
+          items: { F: items("F"), D: items("D"), O: items("O"), A: items("A") },
+          pendingEvidence: null,
+        },
+      }),
+    );
+    assert.equal(fodaRes.status, 200);
+    const fodaJson = (await fodaRes.json()) as { ok: boolean; data: Record<string, unknown> };
+    assert.deepEqual(Object.keys(fodaJson.data), ["assistantMessage", "updates"], "foda sin recibo");
   } finally {
     console.warn = originalWarn;
   }
