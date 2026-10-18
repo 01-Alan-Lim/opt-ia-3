@@ -25,6 +25,12 @@ export type ApiErrorCode =
   | "INVALID_QUERY"
   | "COHORT_NOT_FOUND"
   | "INTERNAL_ERROR"
+  // POST /api/messages (R1): respuesta assistant sin recibo, con recibo que no verifica, sin
+  // clave de verificación en el servidor, o base sin la migración M2.
+  | "ASSISTANT_RECEIPT_REQUIRED"
+  | "ASSISTANT_RECEIPT_INVALID"
+  | "RECEIPT_KEY_UNAVAILABLE"
+  | "SCHEMA_NOT_READY"
   // Ruta retirada que se conserva para responder de forma explícita
   // (POST /api/chats/[chatId]/clear).
   | "GONE";

@@ -5,8 +5,22 @@ import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, failResponse } from "@/lib/api/response";
-import { decideMessageWrite, PersistMessageBodySchema } from "@/lib/chat/messageWritePolicy";
+import { getAssistantReceiptKey } from "@/lib/chat/assistantReceiptConfig";
+import { supabaseMessageStore } from "@/lib/chat/messageStore";
+import { parsePersistMessageBody } from "@/lib/chat/messageWritePolicy";
+import { persistChatMessage } from "@/lib/chat/persistChatMessage";
 import { Message } from "@/lib/types";
+
+// Sin clave, ninguna respuesta assistant se puede verificar (503): se avisa una vez, sin valores.
+let warnedReceiptKey = false;
+function receiptKeyForMessages() {
+  const status = getAssistantReceiptKey();
+  if (!status.ok && !warnedReceiptKey) {
+    warnedReceiptKey = true;
+    console.warn(`[messages] no se pueden verificar recibos: ASSISTANT_RECEIPT_SECRET no disponible (${status.reason}).`);
+  }
+  return status;
+}
 
 const QuerySchema = z.object({
   chatId: z.string().min(1),
@@ -93,52 +107,26 @@ export async function POST(req: NextRequest) {
     const user = await requireUser(req);
 
     const raw = await req.json().catch(() => null);
-    const parsed = PersistMessageBodySchema.safeParse(raw);
-    if (!parsed.success) {
-      return failResponse("BAD_REQUEST", parsed.error.issues[0]?.message ?? "Payload inválido", 400);
+    const parsed = parsePersistMessageBody(raw);
+    if (!parsed.ok) {
+      return failResponse("BAD_REQUEST", parsed.message, 400);
     }
 
-    const { data: chatRow, error: chatErr } = await supabaseServer
-      .from("chats")
-      .select("id, client_id")
-      .eq("id", parsed.data.chatId)
-      .maybeSingle();
-
-    if (chatErr) {
-      return failResponse("INTERNAL", "No se pudo validar el chat", 500, chatErr);
-    }
-
-    const gate = await assertChatAccess(req, user);
-
-    const decision = decideMessageWrite({
+    const result = await persistChatMessage({
       userId: user.userId,
-      body: parsed.data,
-      chatOwnerId: (chatRow?.client_id as string | undefined) ?? null,
-      gate,
+      body: parsed.body,
+      gate: () => assertChatAccess(req, user),
+      store: supabaseMessageStore,
+      receiptKey: receiptKeyForMessages,
     });
 
-    if (!decision.ok) {
-      return failResponse(decision.code, decision.message, decision.status);
+    if (!result.ok) {
+      return failResponse(result.code, result.message, result.status);
     }
 
-    const { data, error } = await supabaseServer
-      .from("messages")
-      .insert(decision.row)
-      .select("id, role, content, created_at")
-      .single();
-
-    if (error || !data) {
-      return failResponse("INTERNAL", "No se pudo guardar el mensaje", 500);
-    }
-
-    return ok({
-      message: {
-        id: data.id as string,
-        role: data.role as Message["role"],
-        content: data.content as string,
-        createdAt: data.created_at as string,
-      },
-    });
+    // content es el que quedó guardado: para assistant, el formateado por el servidor.
+    const { id, role, content, createdAt } = result.message;
+    return ok({ message: { id, role, content, createdAt }, duplicate: result.duplicate });
     } catch (err: unknown) {
     const authCode = getAuthErrorCode(err);
 

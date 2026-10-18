@@ -3,8 +3,15 @@
 // Construcción y formato de los mensajes del chat (src/app/chat/page.tsx), sin estado ni
 // persistencia: appendAssistant los usa antes de pintar y guardar la respuesta.
 // createMessage no es determinista: usa crypto.randomUUID() y la hora actual.
+// formatAdvisorReplyForChat es el texto que se pinta y se guarda de una respuesta del asesor; lo
+// usan el navegador (appendAssistant) y el servidor (/api/messages), que no confía en el
+// formateado que manda el cliente.
 
 import type { Message } from "@/lib/types";
+
+export function formatAdvisorReplyForChat(raw: string): string {
+  return formatAssistantMessageForReadability(softenAssistantLeadInChat(raw));
+}
 
 export function createMessage(role: Message["role"], content: string): Message {
   return {
