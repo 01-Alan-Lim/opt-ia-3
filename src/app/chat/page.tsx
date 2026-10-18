@@ -1395,7 +1395,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    return advisorApi.callProductivityAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
+    return advisorApi.callProductivityAssistant(authHeaders, input, chatIdRef.current ?? null, buildRecentHistoryForAssistant(10));
   }
 
   async function getFodaState(chatIdArg?: string | null) {
@@ -1461,7 +1461,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    return advisorApi.callFodaAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
+    return advisorApi.callFodaAssistant(authHeaders, input, chatIdRef.current ?? null, buildRecentHistoryForAssistant(10));
   }
 
   async function getBrainstormState(chatIdArg?: string | null) {
@@ -1507,7 +1507,7 @@ export default function ChatPage() {
   }) {
     const authHeaders = await getAuthHeaders();
 
-    return advisorApi.callBrainstormAssistant(authHeaders, input, buildRecentHistoryForAssistant(10));
+    return advisorApi.callBrainstormAssistant(authHeaders, input, chatIdRef.current ?? null, buildRecentHistoryForAssistant(10));
   }
 
   async function validateBrainstorm() {

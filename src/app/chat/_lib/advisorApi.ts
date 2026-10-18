@@ -199,11 +199,12 @@ export async function validateProductivity(authHeaders: AuthHeaders, period: str
   };
 }
 
-export async function callProductivityAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; prodStep: number; prodDraft: ProductivityDraft; caseContext: unknown }, recentHistory: string) {
+export async function callProductivityAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; prodStep: number; prodDraft: ProductivityDraft; caseContext: unknown }, chatId: string | null, recentHistory: string) {
   const res = await fetch("/api/plans/productivity/assistant", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
+      chatId,
       studentMessage: input.studentMessage,
       prodStep: input.prodStep,
       prodDraft: input.prodDraft,
@@ -252,11 +253,12 @@ export async function saveFodaState(authHeaders: AuthHeaders, state: FodaState, 
   return { ok, status: res.status, json };
 }
 
-export async function callFodaAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; fodaState: FodaState; caseContext: unknown }, recentHistory: string) {
+export async function callFodaAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; fodaState: FodaState; caseContext: unknown }, chatId: string | null, recentHistory: string) {
   const res = await fetch("/api/plans/foda/assistant", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
+      chatId,
       studentMessage: input.studentMessage,
       fodaState: input.fodaState,
       caseContext: input.caseContext ?? {},
@@ -327,11 +329,12 @@ export async function validateFoda(authHeaders: AuthHeaders, effectiveChatId: st
   return { ok, payload: json };
 }
 
-export async function callBrainstormAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; brainstormState: BrainstormState; caseContext: unknown; stage1Summary: unknown; fodaSummary: unknown }, recentHistory: string) {
+export async function callBrainstormAssistant(authHeaders: AuthHeaders, input: { studentMessage: string; brainstormState: BrainstormState; caseContext: unknown; stage1Summary: unknown; fodaSummary: unknown }, chatId: string | null, recentHistory: string) {
   const res = await fetch("/api/plans/brainstorm/assistant", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
     body: JSON.stringify({
+      chatId,
       studentMessage: input.studentMessage,
       brainstormState: input.brainstormState,
       caseContext: input.caseContext ?? {},
