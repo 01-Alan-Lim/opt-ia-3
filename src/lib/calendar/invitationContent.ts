@@ -59,6 +59,9 @@ export function invitationAppUrl(origin: string, env: Readonly<Record<string, st
   return origin;
 }
 
+// Títulos de las invitaciones: son los de las ya enviadas y no siguen a los del panel docente
+// (Seguimiento N, Formulario de sistematización). Cambiarlos cambia la huella del contenido y la
+// próxima sincronización mandaría un aviso de actualización a cada estudiante.
 export function activityLabel(kind: string, index: number | null): string {
   if (kind === "FORM_INITIAL") return "Formulario inicial";
   if (kind === "FORM_FINAL") return "Formulario final";

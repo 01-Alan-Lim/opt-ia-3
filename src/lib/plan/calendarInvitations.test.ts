@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 
 import { NextRequest } from "next/server";
 
+import { monthlyFollowupDates } from "../calendar/cohortSchedule";
 import { prepareRouteTestEnv } from "./assistantRouteHarness";
 import { installRestStub, nextTimestamp, type RestRow, type RestStubState } from "./restStubHarness";
 
@@ -244,6 +245,7 @@ async function main() {
   const evRow = (id: string) => state.tables.cohort_events.find((e) => e.id === id) as unknown as Parameters<typeof content.buildInvitationEvent>[0]["event"];
   const built = content.buildInvitationEvent({ event: evRow(EV.monthly1), cohort: cohortRow, attendeeEmail: BETO.email, appUrl: ORIGIN, timeZone: TZ });
   assert.equal(built.summary, "OPT-IA · Formulario mensual 1");
+  assert.ok(built.description.startsWith("Actividad: Formulario mensual 1\n"));
   assert.equal(built.startDateTime, `${day(5)}T09:30:00`);
   assert.equal(built.endDateTime, `${day(5)}T10:00:00`);
   assert.ok(built.description.includes("Formulario: https://forms.gle/mensual"));
@@ -466,6 +468,64 @@ async function main() {
   assert.ok(dateCalls.every((c) => (c.body?.start as Json).dateTime === `${day(15)}T09:30:00`));
   assert.deepEqual(gcal.events.get(content.invitationEventId(ORGANIZER, EV.advance1, ANA.id))?.body.start, { dateTime: `${day(15)}T09:30:00`, timeZone: TZ });
   assert.equal(gcal.events.size, 12, "cambiar la fecha no crea eventos nuevos");
+
+  // Volver a guardar los seguimientos con sus mismas fechas (lo que manda el panel si no se cambia
+  // la fecha base): ni cambios ni llamadas a Google.
+  const samePut = await cohortEvents.PUT(
+    request("PUT", `/api/teacher/cohorts/${C1}/events`, {
+      events: [
+        { event_kind: "FORM_MONTHLY", event_index: 1, event_date: day(5) },
+        { event_kind: "FORM_MONTHLY", event_index: 2, event_date: day(40) },
+      ],
+    }),
+    cohortCtx(C1),
+  );
+  assert.equal(samePut.status, 200);
+  mark = gcal.calls.length;
+  report = await runCohortSync();
+  assert.deepEqual([report.status, report.created, report.updated, report.cancelled], ["ok", 0, 0, 0], JSON.stringify(report));
+  assert.equal(gcal.calls.length, mark, "mismas fechas, sin llamadas");
+  assert.equal(state.tables.cohort_events.filter((e) => e.cohort_id === C1).length, 5, "sin eventos de cohorte nuevos");
+
+  // Calendario completo de una cohorte nueva, como lo arma el panel: formulario inicial, tres
+  // seguimientos (primer sábado), formulario de sistematización y tres avances. Guardarlo dos veces
+  // deja ocho eventos, no toca las otras cohortes ni llama a Google.
+  const C3 = "c3000000-0000-4000-8000-000000000003";
+  state.tables.cohorts.push({ id: C3, name: "Tercera", is_active: true, registration_opens_at: null, access_starts_at: null, access_ends_at: null, reminder_hour: 11, reminder_minute: 0 });
+  const followups = monthlyFollowupDates("2026-10-03")?.dates ?? [];
+  const fullCalendar = [
+    { event_kind: "FORM_INITIAL", event_index: null, event_date: "2026-09-26" },
+    ...followups.map((event_date, i) => ({ event_kind: "FORM_MONTHLY", event_index: i + 1, event_date })),
+    { event_kind: "FORM_FINAL", event_index: null, event_date: "2027-01-09" },
+    { event_kind: "ADVANCE", event_index: 1, event_date: "2026-10-17" },
+    { event_kind: "ADVANCE", event_index: 2, event_date: "2026-11-21" },
+    { event_kind: "ADVANCE", event_index: 3, event_date: "2026-12-19" },
+  ];
+  const othersBefore = JSON.stringify(state.tables.cohort_events.filter((e) => e.cohort_id !== C3));
+  mark = gcal.calls.length;
+  for (let i = 0; i < 2; i++) {
+    const res = await cohortEvents.PUT(request("PUT", `/api/teacher/cohorts/${C3}/events`, { events: fullCalendar }), cohortCtx(C3));
+    assert.equal(res.status, 200);
+  }
+  assert.deepEqual(
+    state.tables.cohort_events
+      .filter((e) => e.cohort_id === C3)
+      .map((e) => `${String(e.event_key)}=${String(e.event_date)}`)
+      .sort(),
+    [
+      "ADVANCE:1=2026-10-17",
+      "ADVANCE:2=2026-11-21",
+      "ADVANCE:3=2026-12-19",
+      "FORM_FINAL:_=2027-01-09",
+      "FORM_INITIAL:_=2026-09-26",
+      "FORM_MONTHLY:1=2026-10-03",
+      "FORM_MONTHLY:2=2026-11-07",
+      "FORM_MONTHLY:3=2026-12-05",
+    ],
+    "ocho eventos, sin duplicados",
+  );
+  assert.equal(JSON.stringify(state.tables.cohort_events.filter((e) => e.cohort_id !== C3)), othersBefore, "las otras cohortes no cambian");
+  assert.equal(gcal.calls.length, mark, "guardar fechas no llama a Google");
 
   // Deshabilitar un evento: se cancela para todos.
   await cohortEvents.PUT(

@@ -73,6 +73,7 @@ const TESTS = [
   "onboardingAccess",
   "calendarOrganizer",
   "calendarInvitations",
+  "cohortSchedule",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {
