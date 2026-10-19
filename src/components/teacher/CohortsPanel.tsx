@@ -1,9 +1,10 @@
 //src/components/teacher/CohortsPanel.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { calendarReportText, type CalendarReportLike } from "@/lib/calendar/syncReportText";
+import { describeMonthlyPattern, formatDateOnly, planMonthlyFollowups } from "@/lib/calendar/cohortSchedule";
 
 type Cohort = {
   id: string;
@@ -54,7 +55,9 @@ type CohortEventRow = {
 
 type EventsFormState = {
   form_initial_date: string;
-  form_monthly_base: string; // ✅ una sola fecha base
+  form_monthly_base: string; // ✅ una sola fecha base (Seguimiento 1)
+  form_monthly_saved: string[]; // Seguimientos 1-3 guardados ("" si falta)
+  form_monthly_keep_saved: boolean; // conservarlos hasta que el docente cambie la base o recalcule
   form_final_date: string;
 
   advance_1: string;
@@ -171,6 +174,8 @@ export function CohortsPanel() {
     () => ({
       form_initial_date: "",
       form_monthly_base: "",
+      form_monthly_saved: [],
+      form_monthly_keep_saved: false,
       form_final_date: "",
       advance_1: "",
       advance_2: "",
@@ -181,6 +186,15 @@ export function CohortsPanel() {
 
   const [eventsForm, setEventsForm] = useState<EventsFormState>(initialEventsForm);
   const [eventsLoading, setEventsLoading] = useState(false);
+  // Solo la última cohorte abierta llena las fechas: una respuesta tardía de otra cohorte (o de una
+  // ya cerrada) no debe quedar en el formulario, porque se guardaría en la cohorte abierta.
+  const eventsRequestRef = useRef<string | null>(null);
+
+  function clearEventsForm() {
+    eventsRequestRef.current = null;
+    setEventsLoading(false);
+    setEventsForm(initialEventsForm);
+  }
 
 
   function fillFormFromCohort(c: Cohort) {
@@ -300,9 +314,13 @@ export function CohortsPanel() {
     const get = (kind: EventKind, idx: number | null) =>
       rows.find((r) => r.event_kind === kind && (r.event_index ?? null) === idx)?.event_date ?? "";
 
+    const monthlySaved = [1, 2, 3].map((idx) => toDateValueFromDb(get("FORM_MONTHLY", idx)));
+
     setEventsForm({
       form_initial_date: toDateValueFromDb(get("FORM_INITIAL", null)),
-      form_monthly_base: toDateValueFromDb(get("FORM_MONTHLY", 1)), // ✅ base = mensual #1
+      form_monthly_base: monthlySaved[0], // ✅ base = Seguimiento 1
+      form_monthly_saved: monthlySaved,
+      form_monthly_keep_saved: true,
       form_final_date: toDateValueFromDb(get("FORM_FINAL", null)),
       advance_1: toDateValueFromDb(get("ADVANCE", 1)),
       advance_2: toDateValueFromDb(get("ADVANCE", 2)),
@@ -310,21 +328,17 @@ export function CohortsPanel() {
     });
   }
 
-  function addMonthsSameDay(base: string, add: number): string | null {
-    const t = base.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null;
-
-    const d = new Date(`${t}T00:00:00.000`);
-    if (Number.isNaN(d.getTime())) return null;
-
-    const year = d.getFullYear();
-    const month = d.getMonth();
-    const day = d.getDate();
-
-    const x = new Date(year, month + add, day);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
-  }
+  // Seguimientos: mismo día de la semana y misma posición en el mes que la fecha base, o las
+  // fechas ya guardadas mientras no se cambie la base (cohortSchedule).
+  const followupPlan = planMonthlyFollowups({
+    base: eventsForm.form_monthly_base,
+    saved: eventsForm.form_monthly_saved,
+    keepSaved: eventsForm.form_monthly_keep_saved,
+  });
+  const followupsChangeSaved =
+    followupPlan.source === "pattern" &&
+    eventsForm.form_monthly_saved.some(Boolean) &&
+    followupPlan.dates.some((d, i) => d !== eventsForm.form_monthly_saved[i]);
 
   function buildEventsPayload(cohortId: string) {
     const events: {
@@ -335,7 +349,7 @@ export function CohortsPanel() {
       is_enabled?: boolean;
     }[] = [];
 
-    const push = (event_kind: any, event_index: number | null, date: string) => {
+    const push = (event_kind: EventKind, event_index: number | null, date: string) => {
       const t = date.trim();
       if (!t) return;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return;
@@ -367,14 +381,8 @@ export function CohortsPanel() {
 
     push("FORM_INITIAL", null, eventsForm.form_initial_date);
 
-    // ✅ Mensual: a partir de una sola fecha base, generamos 3 meses
-    const m1 = addMonthsSameDay(eventsForm.form_monthly_base, 0);
-    const m2 = addMonthsSameDay(eventsForm.form_monthly_base, 1);
-    const m3 = addMonthsSameDay(eventsForm.form_monthly_base, 2);
-
-    if (m1) push("FORM_MONTHLY", 1, m1);
-    if (m2) push("FORM_MONTHLY", 2, m2);
-    if (m3) push("FORM_MONTHLY", 3, m3);
+    // ✅ Seguimientos 1-3: los de la vista previa
+    followupPlan.dates.forEach((date, i) => push("FORM_MONTHLY", i + 1, date));
 
     push("FORM_FINAL", null, eventsForm.form_final_date);
 
@@ -440,7 +448,7 @@ export function CohortsPanel() {
       // ✅ 4) limpiar UI y recargar
       setCreating(false);
       setForm(initialForm);
-      setEventsForm(initialEventsForm);
+      clearEventsForm();
 
       if (newCohortId) {
         setSyncing(true);
@@ -571,7 +579,7 @@ export function CohortsPanel() {
               setCreating(true);
               setSelected(null);
               setForm(initialForm);
-              setEventsForm(initialEventsForm); // ✅ limpiar fechas
+              clearEventsForm(); // ✅ limpiar fechas
               setError(null);
             }}
             className="rounded-lg bg-sky-600 px-3 py-2 text-sm text-white hover:bg-sky-500 disabled:opacity-60"
@@ -628,6 +636,8 @@ export function CohortsPanel() {
                         fillFormFromCohort(c);
 
                         (async () => {
+                          eventsRequestRef.current = c.id;
+                          const current = () => eventsRequestRef.current === c.id;
                           setEventsLoading(true);
                           try {
                             const headers = await getAuthHeaders();
@@ -635,16 +645,16 @@ export function CohortsPanel() {
                             const json = await res.json().catch(() => null);
 
                             if (!res.ok || json?.ok === false) {
-                              fillEventsFromRows([]);
+                              if (current()) fillEventsFromRows([]);
                               return;
                             }
 
                             const rows: CohortEventRow[] = json?.data?.events ?? [];
-                            fillEventsFromRows(rows);
+                            if (current()) fillEventsFromRows(rows);
                           } catch {
-                            fillEventsFromRows([]);
+                            if (current()) fillEventsFromRows([]);
                           } finally {
-                            setEventsLoading(false);
+                            if (current()) setEventsLoading(false);
                           }
                         })();
                       }}
@@ -858,7 +868,7 @@ export function CohortsPanel() {
                     </label>
 
                     <label className="block">
-                      <span className="mb-1 block text-xs text-slate-400">Fecha form inicial</span>
+                      <span className="mb-1 block text-xs text-slate-400">Fecha del formulario inicial</span>
                       <input
                         type="date"
                         value={eventsForm.form_initial_date}
@@ -873,9 +883,9 @@ export function CohortsPanel() {
                       />
                     </label>
 
-                    {/* Fila 2: Mensual */}
+                    {/* Fila 2: Seguimientos */}
                     <label className="block">
-                      <span className="mb-1 block text-xs text-slate-400">Formulario de productividad (URL)</span>
+                      <span className="mb-1 block text-xs text-slate-400">Formulario de seguimiento (URL)</span>
                       <input
                         value={form.form_monthly_url}
                         onChange={(e) => setForm((p) => ({ ...p, form_monthly_url: e.target.value }))}
@@ -885,11 +895,13 @@ export function CohortsPanel() {
                     </label>
 
                     <label className="block">
-                      <span className="mb-1 block text-xs text-slate-400">Fecha form mensual (base)</span>
+                      <span className="mb-1 block text-xs text-slate-400">Fecha del Seguimiento 1 (base)</span>
                       <input
                         type="date"
                         value={eventsForm.form_monthly_base}
-                        onChange={(e) => setEventsForm((p) => ({ ...p, form_monthly_base: e.target.value }))}
+                        onChange={(e) =>
+                          setEventsForm((p) => ({ ...p, form_monthly_base: e.target.value, form_monthly_keep_saved: false }))
+                        }
                         className="
                           w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100
                           pr-1 cursor-pointer
@@ -899,6 +911,46 @@ export function CohortsPanel() {
                         "
                       />
                     </label>
+
+                    {/* Vista previa de los tres seguimientos (lo que se guarda) */}
+                    {followupPlan.pattern && (
+                      <div className="md:col-span-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300">
+                        <div>
+                          {followupPlan.followsPattern
+                            ? `Se repite el ${describeMonthlyPattern(followupPlan.pattern)}:`
+                            : "Fechas guardadas:"}
+                        </div>
+                        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                          {followupPlan.dates.map((date, i) => (
+                            <li key={i}>
+                              Seguimiento {i + 1}: <span className="text-slate-100">{formatDateOnly(date)}</span>
+                            </li>
+                          ))}
+                        </ul>
+
+                        {!followupPlan.followsPattern && (
+                          <div className="mt-2 text-amber-200">
+                            Se guardaron con la regla anterior (mismo número de día). Con el{" "}
+                            {describeMonthlyPattern(followupPlan.pattern)} serían{" "}
+                            {followupPlan.patternDates.map(formatDateOnly).join(", ")}.{" "}
+                            <button
+                              type="button"
+                              onClick={() => setEventsForm((p) => ({ ...p, form_monthly_keep_saved: false }))}
+                              className="underline hover:text-amber-100"
+                            >
+                              Recalcular
+                            </button>
+                          </div>
+                        )}
+
+                        {followupsChangeSaved && (
+                          <div className="mt-2 text-amber-200">
+                            Cambian fechas ya guardadas: al guardar, los estudiantes reciben la actualización de sus
+                            invitaciones de seguimiento futuras.
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Fila 3: Final */}
                     <label className="block">
@@ -912,7 +964,7 @@ export function CohortsPanel() {
                     </label>
 
                     <label className="block">
-                      <span className="mb-1 block text-xs text-slate-400">Fecha form final</span>
+                      <span className="mb-1 block text-xs text-slate-400">Fecha del formulario de sistematización</span>
                       <input
                         type="date"
                         value={eventsForm.form_final_date}
@@ -946,7 +998,7 @@ export function CohortsPanel() {
                 <button
                   type="button"
                   onClick={handleSaveEdit}
-                  disabled={saving || syncing || !selected || !form.name.trim()}
+                  disabled={saving || syncing || eventsLoading || !selected || !form.name.trim()}
                   className="rounded-lg bg-sky-600 px-3 py-2 text-sm text-white hover:bg-sky-500 disabled:opacity-60"
                 >
                   {saving ? "Guardando..." : syncing ? "Sincronizando..." : "Guardar cambios"}
@@ -959,7 +1011,7 @@ export function CohortsPanel() {
                   setCreating(false);
                   setSelected(null);
                   setForm(initialForm);
-                  setEventsForm(initialEventsForm);
+                  clearEventsForm();
                   setError(null);
                 }}
                 className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-900"
