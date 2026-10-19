@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { requireUser } from "@/lib/auth/supabase";
+import { syncStudentInvitations } from "@/lib/calendar/invitationTriggers";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 
@@ -89,7 +90,24 @@ export async function POST(req: Request) {
       ? new Date(cohort.access_ends_at)
       : new Date(startsAt.getTime() + 120 * 24 * 60 * 60 * 1000);
 
-    // 3) Upsert del perfil (registro queda pending hasta aprobación docente)
+    // 3) Estado del registro: un registro nuevo (o en otra cohorte, o rechazado) queda pending
+    //    hasta la aprobación docente. Reenviar el formulario en la misma cohorte no quita una
+    //    aprobación que ya existía.
+    const { data: existing, error: existingErr } = await supabaseServer
+      .from("profiles")
+      .select("registration_status, cohort_id")
+      .eq("user_id", authed.userId)
+      .maybeSingle();
+
+    if (existingErr) {
+      return NextResponse.json(fail("INTERNAL", "No se pudo leer el registro actual.", existingErr), { status: 500 });
+    }
+
+    const keepsApproval =
+      existing?.registration_status === "approved" && existing.cohort_id === input.cohort_id;
+    const registrationStatus = keepsApproval ? "approved" : "pending";
+
+    // 4) Upsert del perfil
     const { data: saved, error: upsertErr } = await supabaseServer
       .from("profiles")
       .upsert(
@@ -103,7 +121,7 @@ export async function POST(req: Request) {
           semester: input.semester,
           company_name: input.company_name,
           cohort_id: input.cohort_id,
-          registration_status: "pending",
+          registration_status: registrationStatus,
           access_starts_at: startsAt.toISOString(),
           access_ends_at: endsAt.toISOString(),
         },
@@ -118,6 +136,12 @@ export async function POST(req: Request) {
       return NextResponse.json(fail("INTERNAL", "No se pudo guardar el registro.", upsertErr), {
         status: 500,
       });
+    }
+
+    // Aprobado que se cambia de cohorte: queda pendiente y se cancelan sus invitaciones de la
+    // cohorte anterior (las de la nueva llegarán cuando el docente lo apruebe).
+    if (existing?.registration_status === "approved" && !keepsApproval) {
+      await syncStudentInvitations(authed.userId, new URL(req.url).origin);
     }
 
     return ok({ profile: saved });

@@ -127,37 +127,6 @@ export default function HoursPage() {
     }
   }
 
-  async function connectGoogleCalendar() {
-    setMsg("");
-    try {
-      if (!token) {
-        setMsg("No encuentro tu sesión. Inicia sesión y vuelve a intentar.");
-        return;
-      }
-
-      const res = await fetch(
-        `/api/integrations/google-calendar/start?returnTo=${encodeURIComponent("/hours")}`,
-        { method: "GET", headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      const json = await res.json().catch(() => null);
-      if (!res.ok || json?.ok === false) {
-        setMsg(json?.message ?? "No se pudo iniciar conexión con Google Calendar.");
-        return;
-      }
-
-      const url = json?.data?.url as string | undefined;
-      if (!url) {
-        setMsg("No se pudo iniciar conexión con Google Calendar.");
-        return;
-      }
-
-      window.location.href = url;
-    } catch (e: any) {
-      setMsg(String(e?.message ?? e));
-    }
-  }
-
   // 2) Al estar authReady:
   //    - si no hay token => redirige al home (opcional, pero recomendado)
   //    - si hay token => carga lista

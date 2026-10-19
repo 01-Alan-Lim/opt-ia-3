@@ -1,6 +1,12 @@
 // src/lib/auth/supabase.ts
 
 import { supabaseServer } from "@/lib/supabaseServer";
+import {
+  decideStudentAccess,
+  isInstitutionalEmail,
+  lookupStudentEmailAuthorization,
+  type StudentEmailLookup,
+} from "@/lib/auth/studentEmailAuthorization";
 
 export type UserRole = "student" | "teacher";
 
@@ -134,15 +140,27 @@ export async function requireUser(req: Request): Promise<AuthedUser> {
     return { userId: authData.user.id, email, role: "teacher" };
   }
 
-  // 2) Estudiantes de prueba (gmail específicos)
-  const studentTestAllowlist = parseList(process.env.STUDENT_TEST_EMAIL_ALLOWLIST);
-  const isStudentTest = studentTestAllowlist.includes(emailLower);
-
-  // 3) Restricción por dominio institucional para estudiantes
+  // 2) Dominio institucional: entra sin más consultas (la aprobación docente se exige aparte).
   const allowedDomain = normalizeDomain(process.env.ALLOWED_EMAIL_DOMAIN);
-  const isInstitutional = allowedDomain ? emailLower.endsWith(`@${allowedDomain}`) : true;
+  if (isInstitutionalEmail(emailLower, allowedDomain)) {
+    return { userId: authData.user.id, email, role: "student" };
+  }
 
-  if (!isInstitutional && !isStudentTest) {
+  // 3) Otro correo: autorización de un docente (la revocación manda) o, en transición, la lista
+  //    heredada STUDENT_TEST_EMAIL_ALLOWLIST. Ver studentEmailAuthorization.ts.
+  let lookup: StudentEmailLookup;
+  try {
+    lookup = await lookupStudentEmailAuthorization(emailLower);
+  } catch (err: unknown) {
+    throw new AuthError("AUTH_UPSTREAM_ERROR", err);
+  }
+  const studentTestAllowlist = parseList(process.env.STUDENT_TEST_EMAIL_ALLOWLIST);
+  const decision = decideStudentAccess({
+    institutional: false,
+    lookup,
+    envAllowlisted: studentTestAllowlist.includes(emailLower),
+  });
+  if (!decision.allowed) {
     throw new AuthError("FORBIDDEN_DOMAIN");
   }
 

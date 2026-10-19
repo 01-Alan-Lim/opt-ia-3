@@ -7,15 +7,20 @@ sesión: roles, RLS, onboarding, cohortes y `/api/auth/after-login` no cambian. 
 redirección a `<ref>.supabase.co`, Google ya no muestra ese dominio.
 
 El OAuth anterior (`signInWithOAuth`) sigue disponible como respaldo:
-- como enlace "¿Problemas con el botón? Usa el acceso alternativo", debajo del grupo de botones;
+- como enlace "Acceso alternativo" debajo del grupo de botones, **solo si el inicio con Google
+  falla** (junto al mensaje de error);
+- como enlace "¿Problemas con el botón? Usa el acceso alternativo" si se abre el landing con
+  `?acceso=alternativo` (recuperación para soporte, p. ej. si el diálogo de Google no se abre en un
+  navegador concreto);
 - como botón principal, igual que antes, si falta `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, si el script
   de Google no carga en 8 s o si falla.
 
 Código: `src/lib/auth/googleIdentity.ts`, `src/lib/auth/loginClient.ts`,
 `src/lib/auth/finishLogin.ts`, `src/components/LoginButton.tsx`.
 
-Google Calendar no cambia: usa su propio flujo OAuth (`/api/integrations/google-calendar/*`,
-`GOOGLE_OAUTH_CLIENT_ID`) y el login no pide permisos de Calendar.
+El login no pide permisos de Calendar. Calendar usa su propio OAuth (`GOOGLE_OAUTH_CLIENT_ID`),
+solo para la cuenta organizadora que conecta un docente; los estudiantes ya no conectan Calendar.
+Ver `docs/release/m3-academic-access-calendar.md`.
 
 ## Configuración externa (pendiente; no la hace el código)
 
@@ -75,4 +80,5 @@ Sin la variable, el login funciona como siempre (OAuth).
 - Cerrar sesión y volver al landing: no se inicia sesión sola.
 - Bloquear `accounts.google.com/gsi/client` (DevTools → Network request blocking) y recargar:
   aparece el botón de siempre y el OAuth funciona.
-- Conectar Google Calendar desde `/hours` sigue funcionando.
+- Con GIS disponible no aparece el enlace alternativo; con `?acceso=alternativo` sí, y el OAuth
+  funciona.

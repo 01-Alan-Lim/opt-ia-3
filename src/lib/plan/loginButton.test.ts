@@ -48,6 +48,14 @@ function main() {
   assert.ok(live.includes("const redirectTo = `${window.location.origin}/auth/callback`;"));
   assert.ok(live.includes("export function LoginAlternative("));
   assert.ok(live.includes("¿Problemas con el botón? Usa el acceso alternativo"));
+  // El acceso alternativo solo aparece si el inicio con Google falló, o con ?acceso=alternativo
+  // (recuperación para soporte); sin GIS el botón principal ya es el OAuth.
+  assert.ok(live.includes('const visible = !isAuthed && google.status !== "unavailable" && (Boolean(error) || forced);'));
+  assert.ok(live.includes('const error = google.status === "ready" ? google.error : null;'));
+  assert.ok(live.includes('new URLSearchParams(window.location.search).get("acceso") === "alternativo"'));
+  assert.ok(live.includes("useSyncExternalStore(subscribeToNothing, readForcedAlternative, () => false)"), "sin desajuste de hidratación");
+  assert.ok(live.includes('{!isAuthed && signingIn && "Ingresando…"}'), "el estado se ve aunque el enlace esté oculto");
+  assert.ok(live.includes('error ? "Acceso alternativo" : "¿Problemas con el botón? Usa el acceso alternativo"'));
   assert.ok(live.includes('className={clsx("min-h-5 text-xs leading-5 text-slate-400", className)}'), "una línea fija: sin saltos");
   assert.ok(live.includes("focus-visible:outline-sky-300"), "foco visible");
   assert.equal(live.match(/onClick=\{signInWithOAuth\}/g)?.length, 2, "botón sin GIS y enlace alternativo");
@@ -83,10 +91,11 @@ function main() {
   // CTA final: botón y acceso alternativo en columna.
   assert.ok(landing.includes('<div className="flex w-full max-w-sm flex-shrink-0 flex-col items-stretch gap-3 md:w-60">'));
 
-  // Calendar sigue con su flujo propio: el login no pide permisos de Calendar.
+  // El login no pide permisos de Calendar, y los estudiantes ya no tienen un flujo propio de
+  // Calendar (las invitaciones las envía el organizador; ver onboardingAccess.test.ts).
   assert.ok(!/calendar/i.test(live));
   assert.ok(!/calendar/i.test(code(read("src", "lib", "auth", "loginClient.ts"))));
-  assert.ok(read("src", "app", "api", "integrations", "google-calendar", "start", "route.ts").includes("https://www.googleapis.com/auth/calendar.events"));
+  assert.ok(!read("src", "app", "api", "integrations", "google-calendar", "start", "route.ts").includes("auth/calendar"));
 }
 
 try {

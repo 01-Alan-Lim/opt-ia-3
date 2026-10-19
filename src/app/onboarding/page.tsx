@@ -39,7 +39,6 @@ export default function OnboardingPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [showCalendarStep, setShowCalendarStep] = useState(false);
 
 
   // Load session/token
@@ -145,36 +144,6 @@ export default function OnboardingPage() {
     setFieldErrors(next);
   }
 
-  async function connectGoogleCalendarFromOnboarding() {
-    setErrorMsg(null);
-    setInfoMsg(null);
-
-    try {
-      const res = await fetch(
-        `/api/integrations/google-calendar/start?returnTo=${encodeURIComponent("/chat")}`,
-        { method: "GET", headers: { ...authHeaders } }
-      );
-
-      const json = await res.json().catch(() => null);
-
-      if (!res.ok || json?.ok === false) {
-        setErrorMsg(json?.message ?? "No se pudo iniciar la conexión con Google Calendar.");
-        return;
-      }
-
-      const url = json?.data?.url as string | undefined;
-      if (!url) {
-        setErrorMsg("No se pudo iniciar la conexión con Google Calendar.");
-        return;
-      }
-
-      window.location.href = url;
-    } catch (e) {
-      console.error(e);
-      setErrorMsg("No se pudo iniciar la conexión con Google Calendar.");
-    }
-  }
-
   async function handleSubmit() {
     setErrorMsg(null);
     setInfoMsg(null);
@@ -232,49 +201,16 @@ export default function OnboardingPage() {
         return;
       }
 
-      setInfoMsg("✅ Datos guardados. Ahora puedes conectar Google Calendar para recibir recordatorios automáticos.");
-      setShowCalendarStep(true);
+      // Registro enviado: /chat muestra "pendiente de aprobación" hasta que el docente lo apruebe.
+      // Las fechas de la cohorte llegan después como invitaciones de Google Calendar del
+      // organizador de OPT-IA; el estudiante no conecta nada.
+      setInfoMsg("✅ Registro enviado. Tu acceso se habilitará cuando el docente lo apruebe.");
+      router.replace("/chat");
     } catch (e) {
       setErrorMsg("Error de red al enviar el registro.");
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (showCalendarStep) {
-    return (
-      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
-        <div className="w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
-          <h1 className="text-xl font-semibold mb-2">Conectar Google Calendar</h1>
-          <p className="text-sm text-slate-400 mb-5">
-            Esto permitirá que OPT-IA cree recordatorios automáticos (formularios y avances) según las fechas de tu cohorte.
-          </p>
-
-          {errorMsg && (
-            <div className="mb-4 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">
-              {errorMsg}
-            </div>
-          )}
-
-          <div className="flex flex-col sm:flex-row gap-3">
-            <button
-              onClick={connectGoogleCalendarFromOnboarding}
-              className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold"
-            >
-              Conectar (recomendado)
-            </button>
-
-            <button
-              onClick={() => router.replace("/chat")}
-              className="px-4 py-2 rounded-lg border border-slate-700 hover:bg-slate-900 text-slate-100 font-semibold"
-            >
-              Continuar sin conectar
-            </button>
-          </div>
-
-        </div>
-      </main>
-    );
   }
 
   return (
