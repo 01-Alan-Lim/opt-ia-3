@@ -1,4 +1,4 @@
-// Prueba de M3 (20261018230000_student_email_authorizations_calendar_organizer) en un Postgres en
+// Prueba de M3 (20261019005428_student_email_authorizations_calendar_organizer) en un Postgres en
 // memoria (PGlite). No toca ninguna base real.
 //
 // Uso: node supabase/tests/m3_authorizations_calendar.pglite.mjs <carpeta-con-node_modules/@electric-sql/pglite>
@@ -20,7 +20,7 @@ if (!envDir) {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const { PGlite } = await import(pathToFileURL(path.join(envDir, "node_modules", "@electric-sql", "pglite", "dist", "index.js")).href);
 
-const MIGRATION = "20261018230000_student_email_authorizations_calendar_organizer.sql";
+const MIGRATION = "20261019005428_student_email_authorizations_calendar_organizer.sql";
 const MANUAL = "20261018230000";
 const migration = readFileSync(path.join(root, "supabase", "migrations", MIGRATION), "utf8");
 const verify = readFileSync(path.join(root, "supabase", "manual", `${MANUAL}_m3_verify.sql`), "utf8");

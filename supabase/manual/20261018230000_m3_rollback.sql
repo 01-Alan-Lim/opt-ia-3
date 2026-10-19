@@ -1,4 +1,4 @@
--- Reversión de M3 (20261018230000_student_email_authorizations_calendar_organizer).
+-- Reversión de M3 (20261019005428_student_email_authorizations_calendar_organizer).
 -- Fuera de supabase/migrations a propósito: no lo aplica db push. Ejecutar solo a mano y solo
 -- después de revertir el código que usa estas tablas.
 --

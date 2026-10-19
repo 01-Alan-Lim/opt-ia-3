@@ -1,7 +1,7 @@
 # M3: acceso académico automático e invitaciones de Calendar
 
 Qué cambia, qué hay que configurar fuera del código y en qué orden publicarlo. Rama
-`feat/academic-access-calendar`. Migración `20261018230000_student_email_authorizations_calendar_organizer`.
+`feat/academic-access-calendar`. Migración `20261019005428_student_email_authorizations_calendar_organizer`.
 
 ## Qué cambia
 
@@ -153,7 +153,10 @@ con volver a conectar la misma cuenta (las invitaciones se conservan).
 
 ## Supabase: aplicar M3
 
-M3 no se ha aplicado en ninguna base. Requiere autorización explícita para Production.
+M3 se aplicó en Production el 2026-10-18 con la versión remota `20261019005428` (SQL idéntico al
+archivo, SHA-256 `ccc2a73c…40bd2`); postcheck 18/18 y 5 autorizaciones heredadas. No volver a
+aplicarla. Los archivos de `supabase/manual/` conservan el prefijo `20261018230000` porque el SQL
+aplicado los nombra así.
 
 **Compatibilidad.** El código de esta rama funciona con y sin M3 (sin M3: lista heredada, panel de
 correos y calendario muestran "falta preparar la base de datos", las aprobaciones funcionan). El

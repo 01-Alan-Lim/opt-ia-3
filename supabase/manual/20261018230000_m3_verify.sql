@@ -1,4 +1,4 @@
--- Verificación de M3 (20261018230000_student_email_authorizations_calendar_organizer). SOLO LECTURA.
+-- Verificación de M3 (20261019005428_student_email_authorizations_calendar_organizer). SOLO LECTURA.
 -- Fuera de supabase/migrations a propósito: no lo aplica db push.
 
 -- 1) Esquema: cada fila trae ok = true si la comprobación pasa.
