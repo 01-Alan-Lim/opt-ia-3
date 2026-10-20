@@ -10,7 +10,8 @@ interface ChatHeaderProps {
   onToggleTheme: () => void;
 }
 
-// Barra superior interna del chat: botón del historial, logo, cambio de tema y nombre del usuario.
+// Barra superior interna del chat: botón del historial, logo, cambio de tema y nombre del usuario
+// (headerName de describeChatIdentity: "Univ. Alan Limachi"; vacío si no hay nombre ni correo).
 export function ChatHeader({ theme, displayName, onToggleSidebar, onToggleTheme }: ChatHeaderProps) {
   return (
     <div className="flex items-center justify-between mb-3 text-[11px] text-[color:var(--muted)]">
@@ -68,7 +69,9 @@ export function ChatHeader({ theme, displayName, onToggleSidebar, onToggleTheme 
           )}
         </button>
 
-        <span className="hidden sm:inline text-[14px] text-[color:var(--muted)]">{displayName}</span>
+        {displayName ? (
+          <span className="hidden sm:inline text-[14px] text-[color:var(--muted)]">{displayName}</span>
+        ) : null}
       </div>
 
     </div>

@@ -15,6 +15,12 @@ import { normalizeEffectPercent, normalizeJustification } from "./paretoCut";
 export type ProdStep = 0 | 1 | 2 | 3 | 4 | 5;
 // 0=idle, 1=tipo, 2=periodo, 3=ingreso, 4=costos, 5=confirmacion
 
+// El wizard de E1 se guarda solo mientras está activo. Guardar el reposo (0) deja un estado de
+// E1 que /api/plans/active-stage leía como "Etapa 1" aunque el estudiante siguiera en E0.
+export function shouldPersistProductivityWizard(prodStep: number) {
+  return prodStep > 0;
+}
+
 export type ProductivityDraft = {
   type?: "monetaria" | "fisica";
   unit_reason?: string;         // por qué eligió monetaria/física

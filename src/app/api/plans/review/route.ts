@@ -7,6 +7,7 @@ import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { ok, fail } from "@/lib/api/response";
 import { getGeminiModel } from "@/lib/geminiClient";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { ensurePlanChat } from "@/lib/plan/planChat";
 
 export const runtime = "nodejs";
 
@@ -107,7 +108,7 @@ export async function POST(request: Request) {
     // ✅ Etapa 0 obligatoria: Contexto del Caso confirmado
     const { data: ctx, error: ctxErr } = await supabaseServer
       .from("plan_case_contexts")
-      .select("status")
+      .select("status, chat_id")
       .eq("user_id", authed.userId)
       .maybeSingle();
 
@@ -152,32 +153,19 @@ export async function POST(request: Request) {
     const title = parsed.data.title;
     const fileName = parsed.data.fileName;
 
-    // ✅ 3) Crear o reutilizar chat para este plan (ownership)
+    // ✅ 3) Chat del plan (ownership). Sin chatId se usa el chat principal del plan (planChat.ts),
+    // no uno nuevo: el plan se trabaja en un solo chat del asesor.
     let chatId: string | null = incomingChatId ?? null;
 
     if (chatId) {
       // Si viene chatId, debe ser del usuario
       await assertChatOwnership(chatId, authed.userId);
     } else {
-      // Crear chat nuevo (modo plan_mejora)
-      try {
-        const { data, error } = await supabaseServer
-          .from("chats")
-          .insert({
-            client_id: authed.userId,
-            title: (title ?? text).slice(0, 60),
-            mode: "plan_mejora",
-          })
-          .select("id")
-          .single();
-
-        if (!error && data?.id) {
-          chatId = data.id as string;
-        } else if (error) {
-          console.error("Error creando chat para plan_mejora:", error);
-        }
-      } catch (e) {
-        console.error("Error inesperado creando chat para plan_mejora:", e);
+      const planChat = await ensurePlanChat(authed.userId, (ctx.chat_id as string | null) ?? null);
+      if (planChat.ok) {
+        chatId = planChat.chatId;
+      } else {
+        console.error("Error preparando el chat del plan para la revisión:", planChat.message);
       }
     }
 

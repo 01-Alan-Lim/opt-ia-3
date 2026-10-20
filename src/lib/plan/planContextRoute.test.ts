@@ -9,7 +9,8 @@ import { installMessageStub, type MessageStubState } from "./messageRouteHarness
 // messages, con service role, el userMessage y el assistantMessage que mandara el navegador
 // (role "assistant" sin verificar). Ahora:
 //   - si llegan esos campos, 400 y no se escribe nada (ni messages ni el contexto);
-//   - el guardado normal de E0 y la creación de un chat nuevo siguen igual y no tocan messages.
+//   - el guardado normal de E0 sigue igual y no toca messages; pedir chat (forceNew) devuelve el
+//     chat del plan en vez de crear otro (planChat.ts).
 
 const USER = "11111111-1111-4111-8111-111111111111";
 const STRANGER = "22222222-2222-4222-8222-222222222222";
@@ -61,11 +62,14 @@ async function main() {
   assert.equal(state.messages.length, 0);
 
   // ---------------- Guardado normal de E0 ----------------
+  const chatsAtStart = Object.keys(state.chats).length;
   const saved = await post(draft);
   assert.equal(saved.status, 200);
   assert.equal((saved.json.data as Json).chatId, CHAT);
   assert.deepEqual((state.contexts[USER] as Json).context_json, { sector: "Panadería" });
-  assert.equal(stub.writes("plan_case_contexts"), 1);
+  // Primer guardado sin plan: el chat del asesor desde el que se escribe pasa a ser el del plan.
+  assert.equal((state.contexts[USER] as Json).chat_id, CHAT);
+  assert.equal(Object.keys(state.chats).length, chatsAtStart, "no crea otro chat");
   assert.equal(stub.writes("messages"), 0, "no escribe en messages");
 
   // Segundo paso del asistente (fusiona con lo anterior).
@@ -74,14 +78,14 @@ async function main() {
   assert.deepEqual((state.contexts[USER] as Json).context_json, { sector: "Panadería", products: ["Pan de batalla"] });
   assert.equal(stub.writes("messages"), 0);
 
-  // ---------------- Chat nuevo (reanudación) ----------------
+  // ---------------- Pedir chat (reanudación): el del plan, nunca otro (planChat.ts) ----------------
   const chatsBefore = Object.keys(state.chats).length;
   const fresh = await post({ forceNew: true, contextJson: {}, contextText: null });
   assert.equal(fresh.status, 200);
-  const newChat = String((fresh.json.data as Json).chatId);
-  assert.notEqual(newChat, CHAT);
-  assert.equal(Object.keys(state.chats).length, chatsBefore + 1);
-  assert.equal(state.chats[newChat]?.mode, "plan_mejora");
+  assert.equal((fresh.json.data as Json).chatId, CHAT, "reutiliza el chat del plan");
+  assert.equal(Object.keys(state.chats).length, chatsBefore, "no crea otro chat");
+  assert.equal(stub.writes("chats"), 0, "ni lo renombra");
+  assert.equal(stub.writes("plan_case_contexts"), 0, "no toca el contexto");
   assert.deepEqual((state.contexts[USER] as Json).context_json, { sector: "Panadería", products: ["Pan de batalla"] }, "conserva el progreso");
   assert.equal(stub.writes("messages"), 0);
 

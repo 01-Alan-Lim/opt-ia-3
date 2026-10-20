@@ -9,7 +9,7 @@
 // - createAdvisorTransitions(deps): crea en cada render las funciones de transición E2-E10, la
 //   restauración en un chat nuevo y la sincronización de la etapa activa. deps solo trae
 //   referencias que ya existían en ChatPage (estado, setters, refs, wrappers de API, mensajes).
-// E0->E1 y E1->E2 no están aquí: E0 se confirma en page.tsx (handleStage0DraftFlowV2) y el
+// E0->E1 y E1->E2 no están aquí: E0 se confirma en el turno de E0 (turns/stage0Turn.ts) y el
 // arranque de E1 y el paso a E2 están en el turno de E1 (turns/productivityTurn.ts).
 
 import { createMessage } from "@/lib/chat/assistantFormat";
@@ -33,9 +33,9 @@ import { sanitizeBrainstormState, type BrainstormState } from "@/lib/plan/brains
 import type { BranchClosure, PendingRootMatch, RootCauseEntry } from "@/lib/plan/ishikawaTree";
 import { MAX_WHY_DEPTH, MIN_ROOT_CAUSES } from "@/lib/plan/rootCauseLimits";
 import {
-  buildAdvisorGreeting,
+  buildStage0Opening,
   getNextStage0StepFromContext,
-  promptForStep,
+  readStage0Context,
 } from "@/lib/plan/stage0Context";
 import type { Message } from "@/lib/types";
 import type { PersistMessageInput } from "./advisorApi";
@@ -196,7 +196,8 @@ export type AdvisorTransitionDeps = {
     appendAssistant: (content: unknown) => Promise<void>;
     persistMessageDB: (input: PersistMessageInput) => Promise<unknown>;
     setMessages: Setter<Message[]>;
-    displayName: string;
+    // Nombre de pila del perfil (describeChatIdentity) para la apertura de E0.
+    greetingName: string | null;
   };
 };
 
@@ -244,7 +245,7 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
     appendAssistant,
     persistMessageDB,
     setMessages,
-    displayName,
+    greetingName,
   } = deps.chat;
 
   function clearAdvisorStageStatesLocal() {
@@ -308,8 +309,11 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
     return stage;
   }
 
-    async function refreshActiveAdvisorStage() {
+  // isCurrent: quien pidió la etapa sigue vigente. Si ya no (cambió el chat o el modo mientras se
+  // esperaba), la respuesta no toca la etapa ni los estados locales y devuelve null.
+    async function refreshActiveAdvisorStage(isCurrent?: () => boolean) {
     const resolved = await getActiveAdvisorStage();
+    if (isCurrent && !isCurrent()) return null;
 
     if (resolved.ok && resolved.payload?.found && isAdvisorRuntimeStageValue(resolved.payload.stage)) {
       return applyResolvedAdvisorStage(
@@ -372,6 +376,9 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
     };
   }
 
+  // Copia el estado de la etapa activa al chat indicado. Ya no se usa al abrir chats: el plan tiene
+  // un solo chat (src/lib/plan/planChat.ts) y copiarlo en cada chat nuevo fragmentaba los estados.
+  // Queda para la recuperación de E6 en su mismo chat (turns/objectivesTurn.ts).
   async function restoreLatestAdvisorStageToNewChat(effectiveChatId: string) {
     const resolved = await getActiveAdvisorStage();
 
@@ -640,12 +647,8 @@ export function createAdvisorTransitions(deps: AdvisorTransitionDeps) {
           : undefined,
       });
 
-      const greet =
-      step === 1
-        ? buildAdvisorGreeting(displayName)
-        : "👌 Continuemos desde donde quedamos para completar el Contexto del Caso.";
-
-      const msg = `${greet}\n\n${promptForStep(step)}`;
+      // Misma apertura que la entrada al asesor (stage0Opening.ts).
+      const msg = buildStage0Opening(step, readStage0Context(asRecordOrNull(ctx.contextJson) ?? {}), greetingName);
 
       setMessages([createMessage("advisor", msg)]);
       await persistMessageDB({ chatId: effectiveChatId, role: "advisor", content: msg });

@@ -41,12 +41,9 @@ import { handleBrainstormStartTurn, handleBrainstormTurn } from "./_lib/turns/br
 import { handleFodaCloseTurn, handleFodaTurn } from "./_lib/turns/fodaTurn";
 import { handleProductivityStartTurn, handleProductivityWizardTurn } from "./_lib/turns/productivityTurn";
 import type { AdvisorTurnDeps, LastProductivityReport, PlanContextStatus } from "./_lib/turns/types";
-import { GREETING, useChatHistory, useChatHistoryPersistence } from "./_lib/useChatHistory";
+import { useChatHistory, useChatHistoryPersistence } from "./_lib/useChatHistory";
 import { Message } from "@/lib/types";
-import {
-  BrainstormState,
-  sanitizeBrainstormState,
-} from "@/lib/plan/brainstormFlow";
+import { BrainstormState } from "@/lib/plan/brainstormFlow";
 import {
   NO_TURN_UI,
   parseIshikawaTurnUi,
@@ -61,30 +58,12 @@ import {
 } from "@/lib/plan/advisorClientIntent";
 import {
   type Stage0ContextJson,
-  type Stage0InterpretPayload,
-  advisorResumeGreeting,
-  askForMissingStage0Field,
-  buildStage0ProgressMessage,
-  buildStage0Welcome,
-  classifyStage0DecisionIntent,
-  detectEditingField,
-  detectStage0Intent,
-  extractStage0Deterministic,
   formatContextSummary,
   getNextStage0StepFromContext,
-  hasMultipleStage0FieldSignals,
-  hasStage0Extraction,
-  hasStage0ProductSignal,
-  lastAssistantIsStage0Prompt,
-  mergeStage0Context,
-  mergeStage0Extraction,
-  promptForStep,
-  readStage0Context,
-  readStage0Extraction,
-  shouldAnswerWithoutLLM,
-  stage0HelpMessage,
-  stage0StepForField,
 } from "@/lib/plan/stage0Context";
+import { handleStage0Turn } from "./_lib/turns/stage0Turn";
+import { createStage0PromptTracker, openStage0 } from "./_lib/stage0Opening";
+import { PLAN_CONTINUES_NOTICE, planChatEntry } from "./_lib/planChatClient";
 import {
   type AdvisorRuntimeStage,
   type FinalDocState,
@@ -106,7 +85,8 @@ import {
   buildStage6ProgressTruthMessage,
   getAdvisorStageLabel,
 } from "@/lib/plan/advisorMessages";
-import { createMessage } from "@/lib/chat/assistantFormat";
+import { createMessage, formatAdvisorReplyForChat } from "@/lib/chat/assistantFormat";
+import { describeChatIdentity } from "@/lib/chat/studentIdentity";
 import { chatIdStorageKey, messagesStorageKey } from "@/lib/chat/chatStorage";
 import { readSignedAssistantReply, type SignedAssistantReply } from "@/lib/chat/signedAssistantReply";
 import { historySpeaker, isAdvisorSideRole, toIshikawaRecentMessage } from "@/lib/chat/messageProvenance";
@@ -132,8 +112,31 @@ export default function ChatPage() {
   }, []);
 
   // Sesión de Supabase Auth del cliente (useChatSession: solo obtiene la sesión y el token)
-  const { ready, sessionEmail, userId, accessToken, authenticated, displayName, getAuthHeaders } =
+  const { ready, sessionEmail, userId, accessToken, authenticated, accountName, getAuthHeaders } =
     useChatSession();
+
+  // -----------------------------
+  // Redirect si no está autenticado y gate final del chat (FUENTE DE VERDAD: /api/me)
+  // -----------------------------
+  const { gateChecked, gateMessage, accessDenied, canInteract, identity, whenIdentityKnown } = useAccessGate({
+    ready,
+    authenticated,
+    router,
+  });
+
+  // Nombre que muestra el chat (studentIdentity.ts): el del perfil que trae /api/me; sin perfil, el
+  // de la cuenta de Google. headerName va en la cabecera ("Univ. …"); greetingName, en el saludo.
+  const chatIdentity = useMemo(
+    () => describeChatIdentity({ ...identity, accountName, email: sessionEmail }),
+    [identity, accountName, sessionEmail]
+  );
+
+  // La apertura de E0 espera a /api/me para saludar con el mismo nombre que la cabecera. No agrega
+  // espera visible: el chat no se muestra hasta que /api/me responde (gateChecked).
+  async function waitForGreetingName() {
+    const me = await whenIdentityKnown();
+    return describeChatIdentity({ ...me, accountName, email: sessionEmail }).greetingName;
+  }
 
   // -----------------------------
   // Estado de UI / Chat
@@ -180,6 +183,13 @@ export default function ChatPage() {
   const messagesRef = useRef<Message[]>([]);
   // Mensajes que no se pudieron guardar en el historial (aviso y reintento).
   const persistFailures = usePersistFailures();
+  // E0: chats que ya mostraron una pregunta de contexto, y mensajes enviados por el estudiante en
+  // el asesor. Los comparten la apertura y el turno de E0 (_lib/stage0Opening.ts).
+  const [stage0Prompts] = useState(createStage0PromptTracker);
+  // Chat principal del Plan de Mejora (lo resuelve el servidor, src/lib/plan/planChat.ts). El asesor
+  // siempre trabaja en él y la barra lateral solo ofrece ese chat del asesor.
+  const [planChatId, setPlanChatId] = useState<string | null>(null);
+  const studentSendsRef = useRef(0);
 
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const composerMeasureRef = useRef<HTMLDivElement | null>(null);
@@ -246,7 +256,6 @@ export default function ChatPage() {
   // Estado del Asesor E0-E10 (useAdvisorStageState). Ishikawa sigue en este archivo.
   // -----------------------------
   const {
-    stage0Draft,
     setStage0Draft,
     editingField,
     setEditingField,
@@ -354,19 +363,14 @@ export default function ChatPage() {
       appendAssistant,
       persistMessageDB,
       setMessages,
-      displayName,
+      greetingName: chatIdentity.greetingName,
     },
   });
 
   // -----------------------------
-  // Redirect si no está autenticado y gate final del chat (FUENTE DE VERDAD: /api/me)
-  // -----------------------------
-  const { gateChecked, gateMessage, accessDenied, canInteract } = useAccessGate({ ready, authenticated, router });
-
-  // -----------------------------
   // 2a. Cargar desde sessionStorage y 2b. historial del backend (useChatHistory)
   // -----------------------------
-  useChatHistory({
+  const { newGreeting } = useChatHistory({
     ready,
     authenticated,
     mode,
@@ -378,6 +382,7 @@ export default function ChatPage() {
     storageKeyMsgs,
     getAuthHeaders,
     router,
+    greetingName: chatIdentity.greetingName,
   });
 
   // -----------------------------
@@ -388,133 +393,68 @@ export default function ChatPage() {
     if (mode !== "plan_mejora") return;
 
     let active = true;
+    // Antes de cualquier espera: si el estudiante escribe mientras esto corre, la apertura de E0
+    // no sale y su turno la responde (stage0Opening.ts).
+    const studentSendsAtStart = studentSendsRef.current;
+    const stage0OpeningDeps = {
+      tracker: stage0Prompts,
+      hasHistory: async (cid: string) => advisorApi.chatHasMessages(await getAuthHeaders(), cid),
+      studentSendCount: () => studentSendsRef.current,
+      isCurrent: (cid: string) => active && modeRef.current === "plan_mejora" && chatIdRef.current === cid,
+      show: async (cid: string, text: string) => {
+        const content = formatAdvisorReplyForChat(text);
+        const message = createMessage("advisor", content);
+        // El chat del plan no tiene historial: la apertura reemplaza lo que hubiera en pantalla.
+        setMessages([message]);
+        await persistMessageDB({ chatId: cid, role: "advisor", content, clientMessageId: message.id });
+      },
+    };
+
+    // El chat del asesor que guardaba esta pestaña, leído antes de que nada lo cambie
+    // (planChatClient.ts decide con él si lo que hay en pantalla es de otra conversación).
+    let storedAdvisorChatId: string | null = null;
+    try {
+      storedAdvisorChatId = window.sessionStorage.getItem(advisorChatStorageKey());
+    } catch {}
 
     (async () => {
-      const ctx = await getPlanContextStatusCached();
+      // Lectura fresca: el chat del plan lo resuelve el servidor y otra pestaña pudo crearlo.
+      const ctx = await getPlanContextStatusCached({ force: true });
       if (!active) return;
       if (!ctx.ok) return;
 
-      const fresh = getPlanFresh(clientId);
+      // Chat principal del plan: siempre el mismo (también con "Nuevo chat", otra pestaña, otra
+      // sesión o tras recargar). Si el plan todavía no tiene chat, el servidor crea el primero.
+      const currentChatId = chatIdRef.current;
+      const planChatIdNow = ctx.chatId ?? (await ensureAdvisorChatId());
+      if (!active) return;
 
-      // ✅ Si es "fresh", creamos un chat NUEVO del asesor (chat-only)
-      if (fresh) {
-        // Creamos chat nuevo SOLO para conversación
-        const createdChatId = await ensureAdvisorChatId({ createNew: true });
-        const created = { ok: Boolean(createdChatId), chatId: createdChatId };
-        if (!active) return;
-        // Ya no estamos fresh después de crear el chat
-        setPlanFresh(clientId, false);
-
-        const lastReport = await getLastProductivityReportCached();
-        if (!active) return;
-
-        const lastStatus = lastReport.ok ? lastReport.payload?.status : null;
-        const isStage1Validated = lastStatus === "validated";
-
-
-        if (ctx.status === "confirmed" && created.ok && created.chatId) {
-          const restored = await restoreLatestAdvisorStageToNewChat(created.chatId);
-          if (!active) return;
-          if (restored) return;
-        }
-
-
-        // Si el contexto está confirmado, abrir con resumen + confirmación Etapa 1
-        if (ctx.status === "confirmed") {
-          if (isStage1Validated) {
-            // ✅ Si Etapa 1 ya está validada, decidir si retomamos Etapa 2 o 3
-            const resBS = await getBrainstormState();
-            const bsExists = resBS.ok && resBS.payload?.exists;
-            const bs = (resBS.payload?.state ?? null) as any;
-
-            if (bsExists && bs) {
-              // Rehidrata también el estado local
-              setBrainstormState(sanitizeBrainstormState(bs));
-
-              const nIdeas = Array.isArray(bs.ideas) ? bs.ideas.length : 0;
-              const min = typeof bs.minIdeas === "number" ? bs.minIdeas : 10;
-              const problem = bs.problem?.text ? `**${bs.problem.text}**` : "**(aún no definido)**";
-
-              const resumeMsg =
-                "📌 Ya tienes avance en **Etapa 3 (Lluvia de ideas)**.\n\n" +
-                `- Problema: ${problem}\n` +
-                `- Ideas: **${nIdeas} / ${min}**\n\n` +
-                "👉 Continúa con la siguiente causa (una idea clara y concreta).";
-
-              setMessages([createMessage("advisor", resumeMsg)]);
-
-              if (created.ok && created.chatId) {
-                await persistMessageDB({
-                  chatId: created.chatId,
-                  role: "advisor",
-                  content: resumeMsg,
-                });
-              }
-
-              setStage0Draft({});
-              return;
-            }
-
-            // Si NO hay avance en Etapa 3, mantenemos el mensaje original de Etapa 2
-            const p = lastReport.payload?.payload ?? null;
-            const period = p?.period_key ?? "(sin periodo)";
-            const type = p?.type ?? "(sin tipo)";
-
-            const doneMsg =
-              "✅ Ya tienes **Etapa 1 (Productividad)** completada y validada.\n\n" +
-              `- Periodo: **${period}**\n` +
-              `- Tipo: **${type}**\n\n` +
-              "👉 Puedes continuar con **Etapa 2: Análisis FODA** cuando quieras.";
-
-            setMessages([createMessage("advisor", doneMsg)]);
-
-            if (created.ok && created.chatId) {
-              await persistMessageDB({
-                chatId: created.chatId,
-                role: "advisor",
-                content: doneMsg,
-              });
-            }
-
-            setStage0Draft({});
-            return;
-          }
-        }
-
-        // Si está draft, iniciamos wizard en el step correcto (sin guardar nada todavía)
-        const next = getNextStage0StepFromContext(ctx.contextJson);
-
-        setStage0Draft({
-          sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
-          products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
-          process_focus: Array.isArray(ctx.contextJson?.process_focus) ? ctx.contextJson.process_focus : undefined,
-        });
-
-        const step = ((next === 0 ? 1 : next) as 1 | 2 | 3);
-        const greet = advisorResumeGreeting(ctx.contextJson, step);
-
+      if (!planChatIdNow) {
         setMessages([
-          createMessage("advisor", greet),
-          createMessage("advisor", promptForStep(step)),
+          createMessage(
+            "advisor",
+            advisorChatBootstrapErrorRef.current ??
+              "⚠️ No pude preparar el chat del Asesor. Recarga la página e inténtalo nuevamente."
+          ),
         ]);
-
         return;
       }
 
-      // ✅ Si NO es fresh: sincronizamos el chatId con DB solo si no hay chatId local aún
-      if (!chatIdRef.current) {
-        if (ctx.chatId) {
-          adoptAdvisorChatId(ctx.chatId);
-        } else {
-          await ensureAdvisorChatId();
-          if (!active) return;
-        }
-      }
+      setPlanChatId(planChatIdNow);
+      const entry = planChatEntry({ storedAdvisorChatId, currentChatId, planChatId: planChatIdNow });
+      if (entry.clearMessages) setMessages([]);
+      if (entry.adopt) adoptAdvisorChatId(planChatIdNow);
 
-      // ✅ Si está CONFIRMED: no tocar wizard
+      // ✅ CONFIRMED: el historial del chat del plan muestra dónde quedó; las etapas las restaura
+      // useAdvisorEarlyStageEffects desde /api/plans/active-stage.
       if (ctx.status === "confirmed") {
-        // Si no hay mensajes aún, mostrar resumen + pedir confirmación Etapa 1
-        if (messagesRef.current.length === 0) {
+        setStage0Draft({});
+
+        // Sin historial en el chat del plan (el avance quedó guardado sin conversación), un
+        // resumen del caso que no se guarda.
+        const history = await advisorApi.chatHasMessages(await getAuthHeaders(), planChatIdNow);
+        if (!active || chatIdRef.current !== planChatIdNow) return;
+        if (history === false && messagesRef.current.length === 0) {
           const summary = formatContextSummary(ctx.contextJson);
           setAwaitingStage1Start(clientId, true);
 
@@ -531,31 +471,48 @@ export default function ChatPage() {
             ),
           ]);
         }
-
-        setStage0Draft({});
         return;
       }
 
-      // ✅ DRAFT: reanudar wizard en el step correcto
-      const nextStep = getNextStage0StepFromContext(ctx.contextJson);
-      const step = (nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3;
-
+      // ✅ DRAFT: E0 sigue en el chat del plan. La apertura sale solo si ese chat no tiene
+      // historial guardado; si lo tiene, el historial (useChatHistory) ya muestra la última pregunta.
       setStage0Draft({
         sector: typeof ctx.contextJson?.sector === "string" ? ctx.contextJson.sector : undefined,
         products: Array.isArray(ctx.contextJson?.products) ? ctx.contextJson.products : undefined,
         process_focus: Array.isArray(ctx.contextJson?.process_focus) ? ctx.contextJson.process_focus : undefined,
       });
 
-      // Si no hay prompt visible, empuja solo 1 vez la pregunta correcta
-      if (!lastAssistantIsStage0Prompt(messages)) {
-        pushAssistantOnce(promptForStep(step));
-      }
+      const greetingName = await waitForGreetingName();
+      if (!active) return;
+
+      await openStage0(stage0OpeningDeps, {
+        chatId: planChatIdNow,
+        contextStatus: ctx.status,
+        contextJson: ctx.contextJson,
+        greetingName,
+        knownEmpty: false,
+        studentSendsAtStart,
+      });
     })();
 
     return () => {
       active = false;
     };
   }, [ready, authenticated, mode, advisorRefreshNonce]); // ⚠️ Intencional: no depende de chatId para evitar loops
+
+  // Chat del plan para la barra lateral, también desde el Asistente General. Solo lee: si el plan
+  // no tiene chat todavía, no se crea aquí. Con acceso de solo lectura /api/plans/context responde
+  // 403 y la barra lateral queda como antes.
+  useEffect(() => {
+    if (!ready || !authenticated || !gateChecked) return;
+    let active = true;
+    void getPlanContextStatusCached().then((ctx) => {
+      if (active && ctx.ok && ctx.chatId) setPlanChatId(ctx.chatId);
+    });
+    return () => {
+      active = false;
+    };
+  }, [ready, authenticated, gateChecked]);
 
   // -----------------------------
 
@@ -704,10 +661,6 @@ export default function ChatPage() {
     });
   }
 
-  function planFreshKey(cid: string) {
-    return `optia-plan-fresh-${cid}`;
-  }
-
   function stage1StartKey(cid: string) {
     return `optia-plan-stage1-start-${cid}`;
   }
@@ -722,21 +675,6 @@ export default function ChatPage() {
   function isAwaitingStage1Start(cid: string) {
     try {
       return window.sessionStorage.getItem(stage1StartKey(cid)) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function setPlanFresh(cid: string, value: boolean) {
-    try {
-      if (value) window.sessionStorage.setItem(planFreshKey(cid), "1");
-      else window.sessionStorage.removeItem(planFreshKey(cid));
-    } catch {}
-  }
-
-  function getPlanFresh(cid: string) {
-    try {
-      return window.sessionStorage.getItem(planFreshKey(cid)) === "1";
     } catch {
       return false;
     }
@@ -925,6 +863,7 @@ export default function ChatPage() {
     };
   }
 
+  // Pide el chat del plan sin guardar contexto: el servidor crea uno solo si el plan no tiene.
   async function createAdvisorChatOnly(): Promise<{ ok: boolean; chatId: string | null; payload: AdvisorContextPayload | null }> {
     const authHeaders = await getAuthHeaders();
 
@@ -951,31 +890,32 @@ export default function ChatPage() {
     return { ok, chatId, payload };
   }
 
-  async function ensureAdvisorChatId(opts?: { createNew?: boolean }): Promise<string | null> {
-    if (chatIdRef.current) return chatIdRef.current;
+  // Chat principal del plan (lo resuelve el servidor, src/lib/plan/planChat.ts) y lo deja activo.
+  // Si el plan todavía no tiene chat, /api/plans/context crea el primero; si tiene, devuelve
+  // siempre el mismo. Las llamadas simultáneas comparten la misma petición.
+  async function ensureAdvisorChatId(): Promise<string | null> {
     if (advisorChatBootstrapPromiseRef.current) return advisorChatBootstrapPromiseRef.current;
 
     const bootstrapPromise = (async () => {
       advisorChatBootstrapErrorRef.current = null;
 
-      if (!opts?.createNew) {
-        const ctx = await getPlanContextStatusCached({ force: true });
+      const ctx = await getPlanContextStatusCached({ force: true });
 
-        if (!ctx.ok) {
-          advisorChatBootstrapErrorRef.current = ctx.message ?? null;
-          return null;
-        }
+      if (!ctx.ok) {
+        advisorChatBootstrapErrorRef.current = ctx.message ?? null;
+        return null;
+      }
 
-        if (ctx.chatId) {
-          adoptAdvisorChatId(ctx.chatId);
-          return ctx.chatId;
-        }
+      if (ctx.chatId) {
+        setPlanChatId(ctx.chatId);
+        if (chatIdRef.current !== ctx.chatId) adoptAdvisorChatId(ctx.chatId);
+        return ctx.chatId;
       }
 
       const created = await createAdvisorChatOnly();
 
       if (created.ok && created.chatId) {
-        setPlanFresh(clientId, false);
+        setPlanChatId(created.chatId);
         return created.chatId;
       }
 
@@ -1010,29 +950,18 @@ export default function ChatPage() {
 
     const authHeaders = await getAuthHeaders();
 
-    const contextJson = {
-      stage: baseContextJson?.stage ?? "ETAPA_0",
-      sector:
-        nextDraft.sector ??
-        stage0Draft.sector ??
-        baseContextJson?.sector ??
-        "",
-      products:
-        nextDraft.products ??
-        stage0Draft.products ??
-        baseContextJson?.products ??
-        [],
-      process_focus:
-        nextDraft.process_focus ??
-        stage0Draft.process_focus ??
-        baseContextJson?.process_focus ??
-        [],
-    };
+    // Solo los campos que cambian: el servidor los fusiona con lo guardado. Antes se reenviaban los
+    // tres desde el estado de la pestaña, y una pestaña vieja pisaba lo que otra había registrado.
+    const contextJson: Stage0ContextJson = { stage: baseContextJson?.stage ?? "ETAPA_0" };
+    if (nextDraft.sector !== undefined) contextJson.sector = nextDraft.sector;
+    if (nextDraft.products !== undefined) contextJson.products = nextDraft.products;
+    if (nextDraft.process_focus !== undefined) contextJson.process_focus = nextDraft.process_focus;
 
+    const merged = { ...baseContextJson, ...contextJson };
     const contextText = [
-      `Sector/Rubro: ${contextJson.sector || "(pendiente)"}`,
-      `Producto/servicio: ${(contextJson.products || []).join(", ") || "(pendiente)"}`,
-      `Proceso/área: ${(contextJson.process_focus || []).join(", ") || "(pendiente)"}`,
+      `Sector/Rubro: ${merged.sector || "(pendiente)"}`,
+      `Producto/servicio: ${(merged.products || []).join(", ") || "(pendiente)"}`,
+      `Proceso/área: ${(merged.process_focus || []).join(", ") || "(pendiente)"}`,
     ].join("\n");
 
     // Solo el contexto: la conversación de E0 se guarda por /api/messages.
@@ -1072,244 +1001,40 @@ export default function ChatPage() {
     return { ok, payload: resPayload };
   }
 
-  async function confirmPlanContext() {
+  // Confirma exactamente los datos que el estudiante revisó y aprobó (stage0Turn.ts).
+  async function confirmPlanContext(reviewed: Stage0ContextJson) {
     const authHeaders = await getAuthHeaders();
-    return advisorApi.confirmPlanContext(authHeaders);
+    return advisorApi.confirmPlanContext(authHeaders, reviewed);
   }
 
-  async function handleStage0DraftFlowV2(input: {
-    text: string;
-    ctx: PlanContextStatus;
-  }): Promise<boolean> {
-    const { text, ctx } = input;
-    const ctxJson = (ctx.contextJson ?? {}) as Record<string, unknown>;
-    const currentStage0Context = readStage0Context(ctxJson);
-
-    const editingStep = stage0StepForField(editingField);
-    const nextStep = getNextStage0StepFromContext(ctxJson);
-    const step = editingStep ?? ((nextStep === 0 ? 1 : nextStep) as 1 | 2 | 3);
-
-    const localIntent = detectStage0Intent(text);
-    const decisionIntent = classifyStage0DecisionIntent(text, localIntent);
-    const correctionTarget =
-      editingField ?? (decisionIntent === "correction" ? detectEditingField(text) : null);
-    const forcedField = correctionTarget ?? null;
-    const deterministicExtraction = extractStage0Deterministic(text, step, forcedField);
-
-    if (shouldAnswerWithoutLLM(decisionIntent, deterministicExtraction)) {
-      if (decisionIntent === "unknown") {
-        await appendAssistant(
-          stage0HelpMessage(step) +
-            "\n\nElige una opcion aproximada o dime como lo describiria la empresa."
-        );
-        return true;
-      }
-
-      await appendAssistant(
-        decisionIntent === "meta_process"
-          ? "Estamos armando el contexto base del caso para que las siguientes etapas no trabajen con datos inventados.\n\n" +
-              askForMissingStage0Field(step, currentStage0Context)
-          : stage0HelpMessage(step)
-      );
-      return true;
-    }
-
-    const shouldAskLLM =
-      hasMultipleStage0FieldSignals(text) ||
-      !hasStage0Extraction(deterministicExtraction) ||
-      (!forcedField &&
-        step === 1 &&
-        hasStage0ProductSignal(text) &&
-        !deterministicExtraction.sector);
-
-    const interpreted = shouldAskLLM
-      ? await interpretStage0WithLLM(step, text, ctxJson)
-      : { ok: true, payload: null };
-    const result =
-      interpreted.ok && interpreted.payload
-        ? (interpreted.payload as Stage0InterpretPayload)
-        : null;
-
-    const llmExtraction = result ? readStage0Extraction(result) : {};
-    let extractedContext = mergeStage0Extraction(llmExtraction, deterministicExtraction);
-
-    if (forcedField === "sector") {
-      extractedContext = { sector: extractedContext.sector };
-    } else if (forcedField === "products") {
-      extractedContext = { products: extractedContext.products };
-    } else if (forcedField === "process_focus") {
-      extractedContext = { process_focus: extractedContext.process_focus };
-    }
-
-    if (hasStage0Extraction(extractedContext)) {
-      const nextContext = mergeStage0Context(currentStage0Context, extractedContext);
-      const assistantMessage = buildStage0ProgressMessage(extractedContext, nextContext);
-
-      const saved = await savePlanContextDraft(extractedContext, currentStage0Context);
-
-      if (!saved.ok) {
-        await appendAssistant("No pude guardar el contexto en este momento. Intenta otra vez.");
-        return true;
-      }
-
-      planContextCacheRef.current = null;
-      const refreshed = await getPlanContextStatusCached({ force: true });
-      const liveContext = refreshed.ok
-        ? readStage0Context((refreshed.contextJson ?? {}) as Record<string, unknown>)
-        : nextContext;
-      const liveMissingStep = getNextStage0StepFromContext(liveContext);
-
-      if (liveMissingStep !== 0) {
-        setStage0Draft(liveContext);
-        setEditingField(null);
-
-        planContextCacheRef.current = {
-          at: Date.now(),
-          data: {
-            ...ctx,
-            exists: true,
-            status: "draft",
-            chatId: refreshed.ok
-              ? refreshed.chatId
-              : ((saved.payload?.chatId ?? ctx.chatId) as string | null),
-            contextJson: liveContext,
-            contextText: refreshed.ok
-              ? refreshed.contextText
-              : ((saved.payload?.contextText ?? ctx.contextText) as string | null),
-          },
-        };
-
-        await appendAssistant(
-          buildStage0ProgressMessage(extractedContext, liveContext) || assistantMessage
-        );
-        return true;
-      }
-
-      const confirmed = await confirmPlanContext();
-
-      if (!confirmed.ok) {
-        await appendAssistant(
-          confirmed.payload?.message ||
-            "Guarde el contexto, pero no pude confirmarlo todavia. Intenta nuevamente."
-        );
-        return true;
-      }
-
-      planContextCacheRef.current = null;
-      const confirmedFresh = await getPlanContextStatusCached({ force: true });
-      const finalContext = (
-        confirmedFresh.ok
-          ? confirmedFresh.contextJson
-          : confirmed.payload?.contextJson ?? liveContext
-      ) as Record<string, unknown>;
-
-      planContextCacheRef.current = {
-        at: Date.now(),
-        data: {
-          ...ctx,
-          exists: true,
-          status: "confirmed",
-          chatId: (confirmed.payload?.chatId ?? saved.payload?.chatId ?? ctx.chatId) as string | null,
-          contextJson: finalContext,
-          contextText: (confirmed.payload?.contextText ?? ctx.contextText) as string | null,
-        },
-      };
-
-      setStage0Draft(readStage0Context(finalContext));
-      setEditingField(null);
-      setAwaitingStage1Start(clientId, true);
-
-      await appendAssistant(
-        "Etapa 0 completada y confirmada.\n\n" +
-          formatContextSummary(finalContext) +
-          "\n\nYa quedo registrado el contexto base de tu caso.\n\n" +
-          "Si tienes datos mensuales, escribe **productividad**. Si no, responde **ok** y seguimos con el diagnostico."
-      );
-
-      return true;
-    }
-
-    if (decisionIntent === "correction") {
-      const targetStep = stage0StepForField(correctionTarget);
-      if (correctionTarget && targetStep) {
-        setEditingField(correctionTarget);
-        await appendAssistant(
-          "Claro, lo ajustamos. Dime el nuevo dato para actualizarlo sin reiniciar el contexto.\n\n" +
-            askForMissingStage0Field(targetStep, currentStage0Context)
-        );
-        return true;
-      }
-
-      await appendAssistant(
-        "Claro, podemos corregir el contexto. Dime si quieres cambiar **rubro**, **producto/servicio** o **area/proceso**."
-      );
-      return true;
-    }
-
-    if (decisionIntent === "context_change") {
-      await appendAssistant(
-        "Podemos ajustar el contexto del caso. Dime que dato quieres cambiar: **rubro**, **producto/servicio** o **area/proceso**."
-      );
-      return true;
-    }
-
-    if (localIntent === "GREETING" || localIntent === "START") {
-      await appendAssistant(buildStage0Welcome(step));
-      return true;
-    }
-
-    if (localIntent === "CONFIRM") {
-      await appendAssistant(
-        "Aun falta completar un dato del contexto antes de avanzar.\n\n" +
-          askForMissingStage0Field(step, currentStage0Context)
-      );
-      return true;
-    }
-
-    if (decisionIntent === "unknown") {
-      await appendAssistant(
-        stage0HelpMessage(step) +
-          "\n\nElige una opcion aproximada o dime como lo describiria la empresa."
-      );
-      return true;
-    }
-
-    if (
-      decisionIntent === "help_request" ||
-      decisionIntent === "example_request" ||
-      decisionIntent === "meta_process" ||
-      decisionIntent === "off_topic" ||
-      decisionIntent === "ambiguous" ||
-      localIntent === "QUESTION"
-    ) {
-      await appendAssistant(
-        decisionIntent === "meta_process"
-          ? "Estamos armando el contexto base del caso para que las siguientes etapas no trabajen con datos inventados.\n\n" +
-              askForMissingStage0Field(step, currentStage0Context)
-          : stage0HelpMessage(step)
-      );
-      return true;
-    }
-
-    const clarificationQuestion =
-      result && typeof result.clarificationQuestion === "string"
-        ? result.clarificationQuestion.trim()
-        : "";
-
-    await appendAssistant(
-      clarificationQuestion ||
-        "Necesito un dato un poco mas claro para guardarlo correctamente.\n\n" +
-          askForMissingStage0Field(step, currentStage0Context)
-    );
-    return true;
-  }
-
+  // Turno de E0 (contexto en borrador): _lib/turns/stage0Turn.ts.
   async function handleStage0DraftFlow(input: {
     text: string;
     ctx: PlanContextStatus;
   }): Promise<boolean> {
-    return handleStage0DraftFlowV2(input);
-
+    return handleStage0Turn(
+      {
+        chatId: () => chatIdRef.current,
+        greetingName: chatIdentity.greetingName,
+        editingField,
+        setEditingField,
+        setStage0Draft,
+        setAwaitingStage1Start: (value) => setAwaitingStage1Start(clientId, value),
+        tracker: stage0Prompts,
+        appendAssistant: (text) => appendAssistant(text),
+        interpret: (step, text, ctxJson) => interpretStage0WithLLM(step, text, ctxJson),
+        saveDraft: (extracted, base) => savePlanContextDraft(extracted, base),
+        confirm: (reviewed) => confirmPlanContext(reviewed),
+        refreshContext: () => {
+          planContextCacheRef.current = null;
+          return getPlanContextStatusCached({ force: true });
+        },
+        cacheContext: (data) => {
+          planContextCacheRef.current = { at: Date.now(), data };
+        },
+      },
+      input
+    );
   }
 
   async function saveProductivity(payload: any, chatId?: string | null) {
@@ -2006,6 +1731,9 @@ export default function ChatPage() {
       return;
     }
 
+      // El estudiante habló: si la apertura de E0 todavía no salió, ya no sale (su turno responde).
+      if (modeRef.current === "plan_mejora") studentSendsRef.current += 1;
+
       // 1) Pintar SIEMPRE mensaje del usuario
       const userMessage = createMessage("user", text);
       setMessages((prev) => [...prev, userMessage]);
@@ -2031,13 +1759,13 @@ export default function ChatPage() {
       // 1) MODO PLAN DE MEJORA → /api/plans/review
       // ------------------------------------------
       if (modeRef.current === "plan_mejora") {
-        const mustStartFresh = getPlanFresh(clientId);
-
         // ⚠️ IMPORTANTE: dentro de este handleSend usamos un chatId "efectivo" local,
         let effectiveChatId: string | null = chatIdRef.current;
 
-        if (!effectiveChatId) {
-          effectiveChatId = await ensureAdvisorChatId({ createNew: mustStartFresh });
+        // El turno va al chat del plan: si todavía no hay chat activo, o el activo no es el del plan
+        // (recién se cambió de modo), se resuelve con el servidor.
+        if (!effectiveChatId || (planChatId && effectiveChatId !== planChatId)) {
+          effectiveChatId = await ensureAdvisorChatId();
         }
 
         if (!effectiveChatId) {
@@ -2330,90 +2058,35 @@ export default function ChatPage() {
     setShowHoursInline(false);
     setIsSending(false);
     // -----------------------
-    // MODO GENERAL: sí "nuevo chat"
+    // MODO GENERAL: sí "nuevo chat", independiente. No toca el plan ni el chat del asesor.
     // -----------------------
     if (nextMode === "general") {
       chatIdRef.current = null;
       setChatId(null);
-      setMessages([createMessage("advisor", GREETING)]);
+      setMessages([newGreeting()]);
 
       try {
-        // Limpia general
         window.sessionStorage.removeItem(`optia-chat-id-${clientId}-general`);
         window.sessionStorage.removeItem(`optia-messages-${clientId}-general`);
-
-        // ✅ CLAVE: si el usuario apretó "+ Nuevo chat" (sin targetMode), también limpia asesor
-        if (!targetMode) {
-          window.sessionStorage.removeItem(`optia-chat-id-${clientId}-plan_mejora`);
-          window.sessionStorage.removeItem(`optia-messages-${clientId}-plan_mejora`);
-          setPlanFresh(clientId, true);
-          setAwaitingStage1Start(clientId, false);
-        }
       } catch {}
-
-      // También resetea wizard local para evitar “arrastres”
-      if (!targetMode) {
-        setStage0Draft({});
-      }
 
       return;
     }
 
     // -----------------------
-    // MODO ASESOR (plan_mejora): nuevo chat “limpio”
+    // MODO ASESOR (plan_mejora): el Plan de Mejora es uno solo. "Nuevo chat" vuelve a su chat
+    // principal con la etapa, el historial y los artefactos; no crea otro chat ni reinicia E0.
     // -----------------------
     if (nextMode === "plan_mejora") {
-      setShowHoursInline(false);
-      setIsSending(false);
-
-      // NO reseteamos el progreso (etapas). Solo creamos un chat nuevo.
-      setMessages([createMessage("advisor", "⏳ Creando un nuevo chat para continuar tu avance...")]);
-
-      // Limpia cache local del chat actual (solo UI), pero NO toca el estado del caso
-      try {
-        window.sessionStorage.removeItem(`optia-chat-id-${clientId}-plan_mejora`);
-        window.sessionStorage.removeItem(`optia-messages-${clientId}-plan_mejora`);
-      } catch {}
-
-      // FODA aún no tiene persistencia backend.
-      // Se guarda solo en memoria hasta cierre de etapa.
-      try {
-        if (saveFodaTimerRef.current) window.clearTimeout(saveFodaTimerRef.current);
-      } catch {
-        // noop
-      }
-
-      try {
-        if (saveWizardTimerRef.current) window.clearTimeout(saveWizardTimerRef.current);
-        // Guarda Productividad si estuviera en medio (no afecta si ya está validada)
-        await saveProductivityState({ prodStep, prodDraft }, chatIdRef.current);
-      } catch {
-        // no rompemos UX
-      }
-
-      try {
-        if (brainstormState) await saveBrainstormState(brainstormState, chatIdRef.current);
-      } catch {}
-
-      try {
-        if (saveIshikawaTimerRef.current) window.clearTimeout(saveIshikawaTimerRef.current);
-        if (ishikawaState) await saveIshikawaState(ishikawaState, chatIdRef.current);
-      } catch {}
-
-      // Señal para que el effect cree un chat nuevo del asesor (chat-only)
-      setPlanFresh(clientId, true);
-      setAdvisorRefreshNonce((n) => n + 1);
-
-      // Asegura modo asesor
       if (mode !== "plan_mejora") {
         modeRef.current = "plan_mejora";
         setMode("plan_mejora");
+      } else {
+        pushAssistantOnce(PLAN_CONTINUES_NOTICE);
       }
 
-      // IMPORTANTE: no tocamos stage0Step/stage0Draft/prodStep/prodDraft aquí
-      chatIdRef.current = null;
-      setChatId(null);
-
+      // El arranque del asesor resuelve el chat del plan con el servidor y lo abre.
+      setAdvisorRefreshNonce((n) => n + 1);
       return;
     }
   }
@@ -2625,16 +2298,25 @@ export default function ChatPage() {
           activeAdvisorStage={activeAdvisorStage}
           onSelectChat={(id, pickedMode) => {
             const m = pickedMode === "plan_mejora" ? "plan_mejora" : "general";
+            setShowHoursInline(false);
             modeRef.current = m;
+
+            // El asesor siempre abre el chat del plan: lo resuelve su arranque con el servidor.
+            if (m === "plan_mejora") {
+              setMode(m);
+              setAdvisorRefreshNonce((n) => n + 1);
+              return;
+            }
+
             chatIdRef.current = id;
             setMode(m);
             setChatId(id);
-            setShowHoursInline(false);
             setStage0Draft({});
           }}
           onNewChat={() => handleNewChat()}
           onLogout={handleLogout}
-          displayName={displayName}
+          displayName={chatIdentity.headerName}
+          planChatId={planChatId}
         />
       }
       sidebarOpen={sidebarOpen}
@@ -2643,7 +2325,7 @@ export default function ChatPage() {
       {/* Barra superior interna del chat */}
       <ChatHeader
         theme={theme}
-        displayName={displayName}
+        displayName={chatIdentity.headerName}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         onToggleTheme={toggleTheme}
       />
@@ -2661,8 +2343,8 @@ export default function ChatPage() {
           if (mode === "plan_mejora") return;
           setShowHoursInline(false);
           modeRef.current = "plan_mejora";
+          // El arranque del asesor (effect por cambio de modo) resuelve y abre el chat del plan.
           setMode("plan_mejora");
-          void ensureAdvisorChatId();
         }}
       />
 

@@ -8,13 +8,16 @@ import { failResponse } from "@/lib/api/response";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
+import { ensurePlanChat, resolvePlanChatId } from "@/lib/plan/planChat";
+import { findInvalidStage0Fields, stage0FieldLabel } from "@/lib/plan/stage0Values";
 
 export const runtime = "nodejs";
 
 const ContextUpsertSchema = z.object({
   chatId: z.string().uuid().nullable().optional(),
 
-  // ✅ nuevo: para forzar creación de chat
+  // Pide el chat del plan sin guardar contexto (con contextJson {} y contextText null). Ya no crea
+  // un chat nuevo si el plan tiene uno, ni reinicia el contexto: E0 solo se reinicia a propósito.
   forceNew: z.boolean().optional(),
 
   contextJson: z.record(z.string(), z.any()).optional(),
@@ -85,18 +88,14 @@ export async function GET(req: Request) {
       });
     }
 
-    // Si no existe, devolvemos un default (sin crear nada todavía)
-    if (data?.chat_id) {
-      const access = await assertChatOwner(authed.userId, data.chat_id as string);
-      if (!access.ok) {
-        return failResponse(access.code, access.message, access.status);
-      }
-    }
+    // Si no existe, devolvemos un default (sin crear nada todavía). chatId es el chat principal del
+    // plan (planChat.ts): un chat del asesor de este estudiante, o null si el plan aún no tiene.
+    const planChatId = await resolvePlanChatId(authed.userId, (data?.chat_id as string | null) ?? null);
 
     return ok({
       status: data?.status ?? "draft",
       version: data?.version ?? 1,
-      chatId: data?.chat_id ?? null,
+      chatId: planChatId,
       contextJson: data?.context_json ?? {},
       contextText: data?.context_text ?? null,
       exists: !!data,
@@ -166,6 +165,18 @@ export async function POST(req: Request) {
     const incomingJson = parsed.data.contextJson ?? {};
     const contextText = parsed.data.contextText ?? null;
 
+    // Los datos que llegan tienen que ser datos del caso (stage0Values.ts): nada de "Confidencial",
+    // "No decirlo", frases de la conversación ni nombres de empresas, aunque el cliente los mande.
+    // Solo se revisa lo que llega: un campo vacío es un dato pendiente.
+    const invalid = findInvalidStage0Fields(incomingJson);
+    if (invalid.length) {
+      return failResponse(
+        "INVALID_CONTEXT_VALUE",
+        `No registré ${stage0FieldLabel(invalid[0].field)}: no parece un dato del caso. Escríbelo con palabras generales, sin nombres de empresas.`,
+        400
+      );
+    }
+
     // 1) Leemos contexto actual (para merge)
     const { data: current, error: curErr } = await getRow(authed.userId);
     if (curErr) {
@@ -181,93 +192,43 @@ export async function POST(req: Request) {
       Object.keys(incomingJson).length === 0 &&
       contextText === null;
 
-    // 3) Definir chatId efectivo (si forceNew => siempre crear nuevo)
-    let effectiveChatId: string | null = null;
-
-    if (!forceNew) {
-      effectiveChatId = chatId ?? (current?.chat_id as string | null) ?? null;
-    }
-
-    if (effectiveChatId) {
-      const access = await assertChatOwner(authed.userId, effectiveChatId);
+    // 3) El chat que manda el cliente debe ser suyo (no decide cuál es el chat del plan).
+    if (chatId) {
+      const access = await assertChatOwner(authed.userId, chatId);
       if (!access.ok) {
         return failResponse(access.code, access.message, access.status);
       }
     }
 
-    if (!effectiveChatId) {
-      const { data: createdChat, error: chatErr } = await supabaseServer
-        .from("chats")
-        .insert({
-          client_id: authed.userId,
-          title: "Asesor - Contexto del Caso",
-          mode: "plan_mejora",
-        })
-        .select("id")
-        .single();
-
-      if (chatErr || !createdChat?.id) {
-        console.error("[plans] context: creación de chat", chatErr);
-        return NextResponse.json(
-          fail("INTERNAL", "No se pudo crear el chat para el asesor."),
-          { status: 500 }
-        );
-      }
-
-      effectiveChatId = createdChat.id as string;
+    // El chat principal del plan (planChat.ts): el que ya tiene, o el primero si todavía no hay.
+    // Nunca uno nuevo por pedirlo con forceNew ni por guardar desde otro chat del asesor.
+    const planChat = await ensurePlanChat(authed.userId, (current?.chat_id as string | null) ?? null, chatId);
+    if (!planChat.ok) {
+      return NextResponse.json(fail("INTERNAL", planChat.message), { status: 500 });
     }
+    const effectiveChatId = planChat.chatId;
 
-    // 4) isChatOnly:
-    // ✅ NO guardamos mensajes automáticos.
-    // ✅ SÍ sincronizamos plan_case_contexts.chat_id al chat nuevo, manteniendo el progreso.
+    // 4) isChatOnly: solo el chat del plan, sin tocar el contexto ni escribir mensajes.
     if (isChatOnly) {
-      const keptStatus = (current?.status ?? "draft") as "draft" | "confirmed";
-      const keptVersion = current?.version ?? 1;
-      const keptJson =
-        current?.context_json && typeof current.context_json === "object"
-          ? (current.context_json as any)
-          : {};
-      const keptText = current?.context_text ?? null;
-
-      const { data: synced, error: syncErr } = await supabaseServer
-        .from("plan_case_contexts")
-        .upsert(
-          {
-            user_id: authed.userId,
-            chat_id: effectiveChatId,
-            status: keptStatus,
-            version: keptVersion,
-            context_json: keptJson,
-            context_text: keptText,
-          },
-          { onConflict: "user_id" }
-        )
-        .select("status,version,chat_id,context_json,context_text")
-        .single();
-
-      if (syncErr || !synced) {
-        console.error("[plans] context: sincronización de chat", syncErr);
-        return NextResponse.json(
-          fail("INTERNAL", "No se pudo sincronizar el chat del asesor."),
-          { status: 500 }
-        );
+      const { data: row, error: rowErr } = await getRow(authed.userId);
+      if (rowErr) {
+        console.error("[plans] context: lectura tras preparar el chat", rowErr);
+        return NextResponse.json(fail("INTERNAL", "No se pudo leer el contexto del caso."), { status: 500 });
       }
 
       return ok({
-        exists: true,
-        status: synced.status,
-        version: synced.version,
-        chatId: synced.chat_id,
-        contextJson: synced.context_json,
-        contextText: synced.context_text,
+        exists: Boolean(row),
+        status: row?.status ?? "draft",
+        version: row?.version ?? 1,
+        chatId: effectiveChatId,
+        contextJson: row?.context_json ?? {},
+        contextText: row?.context_text ?? null,
       });
     }
 
-    // 5) Merge JSON (si forceNew => limpio)
+    // 5) Merge JSON sobre lo guardado (forceNew ya no limpia el contexto)
     const mergedJson =
-      forceNew
-        ? { ...incomingJson }
-        : current?.context_json && typeof current.context_json === "object"
+      current?.context_json && typeof current.context_json === "object"
         ? { ...(current.context_json as any), ...incomingJson }
         : { ...incomingJson };
 
@@ -288,7 +249,7 @@ export async function POST(req: Request) {
         {
           user_id: authed.userId,
           chat_id: effectiveChatId,
-          status: (forceNew ? "draft" : (current?.status ?? "draft")) as "draft" | "confirmed",
+          status: (current?.status ?? "draft") as "draft" | "confirmed",
           version: current?.version ?? 1,
           context_json: mergedJson,
           context_text: contextText ?? current?.context_text ?? null,

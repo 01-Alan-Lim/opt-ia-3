@@ -63,6 +63,33 @@ Los documentos históricos NO son fuente final de verdad.
   o "¿por qué no puedo avanzar?" y recibir una respuesta concreta y
   accionable, no genérica.
 
+### Estilo conversacional del asesor (E0-E10)
+Pautas en src/lib/chat/advisorVoice.ts. Hoy las aplica solo E0; E1-E10 las adoptan cuando se
+revisen (sin refactor por ahora).
+- Mentor académico: natural, cercano y profesional. Orienta; el estudiante decide.
+- Una sola pregunta principal por turno, en negrita y en su propio párrafo, sin repetirla.
+- Reconocer lo que el estudiante ya respondió antes de pedir lo siguiente.
+- Emojis solo cuando aportan claridad; sin felicitaciones automáticas ("Perfecto 👍").
+- No inventar hechos de la empresa.
+- No inferir el género por nombre, foto o correo; expresiones neutras ("te doy la bienvenida",
+  "la persona que te supervisa"). No hay columna de género ni se agrega.
+- Nombre: saludar por el nombre de pila del perfil al abrir la etapa; "Univ." solo en la cabecera
+  del chat, solo para estudiantes, nunca en las respuestas.
+- Formato: el Markdown que ya pinta MessageList (### para la etapa, **negrita** para la pregunta),
+  sin HTML; el texto debe quedar igual tras formatAdvisorReplyForChat.
+- Terminología (decisión de Alan): "Práctica Empresarial", en singular, para la asignatura y la
+  experiencia de cada estudiante ("durante tu Práctica Empresarial", "la empresa donde realizas tu
+  práctica", "el proceso que estás analizando", "las actividades que desarrollas en la empresa").
+  No "Prácticas Empresariales" para la de un estudiante, ni "pasantía" o "prácticas profesionales"
+  como sinónimos, ni repetirla en cada mensaje. No suponer que el estudiante es empleado de la
+  empresa; los términos técnicos ("puesto de trabajo", "métodos de trabajo", "condiciones de
+  trabajo", "carga de trabajo") sí valen. Nunca nombres reales de empresas.
+- Asistente General: su saludo (generalAssistantGreeting en advisorVoice.ts) usa el mismo nombre de
+  pila; solo vive en pantalla y en sessionStorage (/api/chat no lo recibe ni lo guarda).
+- Pendiente en E1-E10: saludan con getPreferredStudentFirstName (primera palabra de first_name,
+  sin formato: "ALAN" queda "ALAN"), sus textos tienen muletillas como "Perfecto 👍" y todavía no
+  aplican la terminología.
+
 ## Estado del trabajo
 
 Las ramas de las tandas completadas (abajo) están publicadas en origin y NINGUNA está mergeada
@@ -202,11 +229,100 @@ es un dispatcher (decide la rama y llama al turno).
 - Componentes extraídos: src/components/chat/ChatGateScreen, ChatHeader y ModeSelector.
 - Módulos puros: lib/plan/advisorClientIntent, stage0Context, advisorStates y advisorMessages;
   lib/chat/assistantFormat y chatStorage.
-- Siguen en page.tsx: bootstrap del asesor, E0 (handleStage0DraftFlowV2), Ishikawa residual,
-  ensure/adopt del chat, wrappers con closure, handleNewChat, handleLogout,
-  handleUploadPlanFile (E10) y el JSX.
+- Siguen en page.tsx: bootstrap del asesor, Ishikawa residual, ensure/adopt del chat, wrappers
+  con closure, handleNewChat, handleLogout, handleUploadPlanFile (E10) y el JSX. E0
+  (handleStage0DraftFlowV2) salió después a turns/stage0Turn.ts (ver E0 conversacional).
 - E1→E2 sigue fijado por el cliente (turns/productivityTurn.ts): decisión vigente.
 - Pruebas: npm test, 23 archivos (lista en scripts/run-tests.mjs).
+
+### Completado — E0 conversacional (rama fix/advisor-e0-natural-opening, desde 17cf398)
+Sin commit ni push todavía (2026-10-20). E0 ya no se confirma sola con el tercer dato: el estudiante
+revisa el resumen y responde que sí (ver "Seguridad semántica y cierre de E0").
+- Apertura (src/app/chat/_lib/stage0Opening.ts): un solo emisor de la primera pregunta. Se muestra
+  y se guarda una vez por chat, solo si el chat no tiene historial (al recargar no se repite); si el
+  estudiante escribe antes, no sale y responde su turno. Stage0PromptTracker, compartido con el
+  turno, evita repetir la bienvenida. No compara textos.
+- Turno (src/app/chat/_lib/turns/stage0Turn.ts): la intención va antes de extraer. Pedir empezar,
+  saludar, "ok", preguntar, pedir ayuda o un ejemplo y "no sé" se responden sin guardar ni llamar a
+  Gemini. La ayuda habla del dato que nombra el mensaje ("¿qué significa área de intervención?"
+  mientras se pide el rubro) y retoma la pregunta en curso; "no sé" usa lo ya registrado.
+- Extracción (stage0Context.ts): compara sobre una copia sin tildes ni mayúsculas que conserva las
+  posiciones y recorta el valor del original; reconoce palabras enteras y los verbos de actividad
+  por raíz y terminación (antes "Fabricamos" daba "Mos Yogurt" y "área" con tilde no se leía). Cada
+  marca (nombre del campo, verbo de actividad, "la venta de", "el área de") abre un tramo hasta la
+  siguiente y lo previo a la primera responde la pregunta en curso: cada valor va a un solo campo.
+  Los valores se limpian de artículos, dudas y pedidos, el dato va después de la última cópula ("el
+  área donde trabajo es producción") y se guardan con mayúscula inicial, sin repetidos, hasta 3.
+- Gemini (context/interpret): las mismas reglas para consultarlo (varios campos, sin extracción
+  propia, más de 8 palabras, o un verbo de actividad cuando falta el rubro); las señales ahora
+  reconocen conjugaciones y tildes. Su lectura manda, pero un producto o un área sin ninguna palabra
+  del mensaje no se guarda (groundStage0Extraction); el rubro sí se puede deducir. El prompt prohíbe
+  nombres propios y deducir productos o áreas. Si Gemini falla, la extracción propia vale solo para
+  mensajes cortos.
+- Indicador de etapa: con el contexto en borrador, /api/plans/active-stage responde Etapa 0 aunque
+  quede un estado del wizard de E1 (activeStage.ts); el wizard en reposo ({ prodStep: 0 }) ya no se
+  guarda (shouldPersistProductivityWizard); una etapa que llega después de cambiar de chat o de modo
+  se descarta (refreshActiveAdvisorStage(isCurrent)).
+- Nombre (src/lib/chat/studentIdentity.ts, describeChatIdentity): sale del perfil
+  (profiles.first_name/last_name) que trae /api/me, resuelto en el servidor con el Bearer;
+  useAccessGate lo expone sin otra llamada. Solo se da formato (mayúscula inicial, tildes,
+  partículas "de la", nombres compuestos frecuentes como "María José"): un nombre y un apellido.
+  Cabecera "Univ. Alan Limachi" solo con role student; saludo "¡Hola, Alan!". Sin perfil, el nombre
+  de la cuenta de Google; sin nombre, el correo en la cabecera y el saludo sin nombre (no se arma
+  uno con el correo). La apertura de E0 espera a /api/me para saludar con el mismo nombre. El
+  perfil no se modifica.
+- Bienvenida (buildStage0Opening, estilo de advisorVoice.ts): saludo, "### Etapa 0: Contexto del
+  caso", los tres datos y para qué sirven, y la pregunta en negrita en su propio párrafo (unos 550
+  caracteres; antes unos 700). Textos de E0 en redacción neutra y con la terminología de "Práctica
+  Empresarial" (ver Estilo conversacional).
+- Pruebas: stage0Context, stage0Turn, stage0Opening, activeStage y studentIdentity (npm test, 62
+  archivos).
+- Continuidad única del plan (misma rama). Decisión de Alan: un solo plan activo por estudiante;
+  abrir otro chat del asesor recupera ese plan; E0 solo se reinicia con un reinicio explícito; el
+  Asistente General sí abre chats nuevos independientes.
+  - Causa: E0 es por estudiante, pero E1-E10 guardan su estado por chat (plan_stage_states única
+    por user_id + chat_id + stage) y "Nuevo chat" creaba otro chat del asesor (forceNew) con una
+    copia del estado o una apertura de E0 nueva.
+  - Chat del plan (src/lib/plan/planChat.ts, server-side con la sesión): el del estado de etapa más
+    reciente si es un chat del asesor del estudiante (cubre los chats históricos sin migrar ni
+    reasignar nada); si no, plan_case_contexts.chat_id; si no hay, se asigna el primero (el chat del
+    asesor desde el que se escribe, o uno nuevo) con una escritura condicional: si dos pestañas
+    compiten, gana una y la otra oculta el chat vacío que creó. GET /api/plans/context informa ese
+    chat; POST con forceNew ya no crea otro ni reinicia el contexto; guardar E0 desde otro chat no
+    mueve el plan. /api/plans/review usa el chat del plan si no recibe chatId.
+  - Cliente: el arranque del asesor siempre abre el chat del plan (planChatClient.ts decide si
+    limpiar la pantalla); "Nuevo chat" en el asesor vuelve a ese chat con un aviso local; en el
+    Asistente General abre un chat nuevo sin tocar el plan; la barra lateral lista solo el chat del
+    plan entre los del asesor (sin "Eliminar"), o la lista completa si /api/plans/context no responde
+    (solo lectura). Ya no existe la marca optia-plan-fresh.
+  - Pruebas: planChat (rutas reales sobre Supabase simulado: primer acceso, reingreso, chats
+    históricos, entre estudiantes, concurrencia, gates) y planContextRoute (npm test, 63 archivos).
+- Seguridad semántica y cierre de E0 (misma rama, 2026-10-20). Corrige la auditoría de 42 mensajes:
+  "Eso es confidencial", "Todavía no lo decido" o "Me equivoqué, el rubro es textil" se guardaban
+  como datos y el tercero cerraba E0.
+  - Actos del mensaje (src/lib/plan/studentMessageActs.ts, pensado para E1-E10, hoy solo E0): por
+    cláusulas, rechazo, aplazamiento, delegación (al asesor o a otra persona), vaguedad, duda o
+    tentativa, corrección, negación (lo negado nunca cuenta), cambio de empresa y desistir de un
+    cambio. Devuelve el texto afirmado con lo demás en blanco; la extracción lee solo eso.
+  - Calidad de cada valor (src/lib/plan/stage0Values.ts), igual en cliente y servidor: sin verbos de
+    la conversación, negaciones, cuantificadores vacíos, personas ni nombres de empresas o marcas
+    (heurística: formas legales, siglas, palabras seguidas con mayúscula, "se llama…"). La lectura de
+    Gemini tiene que apoyarse en palabras enteras de lo afirmado (antes bastaba un prefijo de 4
+    letras: "Pan" pasaba por "panadería"); el rubro se puede deducir. context/interpret valida en el
+    servidor y devuelve los motivos sin los valores; con un JSON inválido responde 502
+    INTERPRET_UNREADABLE (antes lo convertía en una pregunta). POST /api/plans/context y
+    context/confirm rechazan un valor inválido con 400 INVALID_CONTEXT_VALUE.
+  - Cierre: con los tres datos el borrador queda en revisión (estado deducido de plan_case_contexts:
+    draft con los tres datos, sin tabla ni endpoint nuevos, así sobrevive a recargas y pestañas). El
+    asesor muestra el resumen y pregunta "¿Lo registro así?"; solo un mensaje que entero es un sí
+    (isStage0ReviewConfirmation) llama a context/confirm, con los datos revisados en el cuerpo. Una
+    corrección cambia el dato y vuelve a mostrar el resumen. El turno lee el contexto al empezar;
+    si otra pestaña lo cambió desde el resumen que vio esta, lo muestra de nuevo en vez de confirmar,
+    y si otra ya confirmó, no vuelve a confirmar. El borrador se guarda enviando solo los campos que
+    cambian. Las respuestas con duda se guardan como provisionales y lo dice.
+  - Pruebas: stage0Values, stage0Corpus (los 42 casos con Gemini caído y con Gemini que acierta, 8
+    escenarios con Gemini equivocado, revisión, recarga y concurrencia) y stage0ContextRoutes (rutas
+    reales con Gemini y Supabase simulados).
 
 ### En curso — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
 Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales
@@ -258,12 +374,15 @@ y las reglas de validate.)
   de módulo en 18 rutas de api/plans/: se fija al cargar el módulo, no por petición.
 - Orden y gates entre algunas etapas requieren revisión funcional (además del caso E2).
 - Chat, bugs funcionales verificados al cerrar el refactor (no corregidos):
-  - E0: una pregunta ("¿Qué es un sector?") se guarda en el borrador como "?" (normalizeText
-    quita el signo); "Fabricamos/Vendemos/Ofrecemos…" extrae "Mos …" como producto; "no estoy
-    seguro del sector" guarda "Del Sector"; "área" con tilde no se limpia;
-    lastAssistantIsStage0Prompt no reconoce las preguntas actuales (pueden repetirse).
-  - Historial (useChatHistory): sin guarda de respuesta vieja al cambiar de chat; un chat vacío
-    conserva los mensajes anteriores; messagesRef/chatIdRef se actualizan en effects.
+  - E0: corregido en fix/advisor-e0-natural-opening (ver E0 conversacional). Queda: con Gemini
+    caído, una respuesta de más de 8 palabras afirmadas no se guarda y se pide resumirla; actos y
+    calidad son reglas y una frase poco habitual puede leerse mal (no se confirma sin el sí del
+    estudiante); la detección de nombres de empresas es heurística (dos palabras seguidas con
+    mayúscula pueden tomarse por un nombre, y un nombre en minúsculas no se detecta); después de
+    confirmar, corregir E0 sigue exigiendo un reinicio explícito (decisión pendiente de Alan).
+  - Historial (useChatHistory): la respuesta vieja al cambiar de chat ya se descarta (continuidad
+    única del plan); sigue que un chat vacío conserva los mensajes anteriores (en el asesor lo cubre
+    planChatEntry) y que messagesRef/chatIdRef se actualizan en effects.
   - Auth (useAccessGate): en un 403 compiten dos redirecciones; el gate no se reevalúa si la
     cuenta cambia sin pasar por "sin sesión".
   - Transiciones: E5 restaurado con estado inválido queda sin estado (cae en /api/plans/review);

@@ -6,15 +6,12 @@
 // handleNewChat): aquí llegan por parámetro. Los effects se movieron tal cual y page.tsx los
 // llama en sus posiciones de siempre.
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import type { useRouter } from "next/navigation";
 import { createMessage } from "@/lib/chat/assistantFormat";
+import { generalAssistantGreeting } from "@/lib/chat/advisorVoice";
 import { supabase } from "@/lib/supabaseClient";
 import type { Message } from "@/lib/types";
-
-// Saludo del modo general cuando el historial está vacío (también lo usa handleNewChat).
-export const GREETING =
-  "Hola, soy OPT-IA. Me conecto a Supabase y Google AI para ayudarte con productividad en MyPEs.";
 
 type ChatRouter = ReturnType<typeof useRouter>;
 
@@ -30,6 +27,7 @@ export function useChatHistory({
   storageKeyMsgs,
   getAuthHeaders,
   router,
+  greetingName,
 }: {
   ready: boolean;
   authenticated: boolean;
@@ -37,12 +35,34 @@ export function useChatHistory({
   modeRef: { current: "general" | "plan_mejora" };
   chatId: string | null;
   setChatId: (value: string | null) => void;
-  setMessages: (value: Message[]) => void;
+  setMessages: Dispatch<SetStateAction<Message[]>>;
   storageKeyChat: string;
   storageKeyMsgs: string;
   getAuthHeaders: () => Promise<Record<string, string>>;
   router: ChatRouter;
+  // Nombre de pila del perfil (describeChatIdentity) para el saludo del modo general.
+  greetingName: string | null;
 }) {
+  // Saludo del modo general cuando el historial está vacío (también lo usa handleNewChat). Solo se
+  // muestra y queda en sessionStorage: /api/chat no lo recibe ni lo guarda. Se recuerda su id para
+  // ponerle el nombre si /api/me responde después (el chat no se muestra hasta entonces).
+  const greetingIdRef = useRef<string | null>(null);
+  const newGreeting = useCallback(() => {
+    const message = createMessage("advisor", generalAssistantGreeting(greetingName));
+    greetingIdRef.current = message.id;
+    return message;
+  }, [greetingName]);
+
+  useEffect(() => {
+    if (mode !== "general") return;
+    const text = generalAssistantGreeting(greetingName);
+    setMessages((prev) =>
+      prev.length === 1 && prev[0].id === greetingIdRef.current && prev[0].content !== text
+        ? [{ ...prev[0], content: text }]
+        : prev
+    );
+  }, [greetingName, mode]);
+
   // -----------------------------
   // 2a. Cargar desde sessionStorage
   // -----------------------------
@@ -62,16 +82,16 @@ export function useChatHistory({
         if (Array.isArray(parsed) && parsed.length > 0) {
           setMessages(parsed);
         } else {
-          if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
+          if (mode === "general") setMessages([newGreeting()]);
           else setMessages([]);
         }
       } else {
-        if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
+        if (mode === "general") setMessages([newGreeting()]);
         else setMessages([]);
       }
     } catch (e) {
       console.warn("No se pudo leer storage:", e);
-      if (mode === "general") setMessages([createMessage("advisor", GREETING)]);
+      if (mode === "general") setMessages([newGreeting()]);
       else setMessages([]); // ✅ Asesor en blanco
     }
 
@@ -88,13 +108,17 @@ export function useChatHistory({
     if (!authenticated) {
       setChatId(null);
       setMessages(modeRef.current === "general"
-        ? [createMessage("advisor", GREETING)]
+        ? [newGreeting()]
         : []
       );
       return;
     }
 
     if (!chatId) return;
+
+    // Si el chat activo cambia mientras se espera (cambio rápido de conversación o de modo, o el
+    // asesor que pasa al chat del plan), la respuesta del chat anterior no se pinta.
+    let active = true;
 
     async function loadMessages() {
       try {
@@ -110,6 +134,7 @@ export function useChatHistory({
         }
 
         const data = await res.json();
+        if (!active) return;
 
         if (res.ok && data?.ok !== false) {
           const msgs = data?.data?.messages ?? data?.messages;
@@ -129,7 +154,12 @@ export function useChatHistory({
     }
 
     loadMessages();
+    return () => {
+      active = false;
+    };
   }, [ready, authenticated, chatId]);
+
+  return { newGreeting };
 }
 
 export function useChatHistoryPersistence({

@@ -173,8 +173,22 @@ export function installMessageStub(state: MessageStubState): MessageStub {
           return respond([state.contexts[userId]], 201);
         }
         const row = state.contexts[filters.user_id ?? ""];
+        if (req.method === "PATCH" && body) {
+          // Escritura condicional sobre chat_id (eq.<id> o is.null), como la de planChat.ts.
+          const chatFilter = url.searchParams.get("chat_id");
+          const current = row?.chat_id ?? null;
+          const matchesChat = !chatFilter || (chatFilter === "is.null" ? current === null : chatFilter === `eq.${current}`);
+          if (!row || !matchesChat) return respond([]);
+          Object.assign(row, body, { updated_at: nextTimestamp() });
+          return respond([row]);
+        }
         return respond(row ? [row] : []);
       }
+      // Estados de etapa: estos tests no tienen avance en E1-E10. Confirmar E0 crea el de E1
+      // (advancePlanStage): se acepta y no se guarda.
+      case "plan_stage_states":
+        if (req.method === "POST" && body) return respond([{ id: crypto.randomUUID(), ...body }], 201);
+        return respond([]);
       default:
         return pgError(404, "42P01", `relation "${table}" does not exist`);
     }

@@ -1,5 +1,7 @@
 // src/app/api/plans/context/confirm/route.ts
-// Etapa 0: Confirmar contexto (habilita Avance 1)
+// Etapa 0: Confirmar contexto (habilita Avance 1). El chat la llama solo después de que el
+// estudiante aprobó el resumen de los tres datos (stage0Turn.ts), con esos datos en contextJson.
+// Además de que estén los tres, cada valor tiene que ser un dato del caso (stage0Values.ts).
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -9,6 +11,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { ok, fail, failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { advancePlanStage } from "@/lib/plan/stageOrchestrator";
+import { findInvalidStage0Fields, stage0FieldLabel } from "@/lib/plan/stage0Values";
 
 export const runtime = "nodejs";
 
@@ -103,6 +106,18 @@ export async function POST(req: Request) {
         fail(
           "BAD_REQUEST",
           "Aún falta información mínima para confirmar el contexto (sector, producto/servicio, proceso/área)."
+        ),
+        { status: 400 }
+      );
+    }
+
+    const invalid = findInvalidStage0Fields(mergedJson);
+    if (invalid.length) {
+      return NextResponse.json(
+        fail(
+          "INVALID_CONTEXT_VALUE",
+          `Antes de registrar el contexto, revisa ${stage0FieldLabel(invalid[0].field)}: no parece un dato del caso. ` +
+            "Dime el valor correcto y lo actualizo."
         ),
         { status: 400 }
       );

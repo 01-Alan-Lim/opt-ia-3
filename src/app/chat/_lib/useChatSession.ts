@@ -3,7 +3,8 @@
 // Sesión de Supabase Auth en el cliente del chat: lee la sesión inicial, sigue onAuthStateChange
 // y arma el header Authorization. NO autoriza: la identidad, el rol y la cohorte los resuelve el
 // servidor con el Bearer (/api/me y cada ruta de API). userId y email son datos de UI y de las
-// claves de storage, nunca autoridad. Se movió tal cual desde page.tsx.
+// claves de storage, nunca autoridad. Se movió tal cual desde page.tsx. accountName es el nombre
+// de la cuenta de Google: el chat muestra el del perfil (/api/me) y usa este solo si falta.
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
@@ -65,14 +66,6 @@ export function useChatSession() {
 
   const authenticated = useMemo(() => Boolean(userId), [userId]);
 
-  const displayName = useMemo(() => {
-    if (sessionFullName) return sessionFullName;
-
-    const email = sessionEmail ?? "";
-    const base = email.split("@")[0]?.trim();
-    return base || "Usuario";
-  }, [sessionFullName, sessionEmail]);
-
   async function getAuthHeaders(): Promise<Record<string, string>> {
     if (accessToken) return { Authorization: `Bearer ${accessToken}` };
 
@@ -82,5 +75,13 @@ export function useChatSession() {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  return { ready, sessionEmail, userId, accessToken, authenticated, displayName, getAuthHeaders };
+  return {
+    ready,
+    sessionEmail,
+    userId,
+    accessToken,
+    authenticated,
+    accountName: sessionFullName,
+    getAuthHeaders,
+  };
 }

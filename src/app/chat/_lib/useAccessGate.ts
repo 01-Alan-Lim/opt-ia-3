@@ -4,10 +4,13 @@
 // (rol, onboarding, aprobación, cohorte, ventana de acceso). El cliente solo aplica lo que responde
 // el servidor: navegación, mensaje y modo solo lectura. No decide roles ni cohortes ni consulta
 // tablas. Se movió tal cual desde page.tsx; page.tsx sigue decidiendo qué pantalla mostrar.
+// También expone el nombre del perfil y el rol que trae /api/me (identity), para la cabecera y el
+// saludo (studentIdentity.ts): solo para mostrar, no autoriza nada.
 
 import { useEffect, useState } from "react";
 import type { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { readMeIdentity, type MeIdentity } from "@/lib/chat/studentIdentity";
 
 type GateReason =
   | "OK"
@@ -18,6 +21,15 @@ type GateReason =
   | "ACCESS_EXPIRED";
 
 type ChatRouter = ReturnType<typeof useRouter>;
+
+// Se cumple una sola vez, cuando /api/me respondió (con la identidad) o falló (null).
+function createIdentityWait() {
+  let resolve: (identity: MeIdentity | null) => void = () => undefined;
+  const promise = new Promise<MeIdentity | null>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 export function useAccessGate({
   ready,
@@ -33,6 +45,10 @@ export function useAccessGate({
   const [gateMessage, setGateMessage] = useState<string | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
   const [canInteract, setCanInteract] = useState(true); // false => solo lectura
+  // Nombre del perfil y rol de /api/me; null hasta que responde, o si falla.
+  const [identity, setIdentity] = useState<MeIdentity | null>(null);
+  // La apertura de E0 la espera para saludar con el nombre del perfil y no con uno provisional.
+  const [identityWait] = useState(createIdentityWait);
 
   // -----------------------------
   // Redirect si no está autenticado
@@ -59,6 +75,7 @@ export function useAccessGate({
         const token = data.session?.access_token;
         if (!token) {
           if (!active) return;
+          identityWait.resolve(null);
           setGateChecked(true);
           return;
         }
@@ -73,6 +90,10 @@ export function useAccessGate({
         const payload = isOk ? (json?.data ?? json) : null;
 
         if (!active) return;
+
+        const me = payload ? readMeIdentity(payload) : null;
+        setIdentity(me);
+        identityWait.resolve(me);
 
         // defaults
         setAccessDenied(false);
@@ -168,6 +189,7 @@ export function useAccessGate({
       } catch (e) {
         if (!active) return;
         console.error("Chat gate (/api/me) failed:", e);
+        identityWait.resolve(null);
         setGateChecked(true);
       }
     })();
@@ -175,7 +197,14 @@ export function useAccessGate({
     return () => {
       active = false;
     };
-  }, [ready, authenticated, router]);
+  }, [ready, authenticated, router, identityWait]);
 
-  return { gateChecked, gateMessage, accessDenied, canInteract };
+  return {
+    gateChecked,
+    gateMessage,
+    accessDenied,
+    canInteract,
+    identity,
+    whenIdentityKnown: () => identityWait.promise,
+  };
 }

@@ -1,4 +1,12 @@
 // src/app/api/plans/context/interpret/route.ts
+//
+// Lectura de un mensaje de la Etapa 0 con Gemini. Lo que devuelve el modelo se valida aquí, en el
+// servidor, con las mismas reglas que la extracción propia (src/lib/plan/stage0Values.ts): solo
+// quedan datos del caso, los productos y las áreas tienen que estar dichos por el estudiante
+// (palabras enteras, nunca lo negado) y no pasan nombres de empresas ni marcas. La confianza que
+// declara el modelo no basta para aceptar nada. Si su respuesta no es un JSON válido, la ruta
+// responde un error (INTERPRET_UNREADABLE) en vez de inventar una intención: antes la convertía en
+// una "pregunta" y la respuesta del estudiante se perdía.
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -6,6 +14,7 @@ import { getAuthErrorCode, requireUser } from "@/lib/auth/supabase";
 import { ok, fail, failResponse } from "@/lib/api/response";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 import { getGeminiModel } from "@/lib/geminiClient";
+import { validateStage0Extraction } from "@/lib/plan/stage0Values";
 
 export const runtime = "nodejs";
 
@@ -21,7 +30,7 @@ const StringArraySchema = z.preprocess(
 );
 
 const InterpretResultSchema = z.object({
-  intent: z.enum(["GREETING", "QUESTION", "START", "EDIT", "CONFIRM", "ANSWER"]),
+  intent: z.enum(["GREETING", "QUESTION", "START", "EDIT", "CONFIRM", "ANSWER", "DECLINE"]),
   sector: z.string().optional(),
   products: StringArraySchema,
   process_focus: StringArraySchema,
@@ -116,12 +125,8 @@ function cleanList(input: string[] | undefined) {
   return out.length > 0 ? out.slice(0, 3) : undefined;
 }
 
-function hasUsableExtraction(result: z.infer<typeof InterpretResultSchema>) {
-  return Boolean(
-    cleanSector(result.sector) ||
-      cleanList(result.products)?.length ||
-      cleanList(result.process_focus)?.length
-  );
+function hasUsableExtraction(values: { sector?: string; products?: string[]; process_focus?: string[] }) {
+  return Boolean(values.sector || values.products?.length || values.process_focus?.length);
 }
 
 function fallbackQuestion(step: 1 | 2 | 3) {
@@ -170,7 +175,7 @@ You are an academic mentor for OPT-IA. Your job is to interpret a student's mess
 
 Return ONLY valid JSON with:
 {
-  "intent": "GREETING" | "QUESTION" | "START" | "EDIT" | "CONFIRM" | "ANSWER",
+  "intent": "GREETING" | "QUESTION" | "START" | "EDIT" | "CONFIRM" | "ANSWER" | "DECLINE",
   "sector": "string, optional",
   "products": ["strings, optional"],
   "process_focus": ["strings, optional"],
@@ -189,6 +194,7 @@ Interpretation rules:
 - START: the student asks to start.
 - EDIT: the student wants to change, edit, or correct a previous context field.
 - CONFIRM: short confirmation such as ok, listo, vamos, si.
+- DECLINE: the student does not give the data: refuses or says it is confidential ("prefiero no decirlo"), has not decided yet ("todavia no lo decido"), leaves the decision to you or to someone else ("el que tu me recomiendes", "preguntale a mi supervisor"), or answers vaguely ("muchos", "depende", "ninguno en especial").
 - ANSWER: the message provides usable case-context data.
 
 Extraction rules:
@@ -202,6 +208,10 @@ Extraction rules:
 - If the message has no usable context data, set needsClarification=true and ask only for the next missing field.
 - If useful context data was extracted, set needsClarification=false and confidence >= 0.7.
 - Be conservative: never save "no se", "dame ejemplos", "que significa rubro", "hablame de balanceo de linea", or "que puedes hacer" as case data.
+- Fill products and process_focus only with what the student mentions; never deduce them from the sector or from each other (for example, "Fabricamos yogurt" has no process_focus, and "panaderia" does not imply the product "pan").
+- If the student negates something, never return the negated value: "No es una fabrica, es un restaurante" gives sector="restaurante"; "no era yogur sino queso" gives products=["queso"].
+- If the student answers with doubt ("creo que", "no estoy seguro"), extract what they said and set needsClarification=true.
+- Never return proper names of companies, brands or people in any field. If the student mentions one, keep only the activity (for example "panaderia" instead of the bakery's name); if the message only gives a name, return no data.
 `.trim();
 }
 
@@ -235,6 +245,8 @@ export async function POST(req: Request) {
 
     const text = resp.response.text().trim();
 
+    // Sin un JSON válido no hay lectura: el turno usa la extracción propia (mensajes cortos) o pide
+    // resumir, y nunca lo trata como una pregunta del estudiante.
     let json: unknown;
     try {
       const extracted = extractFirstJsonObject(text);
@@ -242,38 +254,32 @@ export async function POST(req: Request) {
       json = tryParseJsonLoose(extracted);
     } catch (err) {
       console.warn("[plans] context/interpret: parse fallido", err);
-
-      return ok({
-        intent: "QUESTION",
-        confidence: 0.2,
-        needsClarification: true,
-        clarificationQuestion: fallbackQuestion(step),
-      });
+      return failResponse("INTERPRET_UNREADABLE", "No se pudo interpretar el mensaje.", 502);
     }
 
     const valid = InterpretResultSchema.safeParse(json);
     if (!valid.success) {
       console.error("[plans] context/interpret: respuesta zod invalida", valid.error.flatten());
-      return ok({
-        intent: "QUESTION",
-        confidence: 0.2,
-        needsClarification: true,
-        clarificationQuestion:
-          "No pude interpretar bien tu respuesta. Puedes decirlo en una frase corta?",
-      });
+      return failResponse("INTERPRET_UNREADABLE", "No se pudo interpretar el mensaje.", 502);
     }
 
-    const normalized = {
-      ...valid.data,
-      sector: cleanSector(valid.data.sector),
-      products: cleanList(valid.data.products),
-      process_focus: cleanList(valid.data.process_focus),
-    };
+    // Validación del servidor (stage0Values.ts): lo que no es un dato del caso, no lo dijo el
+    // estudiante o nombra a una empresa no se devuelve. Los motivos van sin los valores.
+    const checked = validateStage0Extraction(
+      {
+        sector: cleanSector(valid.data.sector),
+        products: cleanList(valid.data.products),
+        process_focus: cleanList(valid.data.process_focus),
+      },
+      userText
+    );
+    const normalized = { ...valid.data, ...checked.values, rejected: checked.rejected };
 
-    if (normalized.intent === "ANSWER" && !hasUsableExtraction(valid.data)) {
+    // Quiso responder pero no quedó ningún dato: sigue siendo una respuesta (el turno pide precisar),
+    // no una pregunta.
+    if (!hasUsableExtraction(checked.values) && normalized.intent === "ANSWER") {
       return ok({
         ...normalized,
-        intent: "QUESTION" as const,
         confidence: Math.min(normalized.confidence, 0.4),
         needsClarification: true,
         clarificationQuestion: normalized.clarificationQuestion ?? fallbackQuestion(step),

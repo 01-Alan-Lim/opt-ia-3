@@ -14,6 +14,7 @@ import type { BrainstormState } from "@/lib/plan/brainstormFlow";
 import { promptProd } from "@/lib/plan/advisorMessages";
 import {
   sanitizeFodaState,
+  shouldPersistProductivityWizard,
   type AdvisorRuntimeStage,
   type FinalDocState,
   type FodaState,
@@ -128,7 +129,7 @@ export function useAdvisorEarlyStageEffects({
   advisorRefreshNonce: number;
   chatId: string | null;
   chatIdRef: { current: string | null };
-  refreshActiveAdvisorStage: () => Promise<unknown>;
+  refreshActiveAdvisorStage: (isCurrent?: () => boolean) => Promise<unknown>;
   setActiveAdvisorStage: (value: AdvisorRuntimeStage) => void;
   getFodaState: (chatIdArg?: string | null) => Promise<{ ok: boolean; payload: { exists?: unknown; state?: unknown } | null }>;
   setFodaState: (value: FodaState | null) => void;
@@ -142,7 +143,9 @@ export function useAdvisorEarlyStageEffects({
     let active = true;
 
     (async () => {
-      const stage = await refreshActiveAdvisorStage();
+      // Una respuesta que llega después de cambiar de chat o de modo no se aplica: la del
+      // effect vigente manda (antes la última en llegar pisaba la etapa y los estados locales).
+      const stage = await refreshActiveAdvisorStage(() => active);
       if (!active) return;
 
       if (stage == null) {
@@ -428,7 +431,7 @@ export function useAdvisorLateStageEffects({
     if (mode !== "plan_mejora") return;
 
     // Solo persistimos cuando el wizard está activo
-    if (prodStep <= 0) return;
+    if (!shouldPersistProductivityWizard(prodStep)) return;
     if (!chatIdRef.current) return;
 
     // debounce

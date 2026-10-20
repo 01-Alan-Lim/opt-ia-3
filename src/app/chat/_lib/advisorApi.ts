@@ -119,6 +119,19 @@ export async function interpretStage0WithLLM(authHeaders: AuthHeaders, step: 1 |
   return { ok: okk, payload };
 }
 
+// ¿El chat ya tiene mensajes guardados? null si no se pudo saber (la apertura de E0 no sale).
+export async function chatHasMessages(authHeaders: AuthHeaders, chatId: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(`/api/messages?chatId=${encodeURIComponent(chatId)}`, { headers: { ...authHeaders } });
+    const json = await res.json().catch(() => null);
+    if (!res.ok || json?.ok === false) return null;
+    const messages = json?.data?.messages ?? json?.messages;
+    return Array.isArray(messages) ? messages.length > 0 : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getPlanContextStatus(authHeaders: AuthHeaders) {
   const res = await fetch("/api/plans/context", { headers: { ...authHeaders } });
 
@@ -198,11 +211,19 @@ export async function getLastProductivityReport(authHeaders: AuthHeaders) {
   return { ok, payload };
 }
 
-export async function confirmPlanContext(authHeaders: AuthHeaders) {
+// reviewed: los tres datos que el estudiante aprobó en el resumen de E0; el servidor confirma esos
+// (los fusiona con lo guardado y los valida).
+export async function confirmPlanContext(
+  authHeaders: AuthHeaders,
+  reviewed?: { sector?: string; products?: string[]; process_focus?: string[] }
+) {
+  const contextJson = reviewed
+    ? { sector: reviewed.sector, products: reviewed.products, process_focus: reviewed.process_focus }
+    : undefined;
   const res = await fetch("/api/plans/context/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders },
-    body: JSON.stringify({}),
+    body: JSON.stringify(contextJson ? { contextJson } : {}),
   });
 
   const json = await res.json().catch(() => null);

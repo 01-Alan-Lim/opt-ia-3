@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { supabase } from "@/lib/supabaseClient";
+import { sidebarChats } from "@/app/chat/_lib/planChatClient";
 
 type ChatMode = "general" | "plan_mejora";
 
@@ -32,6 +33,8 @@ interface SidebarProps {
 
   currentMode: ChatMode;
   activeAdvisorStage: number | null;
+  // Chat principal del Plan de Mejora: el único del asesor que se lista (planChatClient.ts).
+  planChatId?: string | null;
 }
 
 
@@ -43,8 +46,19 @@ export function Sidebar({
   displayName,
   currentMode,
   activeAdvisorStage,
+  planChatId = null,
 }: SidebarProps) {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [allChats, setChats] = useState<ChatSummary[]>([]);
+  const chats = useMemo(
+    () =>
+      sidebarChats(allChats, planChatId, (id) => ({
+        id,
+        title: "Plan de Mejora",
+        createdAt: "",
+        mode: "plan_mejora" as const,
+      })),
+    [allChats, planChatId]
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   // menú de 3 puntos abierto
@@ -364,13 +378,15 @@ export function Sidebar({
                     {chat.pinned ? "No fijar" : "Fijar"}
                   </button>
 
-                  {/* Eliminar */}
-                  <button
-                    className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-red-500/10 text-red-600 dark:text-red-300"
-                    onClick={() => setConfirmDeleteId(chat.id)}
-                  >
-                    Eliminar
-                  </button>
+                  {/* Eliminar: no para el chat del plan, que es el único del asesor */}
+                  {chat.id !== planChatId && (
+                    <button
+                      className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-red-500/10 text-red-600 dark:text-red-300"
+                      onClick={() => setConfirmDeleteId(chat.id)}
+                    >
+                      Eliminar
+                    </button>
+                  )}
 
                   {/* Confirmación pequeña */}
                   {confirmDeleteId === chat.id && (

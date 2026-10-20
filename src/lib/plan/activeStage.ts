@@ -310,8 +310,11 @@ export async function resolveActivePlanStage(
     };
   }
 
-  // Etapa 1: productividad por artifact legacy
-  {
+  // Etapa 1: productividad por artifact legacy. Con el contexto en borrador E1 no puede estar en
+  // curso (empieza después de confirmar E0): un estado del wizard ahí es un resto y manda E0.
+  // "Nuevo chat" guardaba { prodStep: 0 } aunque el estudiante estuviera en E0, y el asesor
+  // mostraba "Etapa 1" mientras pedía el contexto.
+  if (contextRow?.status !== "draft") {
     const productivityWizard = await loadLatestArtifact({
       userId,
       stage: 1,

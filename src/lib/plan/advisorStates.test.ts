@@ -13,6 +13,7 @@ import {
   mergeCosts,
   normalizeParetoStateClient,
   sanitizeFodaState,
+  shouldPersistProductivityWizard,
   type FinalDocState,
   type FodaState,
   type ProgressState,
@@ -267,6 +268,13 @@ function progress(reportText: string | null): ProgressState {
   assert.deepEqual(applyAssistantPatchToDraft({ type: "monetaria" }, { unit_type: null, unit_reason: "   " }), {
     type: "monetaria",
   });
+}
+
+{
+  // El wizard de E1 se guarda solo activo: en reposo (0, p. ej. en E0 al abrir un chat nuevo)
+  // dejaba un estado de E1 que la barra lateral mostraba como "Etapa 1".
+  assert.equal(shouldPersistProductivityWizard(0), false);
+  for (const step of [1, 2, 3, 4, 5]) assert.equal(shouldPersistProductivityWizard(step), true);
 }
 
 console.log("advisorStates tests passed");

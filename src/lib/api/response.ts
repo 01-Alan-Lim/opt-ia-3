@@ -37,7 +37,11 @@ export type ApiErrorCode =
   // Calendario organizador (/api/teacher/calendar-organizer): falta configurar el cliente OAuth o
   // la clave de cifrado, o Google rechazó la operación.
   | "CALENDAR_NOT_CONFIGURED"
-  | "GOOGLE_ERROR";
+  | "GOOGLE_ERROR"
+  // Etapa 0 (/api/plans/context y context/confirm): un valor que no es un dato del caso
+  // (stage0Values.ts). context/interpret: Gemini no devolvió una lectura válida.
+  | "INVALID_CONTEXT_VALUE"
+  | "INTERPRET_UNREADABLE";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });
