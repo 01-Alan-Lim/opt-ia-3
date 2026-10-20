@@ -82,6 +82,10 @@ const TESTS = [
   "calendarOrganizer",
   "calendarInvitations",
   "cohortSchedule",
+  "embeddingEngine",
+  "academicLibrary",
+  "academicLibraryUpload",
+  "academicRag",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

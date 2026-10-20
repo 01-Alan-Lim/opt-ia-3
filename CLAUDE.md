@@ -92,8 +92,9 @@ revisen (sin refactor por ahora).
 
 ## Estado del trabajo
 
-Las ramas de las tandas completadas (abajo) están publicadas en origin y NINGUNA está mergeada
-a main (origin/main no contiene 7e92d36 ni lo posterior).
+Las tandas anteriores ya están en origin/main (contiene 7e92d36 y 9048927). E0 (commit 4018a5e)
+y la Biblioteca Académica (rama feat/academic-library, desde 4018a5e) son locales, sin push: se
+publican juntos, directo en Production.
 
 ### Completado — Tanda 1 (commit 7e92d36, rama fix/advisor-unblock-e4-e5)
 - Ishikawa exige 10 causas raíz. Constante compartida en rootCauseLimits.ts.
@@ -236,7 +237,7 @@ es un dispatcher (decide la rama y llama al turno).
 - Pruebas: npm test, 23 archivos (lista en scripts/run-tests.mjs).
 
 ### Completado — E0 conversacional (rama fix/advisor-e0-natural-opening, desde 17cf398)
-Sin commit ni push todavía (2026-10-20). E0 ya no se confirma sola con el tercer dato: el estudiante
+Guardado en el commit local 4018a5e (2026-10-20), sin push. E0 ya no se confirma sola con el tercer dato: el estudiante
 revisa el resumen y responde que sí (ver "Seguridad semántica y cierre de E0").
 - Apertura (src/app/chat/_lib/stage0Opening.ts): un solo emisor de la primera pregunta. Se muestra
   y se guarda una vez por chat, solo si el chat no tiene historial (al recargar no se repite); si el
@@ -323,6 +324,52 @@ revisa el resumen y responde que sí (ver "Seguridad semántica y cierre de E0")
   - Pruebas: stage0Values, stage0Corpus (los 42 casos con Gemini caído y con Gemini que acierta, 8
     escenarios con Gemini equivocado, revisión, recarga y concurrencia) y stage0ContextRoutes (rutas
     reales con Gemini y Supabase simulados).
+
+### Completado — Biblioteca Académica y RAG académico (rama feat/academic-library, desde 4018a5e)
+Commit local, sin push (2026-10-20). M4, M5 y M6 ya están aplicadas en Production (ver "Seguridad
+Supabase"); el código que las usa todavía no está desplegado.
+- Diagnóstico: los 64 fragmentos anteriores (10 guías en mypes/ y el demo) se generaron con
+  text-embedding-004 (norma 1, antes de 65aba99) y no se comparan con las consultas actuales:
+  quedan como legacy-768. El demo "productividad y ATO" (demo/opt-ia-demo.txt) originaba las
+  respuestas sobre "ATO Fase 1 / CIL"; queda inactivo y no se borra.
+- Motor de embeddings (src/lib/embeddingEngine.ts; getEmbeddingEngine en embeddings.ts):
+  gemini-embedding-001 con 768 dimensiones pedidas (outputDimensionality), validadas y
+  normalizadas; embedQuery (RETRIEVAL_QUERY) y embedDocument(s) (RETRIEVAL_DOCUMENT, lotes de 100).
+  Etiqueta "gemini-embedding-001:768". Un vector de otro tamaño, incluido el de 3072, se rechaza:
+  no se recorta. embedText (recorte sin normalizar) solo lo usan ya las rutas /api/dev/*.
+- Biblioteca docente: pestaña "Biblioteca Académica" en /docente (AcademicLibraryPanel),
+  GET y POST /api/teacher/library y POST /api/teacher/library/:id/process, con requireTeacher y
+  service role (src/lib/teacher/library/catalog.ts, ingest.ts y processing.ts).
+  - Lista solo documentos globales (user_id NULL): formato, estado, fecha y fragmentos por modelo.
+    No devuelve texto, embeddings, rutas de Storage ni el hash.
+  - Subida de PDF digital o DOCX, sin OCR: hasta 4 MB (límite de Vercel), firma del archivo,
+    estructura del zip del DOCX, SHA-256 contra duplicados, hasta 400 páginas y 300 fragmentos de
+    hasta 1500 caracteres. Va a Storage (documents/library/<id>.<ext>) y crea la fila en
+    processing e inactiva; si la fila falla, se borra el archivo.
+  - Procesamiento por pasos de 50 fragmentos que encadena el panel: cada paso vuelve a leer el
+    archivo, verifica el hash y regenera los mismos fragmentos. ready solo con todos los índices
+    guardados; failed con el motivo; un 429 de Gemini deja processing y el panel espera.
+    "Continuar" o "Reintentar" retoma lo guardado (el índice único de M4 evita duplicados).
+  - Los documentos nuevos quedan inactivos: activarlos todavía no está implementado.
+  - pdf-parse lee mal un Buffer de Node: la Biblioteca usa extractPdfContent (pdfText.ts), que le
+    pasa un Uint8Array. extractTextFromPDF (E10) no se tocó (ver deuda).
+- RAG académico (src/lib/chat/academicRag.ts, usado por /api/chat): primero
+  academic_library_available y, solo si hay material, la pregunta con embedQuery y
+  match_academic_chunks (M6): documentos activos, en ready, globales o del usuario de la sesión, y
+  con el modelo del motor. Sin material no se llama a Gemini para el embedding y el asistente
+  responde con su conocimiento general (el prompt le prohíbe insinuar que consultó documentos).
+  Si la búsqueda falla, no hay respaldo en match_document_chunks. Sin fuentes para el estudiante.
+  ACADEMIC_RAG_MATCH_COUNT (5 por defecto, 0 la apaga, tope 10) y ACADEMIC_RAG_MIN_SIMILARITY
+  (0,5 por defecto, sin calibrar). Hasta reindexar las guías no hay material.
+- Logs: /api/chat ya no vuelca las filas del mini-agente SQL (runDbPlan traía nombres de empresas,
+  NIT y direcciones): registra la tabla y la cantidad de filas.
+- Pruebas: embeddingEngine, academicLibrary, academicLibraryUpload y academicRag (npm test, 70
+  archivos; restStubHarness simula Storage y RPC), y PGlite de M4 (50 comprobaciones) y de M6 con
+  M4 -> M5 -> M6 (40).
+- Pendiente: reindexar las 10 guías desde Storage junto a los legacy-768; activar o desactivar,
+  reemplazar, eliminar y ver documentos; "Probar búsqueda" y calibrar el umbral; retirar las
+  variantes de match_document_chunks, /api/dev/index-* y /dev/index-pdf; sincronizar el historial
+  de migraciones.
 
 ### En curso — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
 Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales
@@ -421,12 +468,31 @@ y las reglas de validate.)
   ramas), se pierde la marca de "distintas" y ese par puede volver a preguntarse.
 - Con una pregunta de raíz repetida abierta, un "sí"/"no" suelto siempre la responde a
   ella, aunque el último mensaje del asistente preguntara otra cosa.
+- E10: extractTextFromPDF (src/lib/pdfText.ts) le pasa un Buffer a pdf-parse, y su pdf.js 1.10 lee
+  mal cualquier Buffer de Node ("bad XRef entry" con PDFs válidos; verificado en Node 22.16): la
+  extracción de PDF de /api/plans/upload probablemente falla. Corregirlo es una línea, pero toca
+  E10: decisión de Alan.
+- /api/chat: si el plan del mini-agente SQL no se puede parsear, se registra el texto crudo de
+  Gemini (console.error en planDbQuery), que puede traer nombres de empresas del mensaje.
+- Panel docente sin navegación móvil: la barra lateral es hidden md:block en todas las pestañas.
 
-## Seguridad Supabase (aplicada y verificada el 2026-10-04)
+## Seguridad Supabase (aplicada y verificada el 2026-10-04; M4-M6 el 2026-10-20)
 Proyecto luvcduxkasaeyobdyafj. Cualquier cambio nuevo de esquema, RLS o grants sigue
 necesitando autorización explícita de Alan. apply_migration asigna una versión nueva: después
-de aplicar, renombrar el archivo local a esa versión (git mv, contenido intacto). Hoy los
-filenames de supabase/migrations/ coinciden con el historial remoto.
+de aplicar, renombrar el archivo local a esa versión (git mv, contenido intacto).
+El historial remoto NO coincide con supabase/migrations/: termina en 20261019005428 (M3) y le
+faltan M4, M5 y M6 (aplicadas a mano) y también 20260606120000 y 20260606123000. Sincronizarlo
+sin reaplicar SQL (supabase migration repair --status applied <versiones>, después de verificar
+en modo lectura los efectos de las dos de 202606) está pendiente de autorización. No correr
+supabase db push antes: reintentaría aplicarlas.
+
+Aplicadas a mano el 2026-10-20 (versión local; sin registrar en el historial remoto):
+
+| Versión local | Migración | Qué hace |
+|---|---|---|
+| 20261020150000 | academic_library_documents (M4) | documents: is_active, status, file_type, content_hash (único), processing_error, updated_at; document_chunks: embedding_model (los 64 = legacy-768) y único (document_id, embedding_model, chunk_index); demo inactivo |
+| 20261020180000 | academic_library_client_writes (M5) | authenticated sin INSERT, UPDATE, DELETE ni TRUNCATE en documents y document_chunks; quedan las policies de lectura propia y de delete en false |
+| 20261020200000 | academic_library_rag (M6) | match_academic_chunks y academic_library_available, EXECUTE solo para service_role; las variantes de match_document_chunks no cambian |
 
 | Versión remota | Migración | Qué cierra |
 |---|---|---|
@@ -446,6 +512,8 @@ Las 18 tablas de public tienen RLS activa.
   donde no hay policy, pero el grant incluye TRUNCATE, que la RLS no cubre (PostgREST no lo
   expone).
 - public.set_updated_at sin search_path fijo (advisor function_search_path_mutable).
+- Las dos variantes de match_document_chunks siguen ejecutables por anon y authenticated (son
+  SECURITY INVOKER y la RLS las limita); el código nuevo ya no las usa: retirarlas.
 - Auth: leaked password protection deshabilitado (poco relevante: el acceso es Google OAuth).
 - Advisors de rendimiento: 40 auth_rls_initplan (auth.uid() sin `(select ...)`),
   4 multiple_permissive_policies (cohort_events, cohorts, hours_entries, profiles),

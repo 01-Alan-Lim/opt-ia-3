@@ -14,7 +14,7 @@ import { serverHistorySpeaker } from "@/lib/chat/messageProvenance";
 import { assertChatAccess } from "@/lib/auth/chatAccess";
 
 import { getGeminiModel } from "@/lib/geminiClient";
-import { embedText } from "@/lib/embeddings";
+import { academicPromptSection, retrieveAcademicContext } from "@/lib/chat/academicRag";
 
 // --------------------------------------
 // 📌 Tipos del mini-agente SQL
@@ -270,7 +270,9 @@ async function runDbPlan(plan: DbPlan): Promise<any[] | null> {
     console.error("Error ejecutando consulta DB:", error);
     return null;
   }
-  console.log("🔎 DB rows devueltos por runDbPlan:", data);
+  // Solo datos técnicos: las filas traen nombres de empresas, NIT, direcciones y otros datos
+  // sensibles, que no deben quedar en los logs del servidor.
+  console.info("[chat] mini-agente SQL:", plan.table, "filas:", data?.length ?? 0);
 
   return data ?? [];
 }
@@ -863,27 +865,17 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------
-    // 5) RAG documentos (embeddings) (técnico: usar supabaseServer)
+    // 5) RAG de la Biblioteca Académica (src/lib/chat/academicRag.ts): solo documentos activos,
+    // listos y con vectores del motor actual, globales o del usuario de la sesión. Si falla, se
+    // responde sin material: nunca con la RPC antigua sin filtros.
     // --------------------------------------
     let docsContext = "";
     try {
-      const embedding = await embedText(userMessage);
-
-      const { data: matches, error } = await supabaseServer.rpc("match_document_chunks", {
-        query_embedding: embedding,
-        match_count: 5,
-        p_user_id: authed.userId,
-      });
-
-      if (error) {
-        console.error("Error en RAG match_document_chunks:", error);
-      }
-
-      if (matches) {
-        docsContext = matches.map((m: any, i: number) => `(${i + 1}) ${m.content}`).join("\n");
-      }
+      const rag = await retrieveAcademicContext({ userId: authed.userId, question: userMessage });
+      if (rag.status === "used") docsContext = academicPromptSection(rag.chunks);
+      if (rag.status === "error") console.error("Error en RAG académico:", rag.stage);
     } catch (e) {
-      console.error("Error en RAG match_document_chunks:", e);
+      console.error("Error en RAG académico:", e);
     }
 
     // --------------------------------------
@@ -944,6 +936,8 @@ PERO TIENES PROHIBIDO:
   - "No encuentro en los documentos un caso específico..."
   ni variaciones de esto.
 - Justificar tus límites o hablar de lo que sabes o no sabes.
+- Decir o insinuar que consultaste guías, documentos o una biblioteca cuando no recibes
+  "Material académico de apoyo": en ese caso responde con tu conocimiento general.
 
 EN SU LUGAR:
 - Responde SIEMPRE de forma directa, como un asesor que tiene contexto suficiente.
@@ -965,7 +959,10 @@ EN SU LUGAR:
       parts.push("\nHistorial:\n" + historyText);
 
       if (docsContext) {
-        parts.push("\nInformación de apoyo:\n" + docsContext);
+        parts.push(
+          "\nMaterial académico de apoyo (úsalo solo si responde la pregunta; no lo cites ni menciones su origen):\n" +
+            docsContext
+        );
       }
 
       if (dbContext) {

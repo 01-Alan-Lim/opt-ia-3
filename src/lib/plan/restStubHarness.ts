@@ -8,6 +8,9 @@
 //   - Accept vnd.pgrst.object (single) -> 406 PGRST116 si no hay exactamente una fila.
 // Las restricciones únicas se declaran por tabla (con un predicado para los índices parciales)
 // y devuelven 409 23505, como PostgREST. Una tabla en `missingTables` responde 404 PGRST205.
+// Storage (/storage/v1/object): subir (POST, x-upsert), descargar (GET) y borrar (DELETE con
+// { prefixes }) sobre `storage`, con fallos por operación en `failStorage`. Las RPC
+// (/rest/v1/rpc/<nombre>) las responde `rpc`.
 // Cualquier destino que no sea el Supabase de prueba pasa a `external` o falla.
 //
 // Ninguna ruta ni componente importa este archivo.
@@ -26,7 +29,14 @@ export type RestStubState = {
   uniques?: Record<string, UniqueRule[]>;
   defaults?: Record<string, () => RestRow>;
   missingTables?: string[];
-  failTables?: Record<string, { status: number; code: string; message: string }>;
+  // methods: solo esos métodos HTTP fallan (sin methods, todos).
+  failTables?: Record<string, { status: number; code: string; message: string; methods?: string[] }>;
+  // Objetos de Storage por "bucket/ruta".
+  storage?: Record<string, { bytes: ArrayBuffer; contentType: string | null }>;
+  failStorage?: Partial<Record<"upload" | "download" | "remove", { status: number; message: string }>>;
+  // Funciones RPC (/rest/v1/rpc/<nombre>): reciben los argumentos y devuelven el resultado o un
+  // error de PostgREST. Una función sin handler responde 404 PGRST202.
+  rpc?: Record<string, (args: RestRow) => { data: unknown } | { error: { status: number; code: string; message: string } }>;
 };
 
 export type RestCall = { method: string; table: string | null; url: string };
@@ -128,6 +138,42 @@ export function installRestStub(
     return null;
   }
 
+  async function storageObject(req: Request, url: URL): Promise<Response> {
+    const objects = (state.storage ??= {});
+    const key = decodeURIComponent(url.pathname.slice("/storage/v1/object/".length));
+    const storageError = (status: number, error: string, message: string) =>
+      json({ statusCode: String(status), error, message }, status);
+    const operation = req.method === "POST" ? "upload" : req.method === "GET" ? "download" : req.method === "DELETE" ? "remove" : null;
+    const failing = operation ? state.failStorage?.[operation] : undefined;
+    if (failing) return storageError(failing.status, "Error", failing.message);
+
+    if (req.method === "POST") {
+      if (objects[key] && req.headers.get("x-upsert") !== "true") {
+        return storageError(409, "Duplicate", "The resource already exists");
+      }
+      objects[key] = { bytes: await req.arrayBuffer(), contentType: req.headers.get("content-type") };
+      return json({ Key: key, Id: crypto.randomUUID() });
+    }
+    if (req.method === "GET") {
+      const object = objects[key];
+      if (!object) return storageError(404, "not_found", "Object not found");
+      return new Response(object.bytes, { status: 200, headers: { "content-type": object.contentType ?? "application/octet-stream" } });
+    }
+    if (req.method === "DELETE") {
+      const body = (await req.json().catch(() => null)) as { prefixes?: string[] } | null;
+      const removed: RestRow[] = [];
+      for (const prefix of body?.prefixes ?? []) {
+        const target = `${key}/${prefix}`;
+        if (objects[target]) {
+          delete objects[target];
+          removed.push({ name: prefix });
+        }
+      }
+      return json(removed);
+    }
+    return storageError(405, "Error", "método no simulado");
+  }
+
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const req = new Request(input, init);
     const url = new URL(req.url);
@@ -145,12 +191,22 @@ export function installRestStub(
       if (!state.user) return json({ code: 401, error_code: "bad_jwt", msg: "invalid JWT" }, 401);
       return json({ id: state.user.id, aud: "authenticated", role: "authenticated", email: state.user.email, app_metadata: {}, user_metadata: {} });
     }
+    if (url.pathname.startsWith("/storage/v1/object/")) return storageObject(req, url);
     if (table === null) throw new TypeError(`Ruta de Supabase no simulada: ${url.pathname}`);
+    if (table.startsWith("rpc/")) {
+      const handler = state.rpc?.[table.slice("rpc/".length)];
+      if (!handler) return pgError(404, "PGRST202", `Could not find the function public.${table.slice(4)}`);
+      const args = ((await req.json().catch(() => null)) ?? {}) as RestRow;
+      const result = handler(args);
+      return "error" in result ? pgError(result.error.status, result.error.code, result.error.message) : json(result.data);
+    }
     if (state.missingTables?.includes(table)) {
       return pgError(404, "PGRST205", `Could not find the table 'public.${table}' in the schema cache`);
     }
     const failure = state.failTables?.[table];
-    if (failure) return pgError(failure.status, failure.code, failure.message);
+    if (failure && (!failure.methods || failure.methods.includes(req.method))) {
+      return pgError(failure.status, failure.code, failure.message);
+    }
 
     const rows = (state.tables[table] ??= []);
     const filters = parseFilters(url.searchParams);

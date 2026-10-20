@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { calendarReportText } from "@/lib/calendar/syncReportText";
+import { AcademicLibraryPanel } from "@/components/teacher/AcademicLibraryPanel";
 import { AuthorizedEmailsPanel } from "@/components/teacher/AuthorizedEmailsPanel";
 import { CalendarOrganizerPanel } from "@/components/teacher/CalendarOrganizerPanel";
 import { CohortsPanel } from "@/components/teacher/CohortsPanel";
@@ -28,7 +29,7 @@ type Cohort = {
   name: string;
 };
 
-type DocenteTab = "config" | "approvals" | "dashboard" | "chat";
+type DocenteTab = "config" | "approvals" | "dashboard" | "library" | "chat";
 type RegistrationFilter = "pending" | "approved" | "rejected";
 // Resultado del gate de UI con /api/me. "denied" redirige a /chat, cuyo gate ya resuelve
 // onboarding, aprobación pendiente o dominio no autorizado.
@@ -55,6 +56,7 @@ const DOCENTE_TAB_TITLES: Record<DocenteTab, string> = {
   config: "Configuración",
   approvals: "Accesos",
   dashboard: "Dashboard",
+  library: "Biblioteca Académica",
   chat: "Chat",
 };
 
@@ -92,14 +94,14 @@ function Icon({
   name,
   active,
 }: {
-  name: "config" | "approvals" | "dashboard" | "chat";
+  name: DocenteTab;
   active: boolean;
 }) {
   const cls =
     "h-5 w-5 block align-middle " +
     (active ? "text-slate-100" : "text-slate-300 group-hover:text-slate-100");
 
-  function nudge(name: "config" | "approvals" | "dashboard" | "chat") {
+  function nudge(name: DocenteTab) {
     // Ajuste óptico (se puede afinar)
     if (name === "config") return "translate-y-[1px]";
     return "translate-y-0";
@@ -174,6 +176,20 @@ function Icon({
     );
   }
 
+  if (name === "library") {
+    return (
+      <svg className={`${cls} ${nudge("library")}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path
+          d="M12 6.5C9.6 5 6.6 4.7 4 5.5v12.5c2.6-.8 5.6-.5 8 1M12 6.5c2.4-1.5 5.4-1.8 8-1v12.5c-2.6-.8-5.6-.5-8 1M12 6.5V19"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
   // chat
   return (
     <svg className={`${cls} ${nudge("chat")}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -202,7 +218,7 @@ function NavItem({
 }: {
   active: boolean;
   onClick: () => void;
-  icon: "config" | "approvals" | "dashboard" | "chat";
+  icon: DocenteTab;
   title: string;
   subtitle: string;
 }) {
@@ -262,6 +278,7 @@ export default function DocenteHome() {
     config: { title: "Configuración", subtitle: "Cohortes, fechas, formularios" },
     approvals: { title: "Accesos", subtitle: "Revisar registros" },
     dashboard: { title: "Dashboard", subtitle: "Indicadores y reportes" },
+    library: { title: "Biblioteca Académica", subtitle: "Guías del asistente" },
     chat: { title: "Chat", subtitle: "Consulta rendimiento" },
   };
 
@@ -569,6 +586,13 @@ export default function DocenteHome() {
                       subtitle="Indicadores y reportes"
                     />
                     <NavItem
+                      active={tab === "library"}
+                      onClick={() => setTab("library")}
+                      icon="library"
+                      title="Biblioteca Académica"
+                      subtitle="Guías del asistente"
+                    />
+                    <NavItem
                       active={tab === "chat"}
                       onClick={() => setTab("chat")}
                       icon="chat"
@@ -797,6 +821,12 @@ export default function DocenteHome() {
               )}
 
               {tab === "dashboard" && <TeacherDashboard />}
+
+              {tab === "library" && (
+                <div className="mx-auto w-full max-w-6xl">
+                  <AcademicLibraryPanel />
+                </div>
+              )}
 
               {tab === "chat" && (
                 <div className="mx-auto w-full max-w-7xl">

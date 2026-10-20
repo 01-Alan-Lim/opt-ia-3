@@ -41,7 +41,14 @@ export type ApiErrorCode =
   // Etapa 0 (/api/plans/context y context/confirm): un valor que no es un dato del caso
   // (stage0Values.ts). context/interpret: Gemini no devolvió una lectura válida.
   | "INVALID_CONTEXT_VALUE"
-  | "INTERPRET_UNREADABLE";
+  | "INTERPRET_UNREADABLE"
+  // Biblioteca Académica (/api/teacher/library): un archivo que no es un PDF o DOCX legible, un
+  // documento sin texto extraíble (p. ej. escaneado; no hay OCR) o que supera los límites, y el
+  // motor de embeddings sin configurar.
+  | "INVALID_FILE"
+  | "NO_EXTRACTABLE_TEXT"
+  | "DOCUMENT_TOO_LONG"
+  | "EMBEDDINGS_NOT_CONFIGURED";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json({ ok: true, data }, { status: 200, ...init });

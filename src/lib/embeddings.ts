@@ -1,5 +1,12 @@
 // src/lib/embeddings.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  createEmbeddingEngine,
+  EmbeddingError,
+  embeddingModelId,
+  readEmbeddingConfig,
+  type EmbeddingEngine,
+} from "@/lib/embeddingEngine";
 
 const apiKey = process.env.GEMINI_API_KEY;
 
@@ -40,4 +47,23 @@ export async function embedText(text: string): Promise<number[]> {
     `Embedding dimension inesperada: got ${values.length}, expected ${TARGET_DIM}. ` +
       `Revisa GEMINI_EMBED_DIM / modelo o tu schema pgvector.`
   );
+}
+
+// Motor de la Biblioteca Académica (embeddingEngine.ts): consulta y documento por separado, 768
+// dimensiones validadas y normalizadas, con la etiqueta de su modelo. embedText queda igual: lo usan
+// el RAG actual (/api/chat) y las rutas /api/dev/index-* hasta que las guías se reindexen. La
+// configuración se lee al primer uso: un valor inválido no rompe la carga de este módulo.
+let engine: EmbeddingEngine | null = null;
+
+export function getEmbeddingEngine(): EmbeddingEngine {
+  if (engine) return engine;
+  if (!genAI) throw new EmbeddingError("CONFIG", "Gemini no está configurado (falta GEMINI_API_KEY).");
+  const config = readEmbeddingConfig(process.env);
+  engine = createEmbeddingEngine(genAI.getGenerativeModel({ model: config.model }), config);
+  return engine;
+}
+
+// Etiqueta de los vectores del motor: "gemini-embedding-001:768" con la configuración de producción.
+export function currentEmbeddingModelId(): string {
+  return embeddingModelId(readEmbeddingConfig(process.env));
 }
