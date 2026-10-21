@@ -20,6 +20,11 @@ export const MAX_DOCX_UNCOMPRESSED_BYTES = 60 * 1024 * 1024;
 export const CHUNK_TARGET_CHARS = 1500;
 export const CHUNK_OVERLAP_CHARS = 200;
 export const MAX_CHUNKS = 300;
+// Una página de texto corrido tiene miles de letras: con menos que esto, la página es sobre todo
+// imagen (una portada, un diagrama, un escaneo), que sin OCR no se lee. Es un aviso, no un rechazo.
+export const LOW_LETTERS_PER_PAGE = 300;
+// Páginas que el aviso nombra una por una; del resto da la cantidad.
+const MAX_LISTED_PAGES = 12;
 
 export type LibraryFileErrorCode = "INVALID_FILE" | "NO_EXTRACTABLE_TEXT" | "DOCUMENT_TOO_LONG";
 
@@ -188,6 +193,22 @@ export function prepareLibraryText(rawText: string): PreparedLibraryText {
     );
   }
   return { text, chunks };
+}
+
+// Avisos sobre lo extraído de un PDF: las páginas con poco texto, por número. pageLetters: letras de
+// cada página leída (null: un DOCX no tiene páginas). No dice qué hay en esas páginas: solo que su
+// contenido no llegó como texto.
+export function extractionWarnings(pageLetters: readonly number[] | null): string[] {
+  if (!pageLetters || pageLetters.length === 0) return [];
+  const low = pageLetters.flatMap((letters, index) => (letters < LOW_LETTERS_PER_PAGE ? [index + 1] : []));
+  if (low.length === 0) return [];
+  const listed = low.slice(0, MAX_LISTED_PAGES).join(", ");
+  const rest = low.length > MAX_LISTED_PAGES ? ` y ${low.length - MAX_LISTED_PAGES} más` : "";
+  const count = low.length === 1 ? "Una página" : `${low.length} páginas`;
+  return [
+    `${count} de ${pageLetters.length} con poco texto (menos de ${LOW_LETTERS_PER_PAGE} letras): ${listed}${rest}. ` +
+      "Pueden ser portadas, diagramas, páginas escaneadas o texto dentro de imágenes; sin OCR, ese contenido no se lee.",
+  ];
 }
 
 // Título a partir del nombre del archivo, si el docente no escribe uno.

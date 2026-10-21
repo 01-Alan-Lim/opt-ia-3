@@ -1,11 +1,12 @@
 // src/app/api/teacher/library/[id]/process/route.ts
 //
 // POST /api/teacher/library/:id/process
-// Un paso del procesamiento de un documento subido por la Biblioteca Académica: un lote de
-// embeddings y su guardado (src/lib/teacher/library/processing.ts). El panel llama hasta que
-// responde done (listo y completo), el documento queda failed (con su motivo) o Gemini pide
-// esperar (retryAfterMs; el documento sigue en processing). Sirve también para continuar uno
-// interrumpido o reintentar uno fallido: retoma desde los fragmentos ya guardados.
+// Un paso del procesamiento de un documento subido por la Biblioteca Académica o de una guía en
+// reindexación: un lote de embeddings y su guardado (src/lib/teacher/library/processing.ts). El
+// panel llama hasta que responde done (listo, completo y verificado), el documento queda failed
+// (con su motivo) o Gemini pide esperar (retryAfterMs; el documento sigue en processing). Sirve
+// también para continuar uno interrumpido o reintentar uno fallido: retoma desde los fragmentos ya
+// guardados.
 //
 // Autoridad: requireTeacher, como el resto de /api/teacher/*; después, service role.
 
@@ -36,6 +37,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       totalChunks: step.totalChunks,
       done: step.done,
       retryAfterMs: step.retryAfterMs,
+      extraction: step.extraction,
     });
   } catch (err: unknown) {
     if (isSchemaNotReady(err)) {

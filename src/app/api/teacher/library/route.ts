@@ -7,6 +7,11 @@
 //   POST -> multipart { file, title? }: sube un PDF digital o un DOCX (hasta 4 MB), lo valida y
 //           crea el documento en processing e inactivo (src/lib/teacher/library/processing.ts).
 //           Los embeddings se generan después, por pasos: POST /api/teacher/library/:id/process.
+//           Las guías que ya están en Storage se reindexan sin subirlas:
+//           POST /api/teacher/library/:id/reindex y después los mismos pasos.
+//   PATCH -> JSON { id, active }: activa o desactiva un documento para el RAG. Activar exige que
+//           esté listo, con los fragmentos del modelo actual completos (setLibraryDocumentActive);
+//           desactivar siempre se puede.
 //
 // Autoridad: requireTeacher (Supabase Auth + allowlist docente en el servidor), igual que el
 // resto de /api/teacher/*. Recién después se lee y escribe con service role: documents,
@@ -31,6 +36,7 @@ import {
   LIBRARY_DOCUMENT_COLUMNS,
   libraryEmbeddingModel,
   LibraryStoreError,
+  setLibraryDocumentActive,
 } from "@/lib/teacher/library/processing";
 
 export const runtime = "nodejs";
@@ -44,6 +50,8 @@ const MULTIPART_MARGIN_BYTES = 64 * 1024;
 const UploadFieldsSchema = z.object({
   title: z.string().trim().max(200, "El título no puede superar los 200 caracteres.").optional(),
 });
+
+const ActivationSchema = z.object({ id: z.string().uuid(), active: z.boolean() }).strict();
 
 function storeFailure(err: unknown, action: string): Response {
   if (isSchemaNotReady(err)) {
@@ -77,7 +85,7 @@ export async function GET(req: Request) {
         ...(await fetchAllLibraryRows("document_chunks", LibraryChunkTagRowSchema, (from, to) =>
           supabaseServer
             .from("document_chunks")
-            .select("document_id, embedding_model")
+            .select("document_id, embedding_model, chunk_index")
             .in("document_id", group)
             .order("id", { ascending: true })
             .range(from, to)
@@ -132,5 +140,27 @@ export async function POST(req: Request) {
     return ok({ document: result.document, totalChunks: result.totalChunks });
   } catch (err: unknown) {
     return storeFailure(err, "subida");
+  }
+}
+
+export async function PATCH(req: Request) {
+  const auth = await requireTeacher(req);
+  if (!auth.ok) return auth.res;
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return failResponse("BAD_REQUEST", "Envía { id, active } como JSON.", 400);
+  }
+  const input = ActivationSchema.safeParse(body);
+  if (!input.success) return failResponse("BAD_REQUEST", "Datos inválidos: se espera { id, active }.", 400);
+
+  try {
+    const result = await setLibraryDocumentActive(input.data.id, input.data.active, new Date());
+    if (!result.ok) return failResponse(result.code, result.message, result.status);
+    return ok({ document: result.document });
+  } catch (err: unknown) {
+    return storeFailure(err, "activación");
   }
 }

@@ -92,9 +92,10 @@ revisen (sin refactor por ahora).
 
 ## Estado del trabajo
 
-Las tandas anteriores ya están en origin/main (contiene 7e92d36 y 9048927). E0 (commit 4018a5e)
-y la Biblioteca Académica (rama feat/academic-library, desde 4018a5e) son locales, sin push: se
-publican juntos, directo en Production.
+Las tandas anteriores ya están en origin/main (contiene 7e92d36 y 9048927). E0 (4018a5e) y la
+Biblioteca Académica (2834e63, con los ajustes de logs 8140bba y d72afd1) se publicaron juntos el
+2026-10-20 con push directo a main (Production); la reindexación y la activación
+(feat/library-reindex) se publicaron después, igual.
 
 ### Completado — Tanda 1 (commit 7e92d36, rama fix/advisor-unblock-e4-e5)
 - Ishikawa exige 10 causas raíz. Constante compartida en rootCauseLimits.ts.
@@ -237,7 +238,7 @@ es un dispatcher (decide la rama y llama al turno).
 - Pruebas: npm test, 23 archivos (lista en scripts/run-tests.mjs).
 
 ### Completado — E0 conversacional (rama fix/advisor-e0-natural-opening, desde 17cf398)
-Guardado en el commit local 4018a5e (2026-10-20), sin push. E0 ya no se confirma sola con el tercer dato: el estudiante
+Commit 4018a5e (2026-10-20), publicado en main. E0 ya no se confirma sola con el tercer dato: el estudiante
 revisa el resumen y responde que sí (ver "Seguridad semántica y cierre de E0").
 - Apertura (src/app/chat/_lib/stage0Opening.ts): un solo emisor de la primera pregunta. Se muestra
   y se guarda una vez por chat, solo si el chat no tiene historial (al recargar no se repite); si el
@@ -326,8 +327,8 @@ revisa el resumen y responde que sí (ver "Seguridad semántica y cierre de E0")
     reales con Gemini y Supabase simulados).
 
 ### Completado — Biblioteca Académica y RAG académico (rama feat/academic-library, desde 4018a5e)
-Commit local, sin push (2026-10-20). M4, M5 y M6 ya están aplicadas en Production (ver "Seguridad
-Supabase"); el código que las usa todavía no está desplegado.
+Commit 2834e63, publicado en main el 2026-10-20 (Production en d72afd1). M4, M5 y M6 están
+aplicadas en Production (ver "Seguridad Supabase").
 - Diagnóstico: los 64 fragmentos anteriores (10 guías en mypes/ y el demo) se generaron con
   text-embedding-004 (norma 1, antes de 65aba99) y no se comparan con las consultas actuales:
   quedan como legacy-768. El demo "productividad y ATO" (demo/opt-ia-demo.txt) originaba las
@@ -350,7 +351,7 @@ Supabase"); el código que las usa todavía no está desplegado.
     archivo, verifica el hash y regenera los mismos fragmentos. ready solo con todos los índices
     guardados; failed con el motivo; un 429 de Gemini deja processing y el panel espera.
     "Continuar" o "Reintentar" retoma lo guardado (el índice único de M4 evita duplicados).
-  - Los documentos nuevos quedan inactivos: activarlos todavía no está implementado.
+  - Los documentos nuevos quedan inactivos; se activan desde el panel (ver Reindexación).
   - pdf-parse lee mal un Buffer de Node: la Biblioteca usa extractPdfContent (pdfText.ts), que le
     pasa un Uint8Array. extractTextFromPDF (E10) no se tocó (ver deuda).
 - RAG académico (src/lib/chat/academicRag.ts, usado por /api/chat): primero
@@ -368,9 +369,40 @@ Supabase"); el código que las usa todavía no está desplegado.
 - Pruebas: embeddingEngine, academicLibrary, academicLibraryUpload y academicRag (npm test, 70
   archivos; restStubHarness simula Storage y RPC), y PGlite de M4 (50 comprobaciones) y de M6 con
   M4 -> M5 -> M6 (40).
-- Pendiente: reindexar las 10 guías desde Storage junto a los legacy-768; activar o desactivar,
-  reemplazar, eliminar y ver documentos; "Probar búsqueda" y calibrar el umbral; retirar las
-  variantes de match_document_chunks, /api/dev/index-* y /dev/index-pdf.
+- Reindexación de las guías (rama feat/library-reindex, desde d72afd1; publicada en main, todavía
+  sin ejecutar):
+  - Estado real (2026-10-20): las 10 guías están en documents/mypes/ (0,27-3,5 MB), activas, en
+    pending, sin hash y con 61 fragmentos legacy-768; el demo (demo/opt-ia-demo.txt) es txt,
+    inactivo y no tiene archivo en Storage. Sin cambios de esquema: el único índice único de
+    document_chunks es (document_id, embedding_model, chunk_index).
+  - POST /api/teacher/library/:id/reindex (startLibraryReindex, requireTeacher): solo documentos
+    globales con su archivo directamente en library/ o mypes/ y extensión igual a file_type
+    (librarySourceExtension; el demo nunca). Descarga y valida el PDF como una subida y lo pasa
+    de pending a processing, inactivo, con su hash (escritura condicional: dos pestañas no lo
+    reclaman dos veces). Sin archivo, sin texto, fuera de límites o duplicado: responde el motivo
+    y la guía queda como estaba. No cambia id, título ni ruta; no genera embeddings.
+  - Después, los mismos pasos de process (ahora aceptan mypes/). ready solo si los fragmentos del
+    modelo actual son exactamente los del archivo (índices 0..n-1 y el mismo texto); si no,
+    failed INDEX_MISMATCH (hay que borrar esos fragmentos para reintentar). Queda ready e
+    inactivo; failed siempre deja inactivo. Los legacy-768 no se tocan.
+  - Extracción: cada paso informa páginas, caracteres y las páginas con menos de 300 letras, por
+    número (extractPdfContent cuenta las letras por página repitiendo el render_page de pdf-parse,
+    con el mismo texto). El panel aclara que solo se lee el texto digital.
+  - Activación (PATCH /api/teacher/library { id, active }, requireTeacher, setLibraryDocumentActive):
+    activar solo un documento global de library/ o mypes/, ready, con los fragmentos del modelo
+    actual completos (activationProblem, la misma regla que canActivate de la lista), con
+    escritura condicional status = 'ready'. pending, processing, failed, solo legacy-768,
+    incompletos o el demo: 409 con el motivo. Desactivar siempre se puede. El RAG usa solo lo
+    activo y listo. Las 10 guías de Production están pending con is_active (de M4): el RAG no las
+    usa; al reclamarlas quedan inactivas.
+  - Panel: estados "Pendiente de indexar", "Procesando", "Listo, inactivo", "Activo para OPT-IA",
+    "Error de procesamiento" (libraryDisplayState); "Reindexar", "Activar para OPT-IA" (pide
+    confirmación) y "Desactivar" por fila; "Reindexar pendientes (N)" (pending y a medio
+    procesar, uno por uno; un fallo del documento sigue con el siguiente, un corte detiene la fila).
+  - Los avisos de extracción no se guardan: se ven al procesar y en el resumen, no al recargar.
+- Pendiente: ejecutar la reindexación y activar las guías revisadas; reemplazar, eliminar y ver
+  documentos; "Probar búsqueda" y calibrar el umbral; retirar las variantes de
+  match_document_chunks, /api/dev/index-* y /dev/index-pdf.
 
 ### En curso — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
 Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales

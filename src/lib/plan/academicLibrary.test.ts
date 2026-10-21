@@ -3,21 +3,30 @@ import assert from "node:assert/strict";
 import { prepareRouteTestEnv } from "./assistantRouteHarness";
 import { installRestStub, type RestRow, type RestStubState } from "./restStubHarness";
 import {
+  activationProblem,
   countByStatus,
   DEFAULT_LIBRARY_FILTERS,
   describeChunks,
+  describeExtraction,
   filterLibraryDocuments,
   isDefaultLibraryFilters,
   isStalledProcessing,
+  LIBRARY_DISPLAY_LABEL,
+  libraryDisplayState,
+  librarySourceExtension,
   needsReindex,
+  pendingReindexQueue,
+  readActivationResponse,
   readLibraryErrorMessage,
   readLibraryResponse,
+  readReindexResponse,
   STALLED_PROCESSING_MS,
   summarizeLibraryDocuments,
   type LibraryDocument,
   type LibraryDocumentRow,
   type LibraryFilters,
 } from "../teacher/library/catalog";
+import { extractionWarnings, LOW_LETTERS_PER_PAGE } from "../teacher/library/ingest";
 
 // Biblioteca Académica del panel docente: resumen y filtros (src/lib/teacher/library/catalog.ts)
 // y la ruta de solo lectura /api/teacher/library con Supabase simulado (sin red): permisos,
@@ -48,7 +57,13 @@ function runCatalog() {
   const rows = [
     row({ id: "g1", title: "GUIA_14.1_BALANCEO_DE_LINEA.pdf" }),
     row({ id: "g2", title: "GUIA_12_MUESTREO_DE_TRABAJO.pdf", status: "ready" }),
-    row({ id: "demo", title: "Documento demo OPT-IA productividad y ATO", file_type: "txt", is_active: false }),
+    row({
+      id: "demo",
+      title: "Documento demo OPT-IA productividad y ATO",
+      path: "demo/opt-ia-demo.txt",
+      file_type: "txt",
+      is_active: false,
+    }),
     row({
       id: "f1",
       title: "Guía de tiempos.docx",
@@ -68,7 +83,7 @@ function runCatalog() {
     row({ id: "e1", title: "Vacío.pdf", processing_error: "no debería mostrarse" }),
   ];
   const tag = (documentId: string, model: string, n = 1) =>
-    Array.from({ length: n }, () => ({ document_id: documentId, embedding_model: model }));
+    Array.from({ length: n }, (_, index) => ({ document_id: documentId, embedding_model: model, chunk_index: index }));
   const tags = [
     ...tag("g1", "legacy-768", 3),
     ...tag("g2", "legacy-768", 9),
@@ -94,13 +109,22 @@ function runCatalog() {
     assert.equal(byId.p2.stalled, false);
     assert.equal(byId.g1.stalled, false);
 
-    // Se continúa o reintenta solo lo que subió la Biblioteca y quedó sin terminar.
+    // Se continúa o reintenta lo que quedó sin terminar con un archivo que la Biblioteca lee (subido
+    // a library/ o una guía de mypes/ en reindexación); se reindexa lo pending con ese archivo.
     assert.equal(byId.f1.canProcess, true, "failed en library/");
     assert.equal(byId.p1.canProcess, true, "processing en library/");
-    assert.equal(byId.p2.canProcess, false, "processing fuera de library/");
+    assert.equal(byId.p2.canProcess, true, "processing en mypes/: una reindexación interrumpida");
     assert.equal(byId.g1.canProcess, false, "guía antigua pendiente");
     assert.equal(byId.g2.canProcess, false, "lista");
+    assert.equal(byId.demo.canProcess, false, "el demo");
+    assert.equal(byId.g1.canReindex, true, "guía pendiente con su PDF");
+    assert.equal(byId.e1.canReindex, true, "pendiente aunque no tenga fragmentos");
+    assert.equal(byId.demo.canReindex, false, "el demo (demo/, txt) nunca se reindexa");
+    for (const id of ["g2", "f1", "p1", "p2"]) assert.equal(byId[id].canReindex, false, `${id} no está pending`);
     assert.equal(isStalledProcessing("processing", "no-es-fecha", NOW), false);
+
+    // Reindexar pendientes: pending y a medio procesar, en el orden de la lista; sin fallidos ni listos.
+    assert.deepEqual(ids(pendingReindexQueue(docs)), ["g1", "p1", "p2", "e1"]);
 
     // Lectura del índice para el docente.
     assert.equal(needsReindex(byId.g1), true);
@@ -131,6 +155,117 @@ function runCatalog() {
     // Sin modelo actual (configuración inválida), ningún fragmento cuenta como actual.
     const docs = summarizeLibraryDocuments(rows, tags, { currentModel: null, now: NOW });
     assert.deepEqual(docs.find((doc) => doc.id === "g2")?.chunks, { total: 22, current: 0, legacy: 9, other: 13 });
+  }
+  {
+    // Archivo que la Biblioteca lee: directamente en library/ o mypes/, con la extensión de file_type.
+    const source = (path: string, file_type: LibraryDocumentRow["file_type"] = "pdf") => librarySourceExtension({ path, file_type });
+    assert.equal(source("mypes/GUIA_8_DIAGRAMAS DE REGISTRO_1.0.pdf"), "pdf", "con espacios y puntos en el nombre");
+    assert.equal(source("library/0b6f.docx", "docx"), "docx");
+    assert.equal(source("mypes/GUIA.PDF"), "pdf", "extensión sin importar mayúsculas");
+    assert.equal(source("demo/opt-ia-demo.txt", "txt"), null, "el demo");
+    assert.equal(source("mypes/guia.txt", "txt"), null, "txt no");
+    assert.equal(source("mypes/guia.pdf", "docx"), null, "extensión distinta de file_type");
+    assert.equal(source("plans/u1/stage-10/plan.pdf"), null, "otra carpeta (planes de estudiantes)");
+    assert.equal(source("mypes/sub/guia.pdf"), null, "sin subcarpetas");
+    assert.equal(source("mypes/../plans/plan.pdf"), null);
+    assert.equal(source("mypes/.pdf"), null);
+    assert.equal(source("mypes/"), null);
+    assert.equal(source("/mypes/guia.pdf"), null);
+
+    // Informe de extracción: las páginas con poco texto, por número, sin decir qué contienen.
+    const full = LOW_LETTERS_PER_PAGE;
+    assert.deepEqual(extractionWarnings([full, full * 5, full]), [], "todas con texto");
+    const one = extractionWarnings([2400, full - 1, 0, 1800]);
+    assert.equal(one.length, 1);
+    assert.ok(one[0].startsWith(`2 páginas de 4 con poco texto (menos de ${LOW_LETTERS_PER_PAGE} letras): 2, 3.`), one[0]);
+    assert.ok(one[0].includes("sin OCR"), one[0]);
+    assert.ok(extractionWarnings([0])[0].startsWith("Una página de 1 con poco texto"));
+    const many = extractionWarnings(Array.from({ length: 20 }, () => 0));
+    assert.ok(many[0].includes(": 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 y 8 más."), many[0]);
+    assert.deepEqual(extractionWarnings(null), [], "un DOCX no tiene páginas");
+    assert.deepEqual(extractionWarnings([]), []);
+    assert.equal(describeExtraction({ pages: 12, characters: 18400, warnings: [] }), "12 páginas · 18.400 caracteres de texto");
+    assert.equal(describeExtraction({ pages: 1, characters: 950, warnings: [] }), "1 página · 950 caracteres de texto");
+    assert.equal(describeExtraction({ pages: null, characters: 950, warnings: [] }), "950 caracteres de texto");
+  }
+  {
+    // Activación: solo lo listo, de la biblioteca y con los fragmentos del modelo actual completos.
+    const ready = row({ id: "r1", status: "ready", is_active: false });
+    assert.equal(activationProblem(ready, [0, 1, 2]), null);
+    assert.equal(activationProblem(ready, [2, 0, 1]), null, "el orden no importa");
+    assert.match(activationProblem(row({ id: "x", status: "pending" }), [0]) ?? "", /reindéxalo/);
+    assert.match(activationProblem(row({ id: "x", status: "processing" }), [0]) ?? "", /procesando/);
+    assert.match(activationProblem(row({ id: "x", status: "failed", processing_error: "SAVE" }), [0]) ?? "", /falló/);
+    assert.match(activationProblem(ready, []) ?? "", /modelo actual/, "con solo legacy-768");
+    assert.match(activationProblem(ready, [0, 2]) ?? "", /incompletos/, "falta un índice");
+    assert.match(activationProblem(ready, [0, 0, 1]) ?? "", /incompletos/, "índice repetido");
+    assert.match(activationProblem(ready, [1, 2]) ?? "", /incompletos/, "no empieza en 0");
+    assert.match(
+      activationProblem({ ...ready, path: "demo/opt-ia-demo.txt", file_type: "txt" }, [0]) ?? "",
+      /no se gestiona/,
+      "el demo nunca"
+    );
+    assert.match(activationProblem({ ...ready, path: "plans/u1/plan.pdf" }, [0]) ?? "", /no se gestiona/);
+
+    // canActivate y el estado que se muestra.
+    const states = summarizeLibraryDocuments(
+      [
+        row({ id: "s-pending" }),
+        row({ id: "s-processing", status: "processing", is_active: false }),
+        row({ id: "s-failed", status: "failed", is_active: false, processing_error: "SAVE" }),
+        row({ id: "s-ready", status: "ready", is_active: false }),
+        row({ id: "s-active", status: "ready", is_active: true }),
+        row({ id: "s-legacy", status: "ready", is_active: false }),
+        row({ id: "s-stale", status: "ready", is_active: true }),
+        row({ id: "s-incomplete", status: "ready", is_active: false }),
+      ],
+      [
+        ...tag("s-ready", CURRENT, 4),
+        ...tag("s-active", CURRENT, 4),
+        ...tag("s-legacy", "legacy-768", 4),
+        ...tag("s-stale", "legacy-768", 4),
+        ...tag("s-processing", CURRENT, 2),
+        { document_id: "s-incomplete", embedding_model: CURRENT, chunk_index: 0 },
+        { document_id: "s-incomplete", embedding_model: CURRENT, chunk_index: 2 },
+      ],
+      { currentModel: CURRENT, now: NOW }
+    );
+    const shown = Object.fromEntries(states.map((doc) => [doc.id, [libraryDisplayState(doc), doc.canActivate]]));
+    assert.deepEqual(shown, {
+      "s-pending": ["pending", false],
+      "s-processing": ["processing", false],
+      "s-failed": ["failed", false],
+      "s-ready": ["ready_inactive", true],
+      "s-active": ["active", false],
+      "s-legacy": ["ready_inactive", false],
+      "s-stale": ["active_stale", false],
+      "s-incomplete": ["ready_inactive", false],
+    });
+    assert.equal(LIBRARY_DISPLAY_LABEL.pending, "Pendiente de indexar");
+    assert.equal(LIBRARY_DISPLAY_LABEL.processing, "Procesando");
+    assert.equal(LIBRARY_DISPLAY_LABEL.ready_inactive, "Listo, inactivo");
+    assert.equal(LIBRARY_DISPLAY_LABEL.active, "Activo para OPT-IA");
+    assert.equal(LIBRARY_DISPLAY_LABEL.failed, "Error de procesamiento");
+    const guide = summarizeLibraryDocuments(rows, tags, { currentModel: CURRENT, now: NOW }).find((doc) => doc.id === "g1");
+    assert.ok(guide?.isActive);
+    assert.equal(libraryDisplayState(guide), "pending", "una guía de M4 activa pero pending no es «Activo»");
+
+    const document = states[3];
+    assert.deepEqual(readActivationResponse({ ok: true, data: { document } }), { document });
+    assert.equal(readActivationResponse({ ok: true, data: {} }), null);
+    assert.equal(readActivationResponse({ ok: false, code: "CONFLICT", message: "No." }), null);
+  }
+  {
+    // Lectura defensiva de la respuesta de reindexación.
+    const document = summarizeLibraryDocuments(rows, tags, { currentModel: CURRENT, now: NOW })[0];
+    const extraction = { pages: 3, characters: 5000, warnings: [] };
+    assert.deepEqual(
+      readReindexResponse({ ok: true, data: { document, started: true, totalChunks: 4, extraction } }),
+      { document, started: true, totalChunks: 4, extraction }
+    );
+    assert.ok(readReindexResponse({ ok: true, data: { document, started: false, totalChunks: null, extraction: null } }));
+    assert.equal(readReindexResponse({ ok: true, data: { document, started: true, totalChunks: 0, extraction } }), null);
+    assert.equal(readReindexResponse({ ok: false, code: "CONFLICT", message: "No se puede." }), null);
   }
   {
     // Lectura defensiva de la respuesta y de los mensajes de error.
@@ -263,7 +398,7 @@ async function runRoute() {
       const documents = (teacher.json.data as Json).documents as Json[];
       for (const item of documents) {
         assert.deepEqual(Object.keys(item).sort(), [
-          "canProcess", "chunks", "createdAt", "fileType", "id", "isActive", "processingError", "stalled", "status", "title", "updatedAt",
+          "canActivate", "canProcess", "canReindex", "chunks", "createdAt", "fileType", "id", "isActive", "processingError", "stalled", "status", "title", "updatedAt",
         ]);
       }
       const body = JSON.stringify(teacher.json);

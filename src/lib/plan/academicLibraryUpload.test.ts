@@ -4,20 +4,26 @@ import { prepareRouteTestEnv } from "./assistantRouteHarness";
 import { installRestStub, nextTimestamp, type RestRow, type RestStubState } from "./restStubHarness";
 import { MAX_EMBED_INPUT_CHARS, vectorNorm } from "../embeddingEngine";
 import {
+  libraryDisplayState,
   MAX_UPLOAD_BYTES,
+  readActivationResponse,
   readLibraryResponse,
   readProcessResponse,
+  readReindexResponse,
   readUploadResponse,
   uploadCandidateProblem,
   type LibraryProcessResponse,
 } from "../teacher/library/catalog";
+import { extractPdfContent } from "../pdfText";
 import {
   checkDocxStructure,
   checkSignature,
   CHUNK_OVERLAP_CHARS,
   CHUNK_TARGET_CHARS,
   chunkText,
+  extractionWarnings,
   LibraryFileError,
+  LOW_LETTERS_PER_PAGE,
   MAX_DOCX_UNCOMPRESSED_BYTES,
   normalizeExtractedText,
   prepareLibraryText,
@@ -27,8 +33,9 @@ import {
 } from "../teacher/library/ingest";
 
 // Carga de documentos de la Biblioteca Académica: reglas del archivo (ingest.ts), extracción real
-// (pdf-parse y mammoth) y las rutas POST /api/teacher/library y /api/teacher/library/:id/process
-// con Supabase, Storage y Gemini simulados (sin red). Los PDF y DOCX se arman aquí, en memoria.
+// (pdf-parse y mammoth) y las rutas POST /api/teacher/library, /api/teacher/library/:id/process y
+// /api/teacher/library/:id/reindex (las guías de mypes/ desde Storage) con Supabase, Storage y
+// Gemini simulados (sin red). Los PDF y DOCX se arman aquí, en memoria.
 
 const CURRENT = "gemini-embedding-001:768";
 type Json = Record<string, unknown>;
@@ -41,17 +48,22 @@ function latin1(text: string): Uint8Array {
   return bytes;
 }
 
-// PDF digital de una página con texto (Helvetica, WinAnsi para las tildes).
-function buildPdf(lines: string[]): Uint8Array {
+// PDF digital con texto (Helvetica, WinAnsi para las tildes): una página por lista de líneas.
+function buildPdfPages(pages: string[][]): Uint8Array {
   const escape = (s: string) => s.replace(/[\\()]/g, (m) => `\\${m}`);
-  const content = `BT /F1 11 Tf 40 780 Td 14 TL ${lines.map((line) => `(${escape(line)}) Tj T*`).join(" ")} ET`;
+  const kids = pages.map((_, index) => `${4 + index * 2} 0 R`).join(" ");
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
   ];
+  pages.forEach((lines, index) => {
+    const content = `BT /F1 11 Tf 40 780 Td 14 TL ${lines.map((line) => `(${escape(line)}) Tj T*`).join(" ")} ET`;
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + index * 2} 0 R >>`,
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`
+    );
+  });
   let pdf = "%PDF-1.4\n";
   const offsets: number[] = [];
   objects.forEach((object, index) => {
@@ -63,6 +75,10 @@ function buildPdf(lines: string[]): Uint8Array {
   pdf += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return latin1(pdf);
+}
+
+function buildPdf(lines: string[]): Uint8Array {
+  return buildPdfPages([lines]);
 }
 
 function guideLines(label: string): string[] {
@@ -261,26 +277,76 @@ const TEACHER = { id: "10000000-0000-4000-8000-000000000001", email: "docente@gm
 const STUDENT = { id: "20000000-0000-4000-8000-000000000002", email: "ana@umsa.bo" };
 const GUIDE = "a0000000-0000-4000-8000-000000000001";
 const STUDENT_DOC = "a0000000-0000-4000-8000-000000000003";
+// Guías de mypes/ para la reindexación (como en Production: pending, activas, sin hash).
+const GUIDE_SPACE = "a0000000-0000-4000-8000-000000000004";
+const GUIDE_MISSING = "a0000000-0000-4000-8000-000000000005";
+const GUIDE_SCANNED = "a0000000-0000-4000-8000-000000000006";
+const GUIDE_DUPLICATE = "a0000000-0000-4000-8000-000000000007";
+const GUIDE_RACE = "a0000000-0000-4000-8000-000000000008";
+// Listas pero sin poder activarse: con solo legacy-768, o con fragmentos actuales incompletos.
+const LEGACY_READY = "a0000000-0000-4000-8000-000000000009";
+const INCOMPLETE = "a0000000-0000-4000-8000-000000000010";
+const DEMO = "c2a034c3-f840-483b-aafa-a1f45a1cc0e4";
+
+// El PDF de la guía 13 da varios fragmentos; el de GUIDE_DUPLICATE es el mismo que se sube como
+// "Guía 16" más abajo.
+const GUIDE_PDF = buildPdf(longParagraphs("Guía 13", 60));
+const STORAGE_FILES: Record<string, Uint8Array> = {
+  "mypes/GUIA_13_ESTUDIO_DE_TIEMPOS.pdf": GUIDE_PDF,
+  "mypes/GUIA_8_DIAGRAMAS DE REGISTRO_1.0.pdf": buildPdf(guideLines("Guía 8")),
+  "mypes/GUIA_ESCANEADA.pdf": buildPdf(["Hola"]),
+  "mypes/GUIA_DUPLICADA.pdf": buildPdf(guideLines("Guía 16")),
+  "mypes/GUIA_14.2_BALANCEO_DE_LINEA.pdf": buildPdf(guideLines("Guía 14.2")),
+};
+
+function guideRow(id: string, title: string, extra: RestRow = {}): RestRow {
+  return {
+    id,
+    title,
+    path: `mypes/${title}`,
+    description: null,
+    user_id: null,
+    file_type: "pdf",
+    status: "pending",
+    is_active: true,
+    processing_error: null,
+    content_hash: null,
+    created_at: "2025-12-01T10:00:00Z",
+    updated_at: "2026-10-20T10:00:00Z",
+    ...extra,
+  };
+}
 
 let chunkSeq = 0;
+const legacyChunks = (documentId: string, n: number): RestRow[] =>
+  Array.from({ length: n }, (_, index) => ({
+    id: ++chunkSeq,
+    document_id: documentId,
+    chunk_index: index,
+    content: `guía antigua ${documentId} ${index}`,
+    embedding: [0.1, 0.2],
+    embedding_model: "legacy-768",
+    created_at: "2025-12-01T10:00:00Z",
+  }));
+
 const state: RestStubState = {
   user: null,
   tables: {
     documents: [
-      {
-        id: GUIDE,
-        title: "GUIA_13_ESTUDIO_DE_TIEMPOS.pdf",
-        path: "mypes/GUIA_13_ESTUDIO_DE_TIEMPOS.pdf",
-        description: null,
-        user_id: null,
-        file_type: "pdf",
-        status: "pending",
-        is_active: true,
-        processing_error: null,
-        content_hash: null,
-        created_at: "2025-12-01T10:00:00Z",
-        updated_at: "2026-10-20T10:00:00Z",
-      },
+      guideRow(GUIDE, "GUIA_13_ESTUDIO_DE_TIEMPOS.pdf"),
+      guideRow(GUIDE_SPACE, "GUIA_8_DIAGRAMAS DE REGISTRO_1.0.pdf"),
+      guideRow(GUIDE_MISSING, "GUIA_15_EVALUACION_FINANCIERA.pdf"),
+      guideRow(GUIDE_SCANNED, "GUIA_ESCANEADA.pdf"),
+      guideRow(GUIDE_DUPLICATE, "GUIA_DUPLICADA.pdf"),
+      guideRow(GUIDE_RACE, "GUIA_14.2_BALANCEO_DE_LINEA.pdf"),
+      guideRow(LEGACY_READY, "GUIA_LEGACY_LISTA.pdf", { status: "ready", is_active: false }),
+      guideRow(INCOMPLETE, "GUIA_INCOMPLETA.pdf", { status: "ready", is_active: false }),
+      guideRow(DEMO, "Documento demo OPT-IA productividad y ATO", {
+        path: "demo/opt-ia-demo.txt",
+        file_type: "txt",
+        is_active: false,
+        created_at: "2025-11-28T10:00:00Z",
+      }),
       {
         id: STUDENT_DOC,
         title: "Documento propio.pdf",
@@ -296,15 +362,22 @@ const state: RestStubState = {
         updated_at: "2026-10-01T10:00:00Z",
       },
     ],
-    document_chunks: Array.from({ length: 8 }, (_, index) => ({
-      id: ++chunkSeq,
-      document_id: GUIDE,
-      chunk_index: index,
-      content: `guía antigua ${index}`,
-      embedding: [0.1, 0.2],
-      embedding_model: "legacy-768",
-      created_at: "2025-12-01T10:00:00Z",
-    })),
+    document_chunks: [
+      ...legacyChunks(GUIDE, 8),
+      ...legacyChunks(GUIDE_SPACE, 2),
+      ...legacyChunks(DEMO, 3),
+      ...legacyChunks(LEGACY_READY, 2),
+      // Índices 0 y 2 del modelo actual: falta el 1.
+      ...[0, 2].map((index) => ({
+        id: ++chunkSeq,
+        document_id: INCOMPLETE,
+        chunk_index: index,
+        content: `fragmento ${index}`,
+        embedding: Array.from({ length: 768 }, (_, k) => (k === index ? 1 : 0)),
+        embedding_model: CURRENT,
+        created_at: "2026-10-20T10:00:00Z",
+      })),
+    ],
   },
   uniques: {
     documents: [
@@ -318,7 +391,12 @@ const state: RestStubState = {
     documents: () => ({ created_at: nextTimestamp(), updated_at: nextTimestamp(), description: null, processing_error: null }),
     document_chunks: () => ({ id: ++chunkSeq, created_at: nextTimestamp() }),
   },
-  storage: {},
+  storage: Object.fromEntries(
+    Object.entries(STORAGE_FILES).map(([path, bytes]) => [
+      `documents/${path}`,
+      { bytes: Uint8Array.from(bytes).buffer, contentType: "application/pdf" },
+    ])
+  ),
 };
 
 type GeminiMode = "ok" | "dim3072" | "rate" | "reject";
@@ -362,6 +440,14 @@ const docRow = (id: string) => docs().find((d) => d.id === id) as RestRow;
 const currentChunks = (id: string) =>
   state.tables.document_chunks.filter((c) => c.document_id === id && c.embedding_model === CURRENT);
 const storedObjects = () => Object.keys(state.storage ?? {});
+// Los fragmentos legacy-768 tal cual (id, documento, índice, texto y vector).
+const legacySnapshot = () =>
+  JSON.stringify(
+    state.tables.document_chunks
+      .filter((c) => c.embedding_model === "legacy-768")
+      .map((c) => [c.id, c.document_id, c.chunk_index, c.content, c.embedding])
+  );
+const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
 async function runRoutes() {
   prepareRouteTestEnv({
@@ -372,10 +458,41 @@ async function runRoutes() {
   });
   const libraryRoute = await import("../../app/api/teacher/library/route");
   const processRoute = await import("../../app/api/teacher/library/[id]/process/route");
+  const reindexRoute = await import("../../app/api/teacher/library/[id]/reindex/route");
   const { extractLibraryText, PROCESS_BATCH } = await import("../teacher/library/processing");
   const stub = installRestStub(state, geminiEndpoint);
 
   const headers = () => new Headers({ authorization: "Bearer token-de-prueba" });
+  const initial = { docs: docs().length, objects: storedObjects(), legacy: legacySnapshot() };
+
+  async function reindex(user: { id: string; email: string } | null, id: string) {
+    state.user = user;
+    const res = await reindexRoute.POST(
+      new Request(`https://opt-ia.test/api/teacher/library/${id}/reindex`, { method: "POST", headers: headers() }),
+      { params: Promise.resolve({ id }) }
+    );
+    return { status: res.status, json: (await res.json()) as Json };
+  }
+
+  async function setActive(user: { id: string; email: string } | null, body: unknown, raw?: string) {
+    state.user = user;
+    const res = await libraryRoute.PATCH(
+      new Request("https://opt-ia.test/api/teacher/library", {
+        method: "PATCH",
+        headers: new Headers({ authorization: "Bearer token-de-prueba", "content-type": "application/json" }),
+        body: raw ?? JSON.stringify(body),
+      })
+    );
+    return { status: res.status, json: (await res.json()) as Json };
+  }
+
+  async function listed() {
+    state.user = TEACHER;
+    const res = await libraryRoute.GET(new Request("https://opt-ia.test/api/teacher/library", { headers: headers() }));
+    const data = readLibraryResponse(await res.json());
+    assert.ok(data, "lista con la forma que lee el panel");
+    return new Map(data.documents.map((d) => [d.id, d]));
+  }
 
   async function upload(
     user: { id: string; email: string } | null,
@@ -425,6 +542,20 @@ async function runRoutes() {
       // Extracción real, sin OCR: PDF (con un Buffer de Node, que pdf-parse no lee sin la copia) y DOCX.
       const pdfText = await extractLibraryText("pdf", Buffer.from(buildPdf(guideLines("Extracción"))));
       assert.ok(pdfText.includes("balanceo de línea") && pdfText.includes("heurístico"), pdfText);
+
+      // Letras por página: el texto es el mismo que da pdf-parse sin pagerender propio.
+      const pages = buildPdfPages([longParagraphs("Página uno", 12), ["Figura 1"], [], longParagraphs("Página cuatro", 12)]);
+      const content = await extractPdfContent(pages);
+      const plain = await (await import("pdf-parse")).default(Uint8Array.from(pages) as unknown as Buffer);
+      assert.equal(content.text, plain.text, "mismo texto que el render de pdf-parse");
+      assert.equal(content.pages, 4);
+      assert.equal(content.pageLetters.length, 4);
+      assert.ok(content.pageLetters[0] > LOW_LETTERS_PER_PAGE && content.pageLetters[3] > LOW_LETTERS_PER_PAGE);
+      assert.equal(content.pageLetters[1], "Figura1".length);
+      assert.equal(content.pageLetters[2], 0, "página sin texto");
+      assert.deepEqual((await extractPdfContent(pages, { maxPages: 2 })).pageLetters.length, 2, "solo las páginas leídas");
+      const [warning] = extractionWarnings(content.pageLetters);
+      assert.ok(warning.startsWith("2 páginas de 4 con poco texto") && warning.includes(": 2, 3."), warning);
       const docxText = await extractLibraryText("docx", buildDocx(["Primer párrafo del documento.", "Segundo párrafo."]));
       assert.ok(docxText.includes("Primer párrafo del documento.") && docxText.includes("Segundo párrafo."), docxText);
       await assert.rejects(extractLibraryText("pdf", latin1("%PDF-1.4 esto no es un PDF")), (err: unknown) => err instanceof LibraryFileError && err.code === "INVALID_FILE");
@@ -439,8 +570,8 @@ async function runRoutes() {
       assert.equal(student.json.code, "FORBIDDEN");
       assert.equal((await step(null, GUIDE)).status, 401);
       assert.equal((await step(STUDENT, GUIDE)).status, 403);
-      assert.equal(docs().length, 2);
-      assert.deepEqual(storedObjects(), []);
+      assert.equal(docs().length, initial.docs);
+      assert.deepEqual(storedObjects(), initial.objects);
       assert.equal(gemini.requests.length, 0);
       assert.equal(stub.writes("documents") + stub.writes("document_chunks"), 0);
     }
@@ -608,11 +739,13 @@ async function runRoutes() {
     // ---------------- Gemini rechaza la solicitud (400): failed ----------------
     {
       const doc = await uploaded("rechazo.pdf", buildPdf(guideLines("Rechazo")));
+      docRow(doc.document.id).is_active = true; // como una fila escrita fuera de la Biblioteca
       gemini.mode = "reject";
       const [rejected] = await processAll(doc.document.id);
       gemini.mode = "ok";
       assert.equal(rejected.document.status, "failed");
       assert.ok(rejected.document.processingError?.startsWith("EMBEDDING_FAILED"));
+      assert.equal(rejected.document.isActive, false, "un documento fallido nunca queda activo");
     }
 
     // ---------------- Persistencia parcial y recuperación ----------------
@@ -677,17 +810,284 @@ async function runRoutes() {
       assert.ok(mismatch.document.processingError?.startsWith("FILE_MISMATCH"));
     }
 
+    // ---------------- Verificación antes de ready ----------------
+    {
+      // Un fragmento guardado que no coincide con el archivo: con todos los índices, igual no queda listo.
+      const doc = await uploaded("verificado.docx", buildDocx(longParagraphs("Verificado", 700)));
+      const first = readProcessResponse((await step(TEACHER, doc.document.id)).json);
+      assert.equal(first?.processedChunks, PROCESS_BATCH);
+      const tampered = currentChunks(doc.document.id).find((c) => c.chunk_index === 3) as RestRow;
+      tampered.content = "texto que no está en el archivo";
+      const steps = await processAll(doc.document.id);
+      const last = steps[steps.length - 1];
+      assert.equal(last.done, false);
+      assert.equal(last.document.status, "failed");
+      assert.ok(last.document.processingError?.startsWith("INDEX_MISMATCH"), last.document.processingError ?? "");
+      assert.equal(currentChunks(doc.document.id).length, doc.totalChunks, "están todos los índices, pero no se marca listo");
+
+      // Un índice de más (de una fragmentación anterior más larga): tampoco.
+      const extra = await uploaded("sobrante.pdf", buildPdf(guideLines("Sobrante")));
+      state.tables.document_chunks.push({
+        id: ++chunkSeq,
+        document_id: extra.document.id,
+        chunk_index: 5,
+        content: "fragmento sobrante",
+        embedding: Array.from({ length: 768 }, (_, k) => (k === 0 ? 1 : 0)),
+        embedding_model: CURRENT,
+        created_at: nextTimestamp(),
+      });
+      const [only] = await processAll(extra.document.id);
+      assert.equal(only.document.status, "failed");
+      assert.ok(only.document.processingError?.startsWith("INDEX_MISMATCH"));
+    }
+
     // ---------------- Qué no se procesa desde aquí ----------------
     {
-      assert.equal((await step(TEACHER, GUIDE)).status, 409, "guía antigua: la reindexación no está habilitada");
+      const pending = await step(TEACHER, GUIDE);
+      assert.equal(pending.status, 409, "guía pendiente: primero se reclama con /reindex");
+      assert.ok(String(pending.json.message).includes("Reindexar"), String(pending.json.message));
+      assert.equal((await step(TEACHER, DEMO)).status, 409, "el demo no se procesa");
       assert.equal((await step(TEACHER, "b0000000-0000-4000-8000-000000000009")).status, 404);
       assert.equal((await step(TEACHER, STUDENT_DOC)).status, 404, "un documento de estudiante no existe para la biblioteca");
       assert.equal((await step(TEACHER, "no-es-uuid")).status, 400);
     }
 
+    // ---------------- Reindexación de las guías desde Storage ----------------
+    const counts = () => ({ docs: docs().length, objects: storedObjects().length });
+    const before = counts();
+    {
+      // Sin sesión, sin rol docente o con un id que no es de la biblioteca: nada cambia.
+      const geminiBefore = gemini.requests.length;
+      assert.equal((await reindex(null, GUIDE)).status, 401);
+      assert.equal((await reindex(STUDENT, GUIDE)).status, 403);
+      assert.equal((await reindex(TEACHER, "no-es-uuid")).status, 400);
+      assert.equal((await reindex(TEACHER, "b0000000-0000-4000-8000-000000000009")).status, 404);
+      assert.equal((await reindex(TEACHER, STUDENT_DOC)).status, 404, "un documento de estudiante no existe para la biblioteca");
+
+      // El demo no se reindexa: ni se busca su archivo.
+      const demo = await reindex(TEACHER, DEMO);
+      assert.equal(demo.status, 409);
+      assert.equal(demo.json.code, "CONFLICT");
+      assert.ok(!stub.calls.some((c) => c.url.includes("opt-ia-demo")), "no se pide su archivo");
+
+      // Sin archivo en Storage, escaneada (sin texto) o duplicada: el motivo, y la guía como estaba.
+      const missing = await reindex(TEACHER, GUIDE_MISSING);
+      assert.equal(missing.status, 409);
+      assert.ok(String(missing.json.message).includes("Storage"), String(missing.json.message));
+      const scanned = await reindex(TEACHER, GUIDE_SCANNED);
+      assert.equal(scanned.status, 422);
+      assert.equal(scanned.json.code, "NO_EXTRACTABLE_TEXT");
+      const duplicate = await reindex(TEACHER, GUIDE_DUPLICATE);
+      assert.equal(duplicate.status, 409);
+      assert.ok(String(duplicate.json.message).includes("Guía 16 · Balanceo de línea"), String(duplicate.json.message));
+      for (const id of [GUIDE, DEMO, GUIDE_MISSING, GUIDE_SCANNED, GUIDE_DUPLICATE]) {
+        assert.equal(docRow(id).status, "pending", `${docRow(id).title} sigue pending`);
+        assert.equal(docRow(id).content_hash, null);
+        assert.equal(docRow(id).processing_error, null);
+      }
+      assert.equal(gemini.requests.length, geminiBefore, "ningún embedding");
+    }
+    {
+      // Se reclama la guía sin volver a subirla ni crear otro documento, y sin embeddings todavía.
+      const geminiBefore = gemini.requests.length;
+      const claim = await reindex(TEACHER, GUIDE);
+      assert.equal(claim.status, 200, JSON.stringify(claim.json));
+      const started = readReindexResponse(claim.json);
+      assert.ok(started, "respuesta con la forma que lee el panel");
+      assert.equal(started.started, true);
+      assert.equal(started.document.id, GUIDE);
+      assert.equal(started.document.status, "processing");
+      assert.equal(started.document.canReindex, false);
+      assert.equal(started.document.canProcess, true);
+      assert.equal(started.document.isActive, false, "inactiva desde que empieza la reindexación");
+      assert.equal(docRow(GUIDE).is_active, false);
+      const total = started.totalChunks ?? 0;
+      assert.ok(total > 1, `${total} fragmentos`);
+      assert.equal(started.extraction?.pages, 1);
+      assert.ok((started.extraction?.characters ?? 0) > 3000, String(started.extraction?.characters));
+      assert.deepEqual(started.extraction?.warnings, []);
+      const row = docRow(GUIDE);
+      assert.equal(row.content_hash, sha256Hex(GUIDE_PDF));
+      assert.equal(row.path, "mypes/GUIA_13_ESTUDIO_DE_TIEMPOS.pdf");
+      assert.equal(row.title, "GUIA_13_ESTUDIO_DE_TIEMPOS.pdf");
+      assert.equal(row.user_id, null);
+      assert.equal(gemini.requests.length, geminiBefore, "reclamar no genera embeddings");
+      assert.deepEqual(counts(), before, "ni documentos ni archivos nuevos");
+
+      // Repetirlo no cambia nada.
+      const again = readReindexResponse((await reindex(TEACHER, GUIDE)).json);
+      assert.equal(again?.started, false);
+      assert.equal(again?.document.status, "processing");
+      assert.equal(again?.totalChunks, null);
+      assert.equal(docRow(GUIDE).content_hash, sha256Hex(GUIDE_PDF));
+
+      // Un paso que no puede guardar: failed, nunca ready; el reintento termina sin duplicar.
+      state.failTables = { document_chunks: { status: 500, code: "XX000", message: "insert caído", methods: ["POST"] } };
+      const broken = readProcessResponse((await step(TEACHER, GUIDE)).json);
+      state.failTables = {};
+      assert.equal(broken?.document.status, "failed");
+      assert.ok(broken?.document.processingError?.startsWith("SAVE"));
+      assert.deepEqual(broken?.extraction, started.extraction, "cada paso informa lo extraído");
+      assert.equal(currentChunks(GUIDE).length, 0);
+      assert.equal((await listed()).get(GUIDE)?.canProcess, true, "se reintenta desde la lista");
+
+      const afterBroken = gemini.requests.length;
+      const steps = await processAll(GUIDE);
+      const last = steps[steps.length - 1];
+      assert.equal(last.done, true);
+      assert.equal(last.document.status, "ready");
+      assert.equal(last.document.isActive, false, "lista e inactiva: el asistente no la usa hasta activarla");
+      assert.equal(last.document.canActivate, true);
+      assert.deepEqual(last.document.chunks, { total: 8 + total, current: total, legacy: 8, other: 0 });
+      const stored = currentChunks(GUIDE);
+      assert.deepEqual(stored.map((c) => c.chunk_index as number).sort((a, b) => a - b), range(total), "índices 0..n-1, sin repetidos");
+      for (const chunk of stored) {
+        const content = chunk.content as string;
+        assert.ok(content.trim().length > 0 && content.length <= CHUNK_TARGET_CHARS, "sin fragmentos vacíos ni de más");
+        const embedding = chunk.embedding as number[];
+        assert.equal(embedding.length, 768);
+        assert.ok(Math.abs(vectorNorm(embedding) - 1) < 1e-9, "normalizado");
+      }
+      const joined = stored.map((c) => c.content as string).join("\n");
+      for (const marker of ["Guía 13 0:", "Guía 13 30:", "Guía 13 59:"]) assert.ok(joined.includes(marker), `cubre ${marker}`);
+      // El paso fallido no guardó su lote, así que el reintento pidió todos los fragmentos.
+      assert.equal(gemini.requests.length - afterBroken, total, "un embedding por fragmento en el reintento");
+      assert.ok(
+        gemini.requests
+          .slice(geminiBefore)
+          .every((r) => r.taskType === "RETRIEVAL_DOCUMENT" && r.outputDimensionality === 768 && r.model === "models/gemini-embedding-001")
+      );
+
+      // Ya lista: ni reindexar ni procesar vuelve a llamar a Gemini.
+      const calls = gemini.requests.length;
+      assert.equal(readReindexResponse((await reindex(TEACHER, GUIDE)).json)?.started, false);
+      assert.equal(readProcessResponse((await step(TEACHER, GUIDE)).json)?.done, true);
+      assert.equal(gemini.requests.length, calls);
+    }
+    {
+      // Nombre con espacios en Storage y aviso de poco texto por página.
+      const space = readReindexResponse((await reindex(TEACHER, GUIDE_SPACE)).json);
+      assert.equal(space?.started, true);
+      assert.equal(space?.extraction?.warnings.length, 1, JSON.stringify(space?.extraction));
+      const steps = await processAll(GUIDE_SPACE);
+      assert.equal(steps[steps.length - 1].document.status, "ready");
+      assert.deepEqual(steps[steps.length - 1].document.chunks, { total: 3, current: 1, legacy: 2, other: 0 });
+
+      // Dos pestañas a la vez: una la reclama; la otra recibe el documento y sigue con los pasos.
+      const both = await Promise.all([reindex(TEACHER, GUIDE_RACE), reindex(TEACHER, GUIDE_RACE)]);
+      assert.deepEqual(both.map((r) => r.status), [200, 200]);
+      assert.deepEqual(both.map((r) => readReindexResponse(r.json)?.started).sort(), [false, true]);
+      assert.equal(docRow(GUIDE_RACE).status, "processing");
+      assert.equal(currentChunks(GUIDE_RACE).length, 0);
+    }
+    {
+      // En la lista: lo listo, lo que se puede reindexar y lo que no.
+      const list = await listed();
+      assert.equal(list.get(GUIDE)?.status, "ready");
+      assert.equal(list.get(GUIDE)?.canReindex, false);
+      assert.equal(list.get(GUIDE_RACE)?.canProcess, true, "a medio procesar: se continúa");
+      for (const id of [GUIDE_MISSING, GUIDE_SCANNED, GUIDE_DUPLICATE]) assert.equal(list.get(id)?.canReindex, true);
+      assert.equal(list.get(DEMO)?.canReindex, false);
+      assert.equal(list.get(DEMO)?.canProcess, false);
+      assert.deepEqual(counts(), before, "la reindexación no creó documentos ni archivos");
+    }
+
+    // ---------------- Activar y desactivar ----------------
+    const activeOf = () => Object.fromEntries(docs().map((d) => [d.id, d.is_active]));
+    {
+      // Sin sesión, sin rol docente o con un cuerpo inválido: nada cambia.
+      const writes = stub.writes("documents");
+      const before = activeOf();
+      assert.equal((await setActive(null, { id: GUIDE, active: true })).status, 401);
+      assert.equal((await setActive(STUDENT, { id: GUIDE, active: true })).status, 403);
+      const invalid: unknown[] = [
+        {},
+        { id: GUIDE },
+        { id: "no-es-uuid", active: true },
+        { id: GUIDE, active: "sí" },
+        { id: GUIDE, active: true, user_id: TEACHER.id },
+      ];
+      for (const body of invalid) assert.equal((await setActive(TEACHER, body)).status, 400, JSON.stringify(body));
+      assert.equal((await setActive(TEACHER, null, "no es json")).status, 400);
+      assert.equal((await setActive(TEACHER, { id: "b0000000-0000-4000-8000-000000000009", active: true })).status, 404);
+      assert.equal((await setActive(TEACHER, { id: STUDENT_DOC, active: true })).status, 404, "un documento de estudiante no existe");
+      assert.equal(stub.writes("documents"), writes, "sin escrituras");
+      assert.deepEqual(activeOf(), before);
+    }
+    {
+      // No se activa lo pending, processing o failed, lo que tiene solo legacy-768 o fragmentos
+      // incompletos, ni el demo: 409 con el motivo y sin cambios.
+      const failedDoc = docs().find((d) => d.status === "failed" && String(d.path).startsWith("library/"));
+      assert.ok(failedDoc);
+      const writes = stub.writes("documents");
+      const before = activeOf();
+      const refused: Array<[string, RegExp]> = [
+        [GUIDE_MISSING, /reindéxalo/],
+        [GUIDE_RACE, /procesando/],
+        [String(failedDoc.id), /falló/],
+        [LEGACY_READY, /modelo actual/],
+        [INCOMPLETE, /incompletos/],
+        [DEMO, /no se gestiona/],
+      ];
+      for (const [id, reason] of refused) {
+        const res = await setActive(TEACHER, { id, active: true });
+        assert.equal(res.status, 409, `${docRow(id).title}: ${JSON.stringify(res.json)}`);
+        assert.equal(res.json.code, "CONFLICT");
+        assert.match(String(res.json.message), reason);
+      }
+      assert.equal(stub.writes("documents"), writes, "ninguna escritura");
+      assert.deepEqual(activeOf(), before);
+      const list = await listed();
+      for (const [id] of refused) assert.equal(list.get(id)?.canActivate, false, docRow(id).title as string);
+
+      // Con la configuración de embeddings inválida no se puede comprobar el modelo: no se activa.
+      process.env.GEMINI_EMBED_DIM = "1536";
+      const misconfigured = await setActive(TEACHER, { id: GUIDE, active: true });
+      process.env.GEMINI_EMBED_DIM = "768";
+      assert.equal(misconfigured.status, 503);
+      assert.equal(misconfigured.json.code, "EMBEDDINGS_NOT_CONFIGURED");
+      assert.equal(docRow(GUIDE).is_active, false);
+    }
+    {
+      // La guía reindexada: lista, con sus fragmentos del modelo actual completos. Se activa sin
+      // tocar su estado, sus fragmentos ni los legacy.
+      const chunksBefore = JSON.stringify(state.tables.document_chunks.filter((c) => c.document_id === GUIDE));
+      const activated = await setActive(TEACHER, { id: GUIDE, active: true });
+      assert.equal(activated.status, 200, JSON.stringify(activated.json));
+      const data = readActivationResponse(activated.json);
+      assert.ok(data, "respuesta con la forma que lee el panel");
+      assert.equal(data.document.isActive, true);
+      assert.equal(data.document.canActivate, false);
+      assert.equal(libraryDisplayState(data.document), "active");
+      assert.equal(docRow(GUIDE).is_active, true);
+      assert.equal(docRow(GUIDE).status, "ready");
+      assert.equal(JSON.stringify(state.tables.document_chunks.filter((c) => c.document_id === GUIDE)), chunksBefore);
+
+      // Repetirlo no escribe.
+      const writes = stub.writes("documents");
+      assert.equal(readActivationResponse((await setActive(TEACHER, { id: GUIDE, active: true })).json)?.document.isActive, true);
+      assert.equal(stub.writes("documents"), writes);
+
+      // Desactivar siempre se puede, y repetirlo tampoco escribe.
+      const deactivated = readActivationResponse((await setActive(TEACHER, { id: GUIDE, active: false })).json);
+      assert.equal(deactivated?.document.isActive, false);
+      assert.ok(deactivated && libraryDisplayState(deactivated.document) === "ready_inactive");
+      assert.equal(deactivated?.document.canActivate, true);
+      const afterDeactivate = stub.writes("documents");
+      assert.equal(readActivationResponse((await setActive(TEACHER, { id: GUIDE, active: false })).json)?.document.isActive, false);
+      assert.equal(stub.writes("documents"), afterDeactivate);
+
+      // Una guía de M4 que sigue pending con is_active: se puede desactivar; sigue pending.
+      assert.equal(docRow(GUIDE_MISSING).is_active, true);
+      const pending = readActivationResponse((await setActive(TEACHER, { id: GUIDE_MISSING, active: false })).json);
+      assert.equal(pending?.document.isActive, false);
+      assert.equal(docRow(GUIDE_MISSING).status, "pending");
+      assert.equal(docRow(GUIDE_MISSING).content_hash, null);
+    }
+
     // ---------------- Invariantes finales ----------------
     {
-      // Ningún documento "listo" tiene fragmentos incompletos, y ninguno se activó solo.
+      // Ningún documento "listo" tiene fragmentos incompletos, y ninguno subido se activó solo.
       const library = docs().filter((d) => String(d.path).startsWith("library/"));
       assert.ok(library.length >= 8);
       for (const doc of library) {
@@ -697,10 +1097,10 @@ async function runRoutes() {
           assert.ok(indices.size > 0 && [...indices].every((i) => typeof i === "number"), String(doc.title));
         }
       }
-      // La guía antigua y sus fragmentos legacy no se tocaron.
-      assert.equal(docRow(GUIDE).status, "pending");
-      assert.equal(state.tables.document_chunks.filter((c) => c.document_id === GUIDE && c.embedding_model === "legacy-768").length, 8);
-      assert.equal(state.tables.document_chunks.filter((c) => c.document_id === GUIDE).length, 8);
+      // Los fragmentos legacy-768 de todas las guías y del demo siguen intactos.
+      assert.equal(legacySnapshot(), initial.legacy);
+      assert.equal(docRow(DEMO).status, "pending");
+      assert.equal(currentChunks(DEMO).length, 0);
     }
   } finally {
     stub.restore();
