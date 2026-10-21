@@ -362,8 +362,9 @@ Supabase"); el código que las usa todavía no está desplegado.
   ACADEMIC_RAG_MATCH_COUNT (5 por defecto, 0 la apaga, tope 10) y ACADEMIC_RAG_MIN_SIMILARITY
   (0,5 por defecto, sin calibrar). Hasta reindexar las guías no hay material.
 - Logs: /api/chat ya no vuelca las filas del mini-agente SQL (runDbPlan traía nombres de empresas,
-  NIT y direcciones): registra la tabla y la cantidad de filas. Si el plan de Gemini no se puede
-  parsear, planDbQuery registra solo que es ilegible, sin el texto (repetía los filtros).
+  NIT y direcciones): registra la tabla y la cantidad de filas; si la consulta falla, la tabla y
+  el código de error, sin el mensaje de Postgres (puede repetir el valor de un filtro). Si el plan
+  de Gemini no se puede parsear, planDbQuery registra solo que es ilegible, sin el texto.
 - Pruebas: embeddingEngine, academicLibrary, academicLibraryUpload y academicRag (npm test, 70
   archivos; restStubHarness simula Storage y RPC), y PGlite de M4 (50 comprobaciones) y de M6 con
   M4 -> M5 -> M6 (40).

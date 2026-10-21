@@ -269,7 +269,9 @@ async function runDbPlan(plan: DbPlan): Promise<any[] | null> {
   const { data, error } = await query;
 
   if (error) {
-    console.error("Error ejecutando consulta DB:", error);
+    // Solo la tabla y el código: el mensaje y los detalles de Postgres pueden repetir el valor de
+    // un filtro (un nombre de empresa, un NIT), que no debe quedar en los logs del servidor.
+    console.error("[chat] mini-agente SQL: falló la consulta", plan.table, error.code ?? "sin código");
     return null;
   }
   // Solo datos técnicos: las filas traen nombres de empresas, NIT, direcciones y otros datos
