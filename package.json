@@ -22,6 +22,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
     "framer-motion": "^12.34.3",
+    "katex": "^0.18.11",
     "lucide-react": "^1.17.0",
     "mammoth": "^1.11.0",
     "next": "^16.1.4",
@@ -30,7 +31,9 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "tailwind-merge": "^3.6.0",
     "tsx": "^4.20.6",
     "zod": "^4.3.5"
@@ -49,5 +52,8 @@
     "tape": "^5.9.0",
     "typescript": "^5",
     "why-is-node-running": "^3.2.2"
+  },
+  "overrides": {
+    "katex": "$katex"
   }
 }

@@ -86,6 +86,8 @@ const TESTS = [
   "academicLibrary",
   "academicLibraryUpload",
   "academicRag",
+  "messageMarkdown",
+  "chatResponseStyle",
 ].map((name) => path.join("src", "lib", "plan", `${name}.test.ts`));
 
 for (const file of TESTS) {

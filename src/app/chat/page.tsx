@@ -9,6 +9,9 @@ import { HoursInlinePanel } from "@/components/chat/HoursInlinePanel";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { MessageList } from "@/components/chat/MessageList";
+// Estilos y fuentes de las fórmulas que pinta MessageList (KaTeX). Se importan aquí y no en
+// MessageList para que las pruebas puedan cargar ese componente en Node.
+import "katex/dist/katex.min.css";
 import { MessageInput } from "@/components/chat/MessageInput";
 import { PersistFailureNotice } from "@/components/chat/PersistFailureNotice";
 import { ChatAccessDenied, ChatGateLoading } from "@/components/chat/ChatGateScreen";

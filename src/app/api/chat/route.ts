@@ -15,6 +15,7 @@ import { assertChatAccess } from "@/lib/auth/chatAccess";
 
 import { getGeminiModel } from "@/lib/geminiClient";
 import { academicPromptSection, retrieveAcademicContext } from "@/lib/chat/academicRag";
+import { ASSISTANT_RESPONSE_GUIDE } from "@/lib/chat/responseStyle";
 
 // --------------------------------------
 // 📌 Tipos del mini-agente SQL
@@ -957,6 +958,9 @@ EN SU LUGAR:
 - No inventes datos numéricos exactos (ventas, montos, etc.) salvo que sea necesario y claramente aproximado.
 - Sé claro, conciso y enfocado en ayudar al usuario a tomar decisiones o entender el concepto.
 `;
+
+      // 👇 Extensión, formato y estilo de la respuesta (src/lib/chat/responseStyle.ts)
+      systemPrompt += `\n${ASSISTANT_RESPONSE_GUIDE}\n`;
 
       parts.push(systemPrompt);
 

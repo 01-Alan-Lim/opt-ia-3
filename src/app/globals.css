@@ -50,6 +50,16 @@
   --markdown-code-bg: rgba(255, 255, 255, 0.10);
   --markdown-code-text: rgba(241, 245, 249, 0.96);
 
+  /* Tablas, bloques de código, citas y separadores de las respuestas (Dark) */
+  --markdown-table-border: rgba(148, 163, 184, 0.22);
+  --markdown-table-head-bg: rgba(148, 163, 184, 0.12);
+  --markdown-table-stripe: rgba(148, 163, 184, 0.05);
+  --markdown-pre-bg: rgba(2, 6, 23, 0.55);
+  --markdown-pre-border: rgba(148, 163, 184, 0.18);
+  --markdown-quote-bg: rgba(56, 189, 248, 0.07);
+  --markdown-quote-border: rgba(56, 189, 248, 0.45);
+  --markdown-rule: rgba(148, 163, 184, 0.22);
+
 }
 
 
@@ -95,6 +105,16 @@
   --markdown-link-hover: #1d4ed8;
   --markdown-code-bg: rgba(15, 23, 42, 0.06);
   --markdown-code-text: rgba(15, 23, 42, 0.92);
+
+  /* Tablas, bloques de código, citas y separadores de las respuestas (Light) */
+  --markdown-table-border: rgba(15, 23, 42, 0.12);
+  --markdown-table-head-bg: rgba(15, 23, 42, 0.05);
+  --markdown-table-stripe: rgba(15, 23, 42, 0.025);
+  --markdown-pre-bg: rgba(15, 23, 42, 0.04);
+  --markdown-pre-border: rgba(15, 23, 42, 0.10);
+  --markdown-quote-bg: rgba(59, 130, 246, 0.06);
+  --markdown-quote-border: rgba(59, 130, 246, 0.45);
+  --markdown-rule: rgba(15, 23, 42, 0.12);
 
 }
 
@@ -179,6 +199,33 @@ body {
 
 .scrollbar-optia::-webkit-scrollbar-thumb:hover {
   background-color: var(--sb-thumb-hover);
+}
+
+/* Fórmulas (KaTeX) en los mensajes del chat: toman el color del texto de la burbuja (claro y
+   oscuro); una fórmula en bloque se centra, un poco más grande, y si no entra (móvil) se desliza
+   sola. KaTeX usa 1.21em por defecto: con la letra del chat, 1.15em en línea iguala la altura del
+   texto. */
+.chat-markdown .katex {
+  font-size: 1.15em;
+}
+
+.chat-markdown .katex-display > .katex {
+  font-size: 1.22em;
+}
+
+.chat-markdown .katex-display {
+  margin: 0.875rem 0;
+  padding: 0.375rem 0.125rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.chat-markdown .katex-display:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown .katex-display:last-child {
+  margin-bottom: 0;
 }
 
 

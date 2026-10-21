@@ -28,7 +28,8 @@
 //     sí se usan cuando corresponden.
 //   - Nunca nombres reales de empresas en los textos generados.
 // Los textos deben quedar iguales tras formatAdvisorReplyForChat (assistantFormat.ts), que es lo que
-// se pinta y se guarda.
+// se pinta y se guarda. Las pautas para las respuestas en texto libre de Gemini (extensión, formato,
+// fórmulas) están en responseStyle.ts.
 
 // "¡Hola, Alan! …" o "¡Hola! …" si no se conoce el nombre.
 export function advisorGreeting(name: string | null | undefined, rest: string) {
