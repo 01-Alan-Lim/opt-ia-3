@@ -362,14 +362,14 @@ Supabase"); el código que las usa todavía no está desplegado.
   ACADEMIC_RAG_MATCH_COUNT (5 por defecto, 0 la apaga, tope 10) y ACADEMIC_RAG_MIN_SIMILARITY
   (0,5 por defecto, sin calibrar). Hasta reindexar las guías no hay material.
 - Logs: /api/chat ya no vuelca las filas del mini-agente SQL (runDbPlan traía nombres de empresas,
-  NIT y direcciones): registra la tabla y la cantidad de filas.
+  NIT y direcciones): registra la tabla y la cantidad de filas. Si el plan de Gemini no se puede
+  parsear, planDbQuery registra solo que es ilegible, sin el texto (repetía los filtros).
 - Pruebas: embeddingEngine, academicLibrary, academicLibraryUpload y academicRag (npm test, 70
   archivos; restStubHarness simula Storage y RPC), y PGlite de M4 (50 comprobaciones) y de M6 con
   M4 -> M5 -> M6 (40).
 - Pendiente: reindexar las 10 guías desde Storage junto a los legacy-768; activar o desactivar,
   reemplazar, eliminar y ver documentos; "Probar búsqueda" y calibrar el umbral; retirar las
-  variantes de match_document_chunks, /api/dev/index-* y /dev/index-pdf; sincronizar el historial
-  de migraciones.
+  variantes de match_document_chunks, /api/dev/index-* y /dev/index-pdf.
 
 ### En curso — Panel docente nativo (rama feat/docente-native-dashboard, desde 9048927)
 Las pruebas funcionales reales E0-E10 van DESPUÉS del panel docente. Los bugs funcionales
@@ -472,21 +472,18 @@ y las reglas de validate.)
   mal cualquier Buffer de Node ("bad XRef entry" con PDFs válidos; verificado en Node 22.16): la
   extracción de PDF de /api/plans/upload probablemente falla. Corregirlo es una línea, pero toca
   E10: decisión de Alan.
-- /api/chat: si el plan del mini-agente SQL no se puede parsear, se registra el texto crudo de
-  Gemini (console.error en planDbQuery), que puede traer nombres de empresas del mensaje.
 - Panel docente sin navegación móvil: la barra lateral es hidden md:block en todas las pestañas.
 
 ## Seguridad Supabase (aplicada y verificada el 2026-10-04; M4-M6 el 2026-10-20)
 Proyecto luvcduxkasaeyobdyafj. Cualquier cambio nuevo de esquema, RLS o grants sigue
 necesitando autorización explícita de Alan. apply_migration asigna una versión nueva: después
 de aplicar, renombrar el archivo local a esa versión (git mv, contenido intacto).
-El historial remoto NO coincide con supabase/migrations/: termina en 20261019005428 (M3) y le
-faltan M4, M5 y M6 (aplicadas a mano) y también 20260606120000 y 20260606123000. Sincronizarlo
-sin reaplicar SQL (supabase migration repair --status applied <versiones>, después de verificar
-en modo lectura los efectos de las dos de 202606) está pendiente de autorización. No correr
-supabase db push antes: reintentaría aplicarlas.
+El historial remoto coincide con supabase/migrations/ (14 versiones con los mismos nombres,
+verificado el 2026-10-20). M4, M5 y M6 (aplicadas a mano) y 20260606120000 y 20260606123000
+(sus efectos verificados en modo lectura) se registraron como aplicadas sin reaplicar su SQL.
+El despliegue no aplica migraciones: no hay workflows de CI y el build es next build.
 
-Aplicadas a mano el 2026-10-20 (versión local; sin registrar en el historial remoto):
+Aplicadas a mano el 2026-10-20 y registradas después en el historial remoto, con la misma versión:
 
 | Versión local | Migración | Qué hace |
 |---|---|---|

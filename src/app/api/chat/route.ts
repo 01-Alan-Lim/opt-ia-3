@@ -233,7 +233,9 @@ Mensaje actual del usuario:
 
     return parsed as DbPlan;
   } catch {
-    console.error("No se pudo parsear DbPlan:", text);
+    // Solo datos técnicos: la respuesta de Gemini repite los filtros (nombres de empresas, NIT)
+    // tomados del mensaje y del historial, que no deben quedar en los logs del servidor.
+    console.error("[chat] mini-agente SQL: plan de Gemini ilegible (JSON inválido)");
     return null;
   }
 }
